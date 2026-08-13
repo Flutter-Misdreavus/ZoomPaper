@@ -46,7 +46,43 @@ pub fn write_md(path: &Path, content: &str) -> Result<()> {
     fs::write(path, content).context("写入 Markdown 失败")
 }
 
+/// 把解析出的资源文件按相对路径写到 `dir` 下（自动建子目录）。
+///
+/// `files` 键形如 `images/xxx.jpg`、`content_list.json`，会分别落到
+/// `dir/images/xxx.jpg`、`dir/content_list.json`。
+pub fn write_extracted_files(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
+    for (rel, bytes) in files {
+        let dest = dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).context("创建资源子目录失败")?;
+        }
+        fs::write(&dest, bytes).context("写入资源文件失败")?;
+    }
+    Ok(())
+}
+
 /// 路径是否存在。
 pub fn exists(path: &Path) -> bool {
     path.exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_extracted_files_creates_subdirs() {
+        let tmp = std::env::temp_dir().join(format!("zoompaper-fs-{}", uuid::Uuid::new_v4()));
+        let files = vec![
+            ("images/a.jpg".to_string(), b"jpeg-bytes".to_vec()),
+            ("content_list.json".to_string(), b"{}".to_vec()),
+        ];
+        write_extracted_files(&tmp, &files).unwrap();
+
+        assert!(tmp.join("images/a.jpg").exists());
+        assert!(tmp.join("content_list.json").exists());
+        assert_eq!(fs::read(tmp.join("images/a.jpg")).unwrap(), b"jpeg-bytes");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
 }

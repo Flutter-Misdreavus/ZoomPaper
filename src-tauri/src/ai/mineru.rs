@@ -3,7 +3,7 @@
 //! 本地文件三步流程（官方文档「批量文件解析 → 本地文件批量上传」）：
 //! 1. `POST /file-urls/batch` 申请预签名上传链接 → 拿 `batch_id` + `file_urls`
 //! 2. `PUT` 文件字节到签名 URL（无需 Content-Type）
-//! 3. 轮询 `GET /extract-results/batch/{batch_id}` → done 后下载 zip 解出 `full.md`
+//! 3. 轮询 `GET /extract-results/batch/{batch_id}` → done 后下载 zip 解出 markdown + 图片 + 结构化 JSON
 
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -14,6 +14,13 @@ use std::time::Duration;
 
 const BASE_URL: &str = "https://mineru.net/api/v4";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// MinerU 解析结果：markdown 全文 + 其余资源文件（相对路径 → 字节）。
+pub struct ExtractedOutput {
+    pub markdown: String,
+    /// 键为 zip 内相对路径（如 `images/xxx.jpg`、`content_list.json`）。
+    pub files: Vec<(String, Vec<u8>)>,
+}
 
 /// MinerU 云 API 客户端。
 pub struct MineruClient {
@@ -29,8 +36,8 @@ impl MineruClient {
         }
     }
 
-    /// 上传 PDF 并轮询直到解析完成，返回 Markdown 文本。
-    pub async fn extract_pdf(&self, pdf_path: &Path) -> Result<String> {
+    /// 上传 PDF 并轮询直到解析完成，返回完整解析结果。
+    pub async fn extract_pdf(&self, pdf_path: &Path) -> Result<ExtractedOutput> {
         let bytes = tokio::fs::read(pdf_path).await.context("读取 PDF 失败")?;
         let file_name = pdf_path
             .file_name()
@@ -96,7 +103,7 @@ impl MineruClient {
                     let zip_url = result["full_zip_url"]
                         .as_str()
                         .context("MinerU 结果缺少 full_zip_url")?;
-                    return self.download_md(zip_url).await;
+                    return self.download_and_extract(zip_url).await;
                 }
                 "failed" => {
                     let msg = result["err_msg"].as_str().unwrap_or("未知原因");
@@ -107,8 +114,12 @@ impl MineruClient {
         }
     }
 
-    /// 下载结果压缩包并解出 `full.md`。
-    async fn download_md(&self, zip_url: &str) -> Result<String> {
+    /// 下载结果压缩包，解出 `full.md` + 图片 + 结构化 JSON。
+    ///
+    /// 丢弃重复的 `origin.pdf`（本地已存原始 PDF）。zip 可能把所有内容
+    /// 嵌套在一个顶层目录下（如 `demo/full.md`），先定位 `full.md` 以确定
+    /// 前缀，再统一去掉该前缀。
+    async fn download_and_extract(&self, zip_url: &str) -> Result<ExtractedOutput> {
         let bytes = self
             .http
             .get(zip_url)
@@ -119,11 +130,55 @@ impl MineruClient {
             .await
             .context("读取 MinerU 结果失败")?;
 
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
-            .context("解压 MinerU 结果失败")?;
-        let mut file = archive.by_name("full.md").context("结果压缩包缺少 full.md")?;
-        let mut md = String::new();
-        file.read_to_string(&mut md).context("读取 full.md 失败")?;
-        Ok(md)
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("解压 MinerU 结果失败")?;
+
+        // 定位 full.md，确定需要去掉的顶层目录前缀
+        let prefix = {
+            let mut p = String::new();
+            for i in 0..archive.len() {
+                let name = archive.by_index(i)?.name().to_string();
+                if name == "full.md" || name.ends_with("/full.md") {
+                    if let Some(idx) = name.rfind('/') {
+                        p = name[..=idx].to_string(); // 含末尾 /
+                    }
+                    break;
+                }
+            }
+            p
+        };
+
+        let mut markdown = String::new();
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).context("读取 zip 条目失败")?;
+            if entry.is_dir() {
+                continue;
+            }
+            let raw_name = entry.name().to_string();
+
+            // 去掉顶层目录前缀（若存在）
+            let name = raw_name.strip_prefix(&prefix).unwrap_or(&raw_name).to_string();
+
+            // 跳过重复的原始 PDF（MinerU 命名为 `origin.pdf` 或 `{hash}_origin.pdf`）
+            if name.ends_with("origin.pdf") {
+                continue;
+            }
+
+            if name == "full.md" {
+                entry.read_to_string(&mut markdown).context("读取 full.md 失败")?;
+            } else {
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf).context("读取 zip 文件失败")?;
+                files.push((name, buf));
+            }
+        }
+
+        if markdown.is_empty() {
+            anyhow::bail!("MinerU 结果压缩包缺少 full.md");
+        }
+
+        Ok(ExtractedOutput { markdown, files })
     }
 }

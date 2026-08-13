@@ -73,7 +73,13 @@ pub fn get_paper_md(db: State<'_, Db>, paper_id: String) -> Result<String, Strin
         )
         .map_err(|e| e.to_string())?
     };
-    crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())
+    let mut md = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+    // 把 MinerU 的相对图片路径（`](images/...`) 重写为绝对路径，供前端 convertFileSrc 加载
+    if let Some(parent) = Path::new(&md_path).parent() {
+        let dir = parent.to_string_lossy();
+        md = md.replace("](images/", &format!("]({}/images/", dir));
+    }
+    Ok(md)
 }
 
 // ---------- 导入与解析 ----------
@@ -92,7 +98,6 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
     let src = Path::new(source_path);
     let pdf_path = crate::fs::copy_pdf(src, library, &id).map_err(|e| e.to_string())?;
     let md_path = crate::fs::paper_dir(library, &id).join("paper.md");
-    let md_path = crate::fs::paper_dir(&library, &id).join("paper.md");
     let now = chrono::Utc::now().timestamp();
     let title = src
         .file_name()
@@ -170,15 +175,18 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
 
     // 网络调用（await 期间不持有数据库锁）
     let client = MineruClient::new(api_key);
-    let md = client
+    let output = client
         .extract_pdf(Path::new(&pdf_path))
         .await
         .map_err(|e| format!("MinerU 解析失败: {e}"))?;
 
-    crate::fs::write_md(Path::new(&md_path), &md).map_err(|e| e.to_string())?;
+    // 落盘 markdown + 图片 + 结构化 JSON（论文目录下）
+    crate::fs::write_md(Path::new(&md_path), &output.markdown).map_err(|e| e.to_string())?;
+    let paper_dir = Path::new(&md_path).parent().unwrap_or_else(|| Path::new("."));
+    crate::fs::write_extracted_files(paper_dir, &output.files).map_err(|e| e.to_string())?;
 
     // 提取元数据并更新状态
-    let (title, authors, abstract_text) = extract_metadata(&md);
+    let (title, authors, abstract_text) = extract_metadata(&output.markdown);
     {
         let conn = db.conn();
         conn.execute(

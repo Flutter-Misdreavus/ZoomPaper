@@ -1,10 +1,20 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowLeft } from "lucide-react";
 import { getPaper, getPaperMd, type Paper } from "@/lib/api";
+
+// 把绝对本地路径转成 WebView 可加载的 asset URL；已是 http/asset 的保持原样。
+function resolveImgSrc(src: string | undefined): string | undefined {
+  if (!src) return src;
+  if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("asset:")) {
+    return src;
+  }
+  return convertFileSrc(src);
+}
 
 interface Props {
   paperId: string;
@@ -69,7 +79,14 @@ export function Reader({ paperId, onBack }: Props) {
         </div>
       ) : (
         <article className="prose prose-neutral max-w-none dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{md}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              img: ({ src, alt }) => <img src={resolveImgSrc(src)} alt={alt} />,
+            }}
+          >
+            {md}
+          </ReactMarkdown>
         </article>
       )}
     </div>
