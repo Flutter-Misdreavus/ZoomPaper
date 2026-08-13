@@ -1,4 +1,13 @@
-# Logs
+# ---- 依赖 / 构建产物 ----
+node_modules
+dist
+dist-ssr
+
+# Rust 构建产物
+/src-tauri/target/
+/src-tauri/gen/
+
+# ---- 日志 ----
 logs
 *.log
 npm-debug.log*
@@ -7,19 +16,40 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ---- Playwright ----
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
-# Rust 构建产物
-/src-tauri/target/
-/src-tauri/gen/
+# ---- 环境变量 / 敏感信息 ----
+.env
+.env.*
+!.env.example
+
+# 应用运行时会把 API Key 写入 settings.json，切勿提交
+settings.json
+
+# 证书 / 密钥
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# ---- 开发工具 / MCP ----
+.mcp.json
+.playwright-mcp/
+.claude/settings.local.json
+
+# ---- 本地文件 ----
+*.local
 
 # 本地测试用 PDF
 test-paper.pdf
 
-# Editor directories and files
+# ---- 编辑器 / 系统文件 ----
 .vscode/*
 !.vscode/extensions.json
 .idea
