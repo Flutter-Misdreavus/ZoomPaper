@@ -47,6 +47,12 @@ const MIGRATIONS: &[&str] = &[
         updated_at INTEGER
     );
     "#,
+    // v2：paper_chunks 增加定位列（结构化分块用 content_list 的 page_idx / bbox）
+    // 说明：start_line/end_line 语义改为 content_list 的块索引范围（不再是 md 行号）
+    r#"
+    ALTER TABLE paper_chunks ADD COLUMN page_idx INTEGER;
+    ALTER TABLE paper_chunks ADD COLUMN bbox TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。

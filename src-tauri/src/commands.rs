@@ -1,7 +1,7 @@
 //! Tauri 命令层：前端通过 invoke 调用。
 
 use crate::ai::mineru::MineruClient;
-use crate::db::models::Paper;
+use crate::db::models::{Paper, SearchHit};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::params;
@@ -197,7 +197,36 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
         .map_err(|e| e.to_string())?;
     }
 
+    // 自动建立向量索引（失败不影响解析结果，仅记日志）
+    {
+        let conn = db.conn();
+        if let Err(e) = crate::rag::index_paper(&conn, &paper_id) {
+            eprintln!("索引论文 {paper_id} 失败: {e}");
+        }
+    }
+
     get_paper(db, paper_id)
+}
+
+// ---------- 检索 / 索引 ----------
+
+/// 手动重建某篇论文的向量索引。返回 chunk 数量。
+#[tauri::command]
+pub fn index_paper(db: State<'_, Db>, paper_id: String) -> Result<usize, String> {
+    let conn = db.conn();
+    crate::rag::index_paper(&conn, &paper_id).map_err(|e| e.to_string())
+}
+
+/// 向量检索。`paper_id` 为 `Some` 时只在该论文内检索。
+#[tauri::command]
+pub fn search(
+    db: State<'_, Db>,
+    query: String,
+    top_k: usize,
+    paper_id: Option<String>,
+) -> Result<Vec<SearchHit>, String> {
+    let conn = db.conn();
+    crate::rag::search(&conn, &query, top_k, paper_id.as_deref()).map_err(|e| e.to_string())
 }
 
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------

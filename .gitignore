@@ -49,6 +49,9 @@ settings.json
 # 本地测试用 PDF
 test-paper.pdf
 
+# fastembed 运行时缓存（可能出现在项目目录）
+.fastembed_cache/
+
 # ---- 编辑器 / 系统文件 ----
 .vscode/*
 !.vscode/extensions.json

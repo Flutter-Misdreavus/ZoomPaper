@@ -1650,6 +1650,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -2139,7 +2140,7 @@ dependencies = [
  "log",
  "native-tls",
  "rand 0.9.5",
- "reqwest 0.12.28",
+ "reqwest 0.12.24",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -4300,13 +4301,14 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
+version = "0.12.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
 dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -7335,7 +7337,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fastembed",
- "reqwest 0.12.28",
+ "reqwest 0.12.24",
  "rusqlite",
  "serde",
  "serde_json",

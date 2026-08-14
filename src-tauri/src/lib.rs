@@ -29,6 +29,8 @@ pub fn run() {
             commands::get_paper_md,
             commands::import_pdf,
             commands::parse_pdf,
+            commands::index_paper,
+            commands::search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
