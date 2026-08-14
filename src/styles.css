@@ -130,3 +130,52 @@
     @apply font-sans;
     }
 }
+
+/* ===== 设计 tokens（apple-design / emil-design-eng） ===== */
+:root {
+  /* 强 ease-out：UI 进入/交互；ease-in-out：屏上移动；drawer：iOS 抽屉曲线 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@layer base {
+  /* 按压反馈：pointer-down 即时响应，100–160ms */
+  .pressable {
+    transition: transform 140ms var(--ease-out);
+  }
+  .pressable:active {
+    transform: scale(0.97);
+  }
+
+  /* 排版：大标题负 tracking + 紧凑 leading（仅 prose 长文场景微调） */
+  .prose {
+    /* 长 URL / 英文串折行，防撑破窄列布局 */
+    overflow-wrap: break-word;
+  }
+  .prose h1, .prose h2 {
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+  .prose h3, .prose h4 {
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+
+  /* popover origin-aware：从触发点生长（modal 除外） */
+  [data-slot="popover-content"],
+  [data-slot="select-content"] {
+    transform-origin: var(--transform-origin);
+  }
+}
+
+/* 减少动态：位移/弹簧降级为短 cross-fade，保留有助理解的透明度变化 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 150ms !important;
+    transition-duration: 150ms !important;
+  }
+  .pressable:active {
+    transform: none;
+  }
+}

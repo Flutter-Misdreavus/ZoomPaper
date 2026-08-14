@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
+import { motion } from "motion/react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Loader2, Plus } from "lucide-react";
-import { importPdf, listPapers, parsePdf, type Paper } from "@/lib/api";
+import { FileText, Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { deletePaper, importPdf, listPapers, parsePdf, type Paper } from "@/lib/api";
 
 const STATUS_STYLE: Record<
   string,
@@ -30,6 +41,8 @@ export function Library({ onOpenPaper }: Props) {
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const [parsingId, setParsingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Paper | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -86,11 +99,26 @@ export function Library({ onOpenPaper }: Props) {
     }
   }
 
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deletePaper(deleteTarget.id);
+      setDeleteTarget(null);
+      await refresh();
+    } catch (e) {
+      setError(`删除失败：${e}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full flex-col gap-4 overflow-y-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">论文库</h1>
+          <h1 className="text-2xl font-bold tracking-tight">论文库</h1>
           <p className="text-sm text-muted-foreground">
             本地优先的论文阅读与知识管理
           </p>
@@ -125,15 +153,24 @@ export function Library({ onOpenPaper }: Props) {
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
-          {papers.map((paper) => {
+          {papers.map((paper, i) => {
             const st = STATUS_STYLE[paper.parse_status] ?? STATUS_STYLE.unparsed;
             const parsing = paper.parse_status === "parsing" || parsingId === paper.id;
             return (
-              <Card
+              <motion.div
                 key={paper.id}
-                className="cursor-pointer transition-colors hover:border-primary/40"
-                onClick={() => onOpenPaper(paper.id)}
+                initial={{ opacity: 0, transform: "translateY(8px)" }}
+                animate={{ opacity: 1, transform: "translateY(0)" }}
+                transition={{
+                  duration: 0.25,
+                  ease: [0.23, 1, 0.32, 1],
+                  delay: Math.min(i * 0.05, 0.3),
+                }}
               >
+                <Card
+                  className="pressable group cursor-pointer transition-colors hover:border-primary/40"
+                  onClick={() => onOpenPaper(paper.id)}
+                >
                 <CardContent className="flex items-start justify-between gap-4 p-4">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -149,28 +186,73 @@ export function Library({ onOpenPaper }: Props) {
                       {formatDate(paper.created_at)}
                     </p>
                   </div>
-                  {paper.parse_status !== "ready" && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    {paper.parse_status !== "ready" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={parsing}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleParse(paper.id);
+                        }}
+                      >
+                        {parsing ? (
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        ) : null}
+                        解析
+                      </Button>
+                    )}
                     <Button
-                      variant="outline"
-                      size="sm"
+                      variant="ghost"
+                      size="icon"
                       disabled={parsing}
+                      title="删除论文"
+                      className="pressable h-8 w-8 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
                       onClick={(e) => {
                         e.stopPropagation();
-                        void handleParse(paper.id);
+                        setDeleteTarget(paper);
                       }}
                     >
-                      {parsing ? (
-                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                      ) : null}
-                      解析
+                      <Trash2 className="h-4 w-4" />
                     </Button>
-                  )}
+                  </div>
                 </CardContent>
-              </Card>
+                </Card>
+              </motion.div>
             );
           })}
         </div>
       )}
+
+      {/* 删除确认弹窗（modal：origin 居中，destructive） */}
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除论文</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除《{deleteTarget?.title}》吗？将同时删除本地 PDF、解析结果、AI
+              博客、向量索引和相关问答会话，此操作不可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void handleDelete()}
+            >
+              {deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

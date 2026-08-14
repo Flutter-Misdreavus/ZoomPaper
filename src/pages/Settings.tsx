@@ -30,7 +30,11 @@ export function SettingsPage() {
   }, []);
 
   if (!settings) {
-    return (
+    return error ? (
+      <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        {error}
+      </div>
+    ) : (
       <div className="flex items-center gap-2 text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
         加载设置…
@@ -67,7 +71,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-4">
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-4 overflow-y-auto">
       <div>
         <h1 className="text-2xl font-bold">设置</h1>
         <p className="text-sm text-muted-foreground">所有 API 信息都在这里配置，数据仅存本机。</p>
@@ -123,7 +127,7 @@ export function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">AI 对话（Phase 3 启用）</CardTitle>
+          <CardTitle className="text-base">AI 对话</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="grid gap-1.5">

@@ -31,6 +31,7 @@ pub fn run() {
             commands::get_paper_md,
             commands::import_pdf,
             commands::parse_pdf,
+            commands::delete_paper,
             commands::index_paper,
             commands::search,
             commands::generate_blog,

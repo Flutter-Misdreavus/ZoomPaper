@@ -42,6 +42,7 @@ settings.json
 .mcp.json
 .playwright-mcp/
 .claude/settings.local.json
+.agent/
 
 # ---- 本地文件 ----
 *.local

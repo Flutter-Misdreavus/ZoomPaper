@@ -210,6 +210,32 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
     get_paper(db, paper_id)
 }
 
+/// 删除论文：级联清库（向量/分块/会话/论文行），再删磁盘目录。
+/// 库删除成功后文件删除失败仅记日志，避免半态报错。
+#[tauri::command]
+pub fn delete_paper(db: State<'_, Db>, paper_id: String) -> Result<(), String> {
+    {
+        let conn = db.conn();
+        for sql in [
+            "DELETE FROM vec_chunks WHERE paper_id = ?1",
+            "DELETE FROM paper_chunks WHERE paper_id = ?1",
+            "DELETE FROM conversations WHERE paper_id = ?1",
+            "DELETE FROM papers WHERE id = ?1",
+        ] {
+            conn.execute(sql, [&paper_id]).map_err(|e| e.to_string())?;
+        }
+    }
+
+    if let Ok(settings) = Settings::load() {
+        if let Ok(library) = settings.papers_dir() {
+            if let Err(e) = crate::fs::remove_paper_dir(&library, &paper_id) {
+                eprintln!("删除论文目录 {paper_id} 失败: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------- 检索 / 索引 ----------
 
 /// 手动重建某篇论文的向量索引。返回 chunk 数量。

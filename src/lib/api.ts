@@ -90,6 +90,7 @@ export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { 
 export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
 export const parsePdf = (paperId: string) => invoke<Paper>("parse_pdf", { paperId });
+export const deletePaper = (paperId: string) => invoke<void>("delete_paper", { paperId });
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
 

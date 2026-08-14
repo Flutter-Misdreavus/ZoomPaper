@@ -1,0 +1,17 @@
+- generic [ref=f3e3]:
+  - complementary [ref=f3e4]:
+    - generic [ref=f3e5]: ZoomPaper
+    - navigation [ref=f3e9]:
+      - button "论文库" [ref=f3e10]
+      - button "搜索" [ref=f3e15]
+      - button "问答" [ref=f3e20]
+      - button "设置" [ref=f3e24]
+  - main [ref=f3e29]:
+    - generic [ref=f3e31]:
+      - generic [ref=f3e32]:
+        - generic [ref=f3e33]:
+          - heading "论文库" [level=1] [ref=f3e34]
+          - paragraph [ref=f3e35]: 本地优先的论文阅读与知识管理
+        - button "导入论文" [ref=f3e36]
+      - generic [ref=f3e37]: "TypeError: Cannot read properties of undefined (reading 'invoke')"
+      - paragraph [ref=f3e43]: 还没有论文，点击「导入论文」开始

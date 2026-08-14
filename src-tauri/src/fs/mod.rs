@@ -66,6 +66,15 @@ pub fn exists(path: &Path) -> bool {
     path.exists()
 }
 
+/// 删除整篇论文目录（不存在则视为成功）。
+pub fn remove_paper_dir(library: &Path, paper_id: &str) -> Result<()> {
+    let dir = paper_dir(library, paper_id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).context("删除论文目录失败")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
