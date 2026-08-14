@@ -6,7 +6,7 @@ import { listConversations, type Conversation } from "@/lib/api";
 import { MessageSquare, Plus } from "lucide-react";
 
 interface Props {
-  onOpenPaper: (paperId: string) => void;
+  onOpenPaper: (paperId: string, pageIdx?: number) => void;
 }
 
 function formatTime(ts: number): string {

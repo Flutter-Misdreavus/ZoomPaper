@@ -16,7 +16,7 @@ type View =
   | { name: "library" }
   | { name: "search" }
   | { name: "ask" }
-  | { name: "reader"; paperId: string }
+  | { name: "reader"; paperId: string; pageIdx?: number }
   | { name: "settings" };
 
 const NAV = [
@@ -29,7 +29,8 @@ const NAV = [
 function App() {
   const [view, setView] = useState<View>({ name: "library" });
 
-  const openPaper = (paperId: string) => setView({ name: "reader", paperId });
+  const openPaper = (paperId: string, pageIdx?: number) =>
+    setView({ name: "reader", paperId, pageIdx });
   // 阅读页归属「论文库」导航高亮
   const activeNav = view.name === "reader" ? "library" : view.name;
 
@@ -85,6 +86,7 @@ function App() {
           {view.name === "reader" && (
             <Reader
               paperId={view.paperId}
+              initialPageIdx={view.pageIdx}
               onBack={() => setView({ name: "library" })}
             />
           )}

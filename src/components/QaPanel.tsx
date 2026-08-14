@@ -18,6 +18,8 @@ function loadWidth(): number {
 
 interface Props {
   paperId: string;
+  /** 引用点击后 PDF 内跳页（0-based） */
+  onJumpPage?: (pageIdx: number) => void;
 }
 
 /**
@@ -25,7 +27,7 @@ interface Props {
  * 可收纳为 40px 竖条（宽度过渡 240ms ease-drawer）。
  * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
  */
-export function QaPanel({ paperId }: Props) {
+export function QaPanel({ paperId, onJumpPage }: Props) {
   const [width, setWidth] = useState(loadWidth);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSED_KEY) === "1",
@@ -142,7 +144,7 @@ export function QaPanel({ paperId }: Props) {
             </button>
           </div>
           <div className="flex min-h-0 flex-1 flex-col p-3">
-            <QaChat paperId={paperId} />
+            <QaChat paperId={paperId} onJumpPage={onJumpPage} />
           </div>
         </div>
       </aside>

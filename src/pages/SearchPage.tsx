@@ -17,7 +17,7 @@ import { Loader2, Search as SearchIcon } from "lucide-react";
 const ALL_PAPERS = "__all__";
 
 interface Props {
-  onOpenPaper: (paperId: string) => void;
+  onOpenPaper: (paperId: string, pageIdx?: number) => void;
 }
 
 export function SearchPage({ onOpenPaper }: Props) {
@@ -119,7 +119,7 @@ export function SearchPage({ onOpenPaper }: Props) {
             >
               <Card
                 className="pressable cursor-pointer transition-colors hover:border-primary/40"
-                onClick={() => onOpenPaper(hit.paper_id)}
+                onClick={() => onOpenPaper(hit.paper_id, hit.page_idx ?? undefined)}
               >
                 <CardContent className="flex flex-col gap-2 p-4">
                   <div className="flex items-center gap-2">

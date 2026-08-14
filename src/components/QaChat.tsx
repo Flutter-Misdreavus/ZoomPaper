@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,7 +18,9 @@ interface Props {
   paperId?: string | null;
   /** 已有会话 id；null/缺省 = 新会话 */
   conversationId?: string | null;
-  onOpenPaper?: (paperId: string) => void;
+  onOpenPaper?: (paperId: string, pageIdx?: number) => void;
+  /** 单篇阅读场景：引用在 PDF 内跳页（0-based） */
+  onJumpPage?: (pageIdx: number) => void;
   /** 新会话第一次提问成功后回调（AskPage 刷新会话列表） */
   onConversationCreated?: (conversationId: string) => void;
 }
@@ -31,14 +33,19 @@ function linkifyCitations(md: string): string {
 interface AssistantBodyProps {
   content: string;
   citations: Citation[] | null | undefined;
-  onOpenPaper?: (paperId: string) => void;
+  onOpenPaper?: (paperId: string, pageIdx?: number) => void;
+  onJumpPage?: (pageIdx: number) => void;
 }
 
-function AssistantBody({ content, citations, onOpenPaper }: AssistantBodyProps) {
+function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: AssistantBodyProps) {
   return (
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        // citation: 是内部引用标记协议，放行；其余走默认消毒
+        urlTransform={(url) =>
+          url.startsWith("citation:") ? url : defaultUrlTransform(url)
+        }
         components={{
           img: ({ src, alt }) => <img src={resolveImgSrc(src)} alt={alt} />,
           a: ({ href, children }) => {
@@ -49,6 +56,7 @@ function AssistantBody({ content, citations, onOpenPaper }: AssistantBodyProps) 
                   index={index}
                   citation={citations?.find((c) => c.index === index)}
                   onOpenPaper={onOpenPaper}
+                  onJumpPage={onJumpPage}
                 />
               );
             }
@@ -62,7 +70,7 @@ function AssistantBody({ content, citations, onOpenPaper }: AssistantBodyProps) 
   );
 }
 
-export function QaChat({ paperId, conversationId, onOpenPaper, onConversationCreated }: Props) {
+export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated }: Props) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
   const [input, setInput] = useState("");
@@ -151,6 +159,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onConversationCre
                     content={m.content}
                     citations={m.citations}
                     onOpenPaper={onOpenPaper}
+                    onJumpPage={onJumpPage}
                   />
                 </div>
               </div>
