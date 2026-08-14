@@ -12,6 +12,19 @@ mod settings;
 
 use tauri::Manager;
 
+/// 启用 WKWebView 的原生捏合放大，使双指捏合以 `gesturestart/change/end` 事件浮出，
+/// 前端再 `preventDefault()` 抑制原生整页缩放并用 `e.scale` 驱动自有缩放。
+#[cfg(target_os = "macos")]
+fn enable_pinch_zoom(app: &tauri::App) {
+    use objc2_web_kit::WKWebView;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.with_webview(|wv| unsafe {
+            let view: &WKWebView = &*wv.inner().cast();
+            view.setAllowsMagnification(true);
+        });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -21,6 +34,8 @@ pub fn run() {
             // 初始化数据库（建目录 + 建表）并放入应用状态
             let db = db::Db::init()?;
             app.manage(db);
+            #[cfg(target_os = "macos")]
+            enable_pinch_zoom(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
