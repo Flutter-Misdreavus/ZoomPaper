@@ -66,6 +66,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const renderedRef = useRef<Set<number>>(new Set());
   const effectiveScale = scale * fitScale;
+  // 渲染用最新 effectiveScale（懒渲染 observer 不随 scale 重建，读 ref 避免闭包过期）
+  const effectiveScaleRef = useRef(effectiveScale);
+  // 缩放重渲防抖定时器
+  const rerenderTimerRef = useRef<number | null>(null);
 
   const [dragging, setDragging] = useState(false);
   const dragStartRef = useRef<{
@@ -90,6 +94,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   useEffect(() => {
     scaleRef.current = scale;
   }, [scale]);
+
+  useEffect(() => {
+    effectiveScaleRef.current = effectiveScale;
+  }, [effectiveScale]);
 
   // 以光标/手势中心为锚点缩放：记录内容比例锚点，DOM 提交后校正滚动
   function zoomAround(px: number, py: number, next: number) {
@@ -200,7 +208,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           const idx = Number((entry.target as HTMLElement).dataset.pageIdx);
           if (entry.isIntersecting && !renderedRef.current.has(idx)) {
             renderedRef.current.add(idx);
-            void renderPage(doc, idx, effectiveScale);
+            void renderPage(doc, idx);
           }
         }
       },
@@ -226,7 +234,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       observer.disconnect();
       tracker.disconnect();
     };
-  }, [doc, slots, effectiveScale, dpr]);
+  }, [doc, slots, dpr]);
 
   // HiDPI：窗口在 Retina / 普通屏之间拖动时 DPR 变化，更新 dpr 触发下方重渲逻辑
   useEffect(() => {
@@ -247,7 +255,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       zoomAround(
         e.clientX - rect.left,
         e.clientY - rect.top,
-        scaleRef.current * Math.exp(-e.deltaY * 0.01),
+        scaleRef.current * Math.exp(-e.deltaY * 0.002),
       );
     };
     const onGestureStart = (e: Event) => {
@@ -290,45 +298,52 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     zoomAnchorRef.current = null;
   }, [scale]);
 
-  // 缩放变化后强制重绘已渲染页
+  // 缩放/dpr 变化后「防抖」重渲：手势期间旧 canvas 先 CSS 拉伸（流畅），停止后再补锐
   useEffect(() => {
     if (!doc) return;
-    renderedRef.current.clear();
-    pageRefs.current.forEach((el, idx) => {
-      if (el) {
-        const canvas = el.querySelector("canvas");
-        if (canvas) canvas.remove();
+    rerenderTimerRef.current = window.setTimeout(() => {
+      renderedRef.current.clear();
+      pageRefs.current.forEach((el, idx) => {
+        if (el) {
+          const canvas = el.querySelector("canvas");
+          if (canvas) canvas.remove();
+        }
+        void idx;
+      });
+      // 对可见页直接渲染
+      pageRefs.current.forEach((el, idx) => {
+        if (!el || !scrollRef.current) return;
+        const r = el.getBoundingClientRect();
+        const root = scrollRef.current.getBoundingClientRect();
+        if (r.bottom > root.top - 600 && r.top < root.bottom + 600) {
+          renderedRef.current.add(idx);
+          void renderPage(doc, idx);
+        }
+      });
+      rerenderTimerRef.current = null;
+    }, 150);
+    return () => {
+      if (rerenderTimerRef.current !== null) {
+        window.clearTimeout(rerenderTimerRef.current);
+        rerenderTimerRef.current = null;
       }
-      void idx;
-    });
-    // 触发懒渲染 observer 重新评估：对可见页直接渲染
-    pageRefs.current.forEach((el, idx) => {
-      if (!el || !scrollRef.current) return;
-      const r = el.getBoundingClientRect();
-      const root = scrollRef.current.getBoundingClientRect();
-      if (r.bottom > root.top - 600 && r.top < root.bottom + 600) {
-        renderedRef.current.add(idx);
-        void renderPage(doc, idx, effectiveScale);
-      }
-    });
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveScale, dpr]);
+  }, [doc, effectiveScale, dpr]);
 
   async function renderPage(
     docProxy: pdfjs.PDFDocumentProxy,
     idx: number,
-    s: number,
   ) {
     const container = pageRefs.current[idx];
     if (!container || container.querySelector("canvas")) return;
     const page = await docProxy.getPage(idx + 1);
     // 后备缓冲按 dpr 倍渲染：canvas 物理像素 = CSS 像素 × dpr，显示尺寸不变 → 文字锐利
-    const viewport = page.getViewport({ scale: s * dpr });
+    const viewport = page.getViewport({ scale: effectiveScaleRef.current * dpr });
     const canvas = document.createElement("canvas");
     canvas.width = Math.floor(viewport.width);
     canvas.height = Math.floor(viewport.height);
     canvas.className = "block h-auto w-full";
-    container.style.aspectRatio = "";
     container.appendChild(canvas);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
