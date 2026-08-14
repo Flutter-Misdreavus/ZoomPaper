@@ -40,6 +40,7 @@ pub struct Chunk {
 pub struct SearchHit {
     pub chunk_id: i64,
     pub paper_id: String,
+    pub paper_title: String,
     pub section: String,
     pub content: String,
     pub page_idx: Option<i64>,
@@ -50,7 +51,7 @@ pub struct SearchHit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
-    pub paper_id: String,
+    pub paper_id: Option<String>,
     #[serde(rename = "type")]
     pub conv_type: String,
     pub title: String,

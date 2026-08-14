@@ -6,6 +6,7 @@ mod commands;
 mod db;
 mod feynman;
 mod fs;
+mod qa;
 mod rag;
 mod settings;
 
@@ -33,6 +34,9 @@ pub fn run() {
             commands::index_paper,
             commands::search,
             commands::generate_blog,
+            commands::ask_question,
+            commands::list_conversations,
+            commands::get_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,9 @@
 //! Tauri 命令层：前端通过 invoke 调用。
 
+use crate::ai::llm::Role;
 use crate::ai::mineru::MineruClient;
-use crate::db::models::{Paper, SearchHit};
+use crate::db::models::{Conversation, Paper, SearchHit};
+use crate::qa::{Answer, QaMessage};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::params;
@@ -276,6 +278,147 @@ pub async fn generate_blog(
     }
 
     Ok(blog)
+}
+
+// ---------- RAG 问答 ----------
+
+const QA_TITLE_CHARS: usize = 40;
+
+/// 一轮 RAG 问答：检索 + LLM 带引用回答，并持久化到 conversations。
+/// `conversation_id` 为 `Some` 时续接多轮；`paper_id` 为 `Some` 时限定单篇检索。
+#[tauri::command]
+pub async fn ask_question(
+    db: State<'_, Db>,
+    question: String,
+    paper_id: Option<String>,
+    conversation_id: Option<String>,
+    top_k: Option<usize>,
+) -> Result<Answer, String> {
+    let top_k = top_k.unwrap_or(5);
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    // 取/建会话与历史
+    let now = chrono::Utc::now().timestamp();
+    let conv_id: String;
+    let mut history: Vec<QaMessage>;
+    {
+        let conn = db.conn();
+        match conversation_id {
+            Some(id) => {
+                let messages_json: String = conn
+                    .query_row(
+                        "SELECT messages FROM conversations WHERE id = ?1",
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| format!("会话不存在: {e}"))?;
+                history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
+                conv_id = id;
+            }
+            None => {
+                conv_id = Uuid::new_v4().to_string();
+                let title = crate::qa::truncate(&question, QA_TITLE_CHARS);
+                let pid = paper_id.as_deref();
+                conn.execute(
+                    "INSERT INTO conversations \
+                     (id, paper_id, type, title, messages, created_at, updated_at) \
+                     VALUES (?1, ?2, 'qa', ?3, '[]', ?4, ?4)",
+                    params![&conv_id, pid, &title, now],
+                )
+                .map_err(|e| e.to_string())?;
+                history = vec![];
+            }
+        }
+    }
+
+    // 检索 + 组装（同步，用完即释放数据库锁）
+    let prepared = {
+        let conn = db.conn();
+        crate::qa::prepare(&conn, &question, paper_id.as_deref(), &history, top_k)
+            .map_err(|e| e.to_string())?
+    };
+
+    // LLM（await 期间不持有数据库锁）
+    let (answer, citations) = crate::qa::ask(&llm, &prepared)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 追加 user + assistant 两条消息并写回
+    {
+        let conn = db.conn();
+        history.push(QaMessage {
+            role: Role::User,
+            content: question.clone(),
+            citations: None,
+        });
+        history.push(QaMessage {
+            role: Role::Assistant,
+            content: answer.clone(),
+            citations: Some(citations.clone()),
+        });
+        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
+            params![&conv_id, messages_json, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(Answer {
+        conversation_id: conv_id,
+        answer,
+        citations,
+    })
+}
+
+/// 列出所有问答会话（按更新时间倒序）。
+#[tauri::command]
+pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String> {
+    let conn = db.conn();
+    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at \
+               FROM conversations WHERE type = 'qa' ORDER BY updated_at DESC";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Conversation {
+                id: r.get(0)?,
+                paper_id: r.get(1)?,
+                conv_type: r.get(2)?,
+                title: r.get(3)?,
+                messages: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 读回单个会话（含完整 messages JSON）。
+#[tauri::command]
+pub fn get_conversation(
+    db: State<'_, Db>,
+    conversation_id: String,
+) -> Result<Conversation, String> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at \
+         FROM conversations WHERE id = ?1",
+        [&conversation_id],
+        |r| {
+            Ok(Conversation {
+                id: r.get(0)?,
+                paper_id: r.get(1)?,
+                conv_type: r.get(2)?,
+                title: r.get(3)?,
+                messages: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------

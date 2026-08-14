@@ -284,27 +284,30 @@ pub fn search_with_embedding(
         }
     }
 
-    // 第二步：JOIN paper_chunks 拿内容
+    // 第二步：JOIN papers 拿内容与标题
     let mut out = Vec::with_capacity(rowids.len());
     for (rowid, distance) in rowids.iter().zip(distances) {
         let chunk = conn.query_row(
-            "SELECT paper_id, section, content, page_idx FROM paper_chunks WHERE id = ?1",
+            "SELECT c.paper_id, p.title, c.section, c.content, c.page_idx \
+             FROM paper_chunks c JOIN papers p ON p.id = c.paper_id WHERE c.id = ?1",
             [rowid],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
                 ))
             },
         )?;
         out.push(SearchHit {
             chunk_id: *rowid,
             paper_id: chunk.0,
-            section: chunk.1,
-            content: chunk.2,
-            page_idx: chunk.3,
+            paper_title: chunk.1,
+            section: chunk.2,
+            content: chunk.3,
+            page_idx: chunk.4,
             distance,
         });
     }
@@ -415,6 +418,7 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].content, "alpha chunk");
         assert_eq!(hits[0].paper_id, "paper-a");
+        assert_eq!(hits[0].paper_title, "A");
         assert!(hits[0].distance < hits[1].distance);
 
         // paper_id 过滤：查不存在的论文，返回空
