@@ -1,6 +1,7 @@
 //! ZoomPaper 桌面端入口：Tauri 应用装配。
 
 mod ai;
+mod blog;
 mod commands;
 mod db;
 mod feynman;
@@ -31,6 +32,7 @@ pub fn run() {
             commands::parse_pdf,
             commands::index_paper,
             commands::search,
+            commands::generate_blog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

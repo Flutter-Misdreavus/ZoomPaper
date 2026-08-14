@@ -229,6 +229,55 @@ pub fn search(
     crate::rag::search(&conn, &query, top_k, paper_id.as_deref()).map_err(|e| e.to_string())
 }
 
+// ---------- 博客生成 ----------
+
+/// 调用 LLM 生成博客，落盘 `blog.md` 并回写 `blog_md_path`。返回博客 Markdown 文本。
+#[tauri::command]
+pub async fn generate_blog(
+    db: State<'_, Db>,
+    paper_id: String,
+    level: String,
+) -> Result<String, String> {
+    let level = crate::blog::BlogLevel::parse(&level).map_err(|e| e.to_string())?;
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    // 读论文 Markdown 全文
+    let md_path = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [&paper_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+
+    // 生成（网络调用，await 期间不持有数据库锁）
+    let blog = crate::blog::generate_blog(&llm, level, &markdown)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 落盘 blog.md 并回写路径
+    let blog_path = Path::new(&md_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("blog.md");
+    crate::fs::write_md(&blog_path, &blog).map_err(|e| e.to_string())?;
+    let blog_path_str = blog_path.to_string_lossy().to_string();
+    {
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE papers SET blog_md_path = ?2 WHERE id = ?1",
+            params![&paper_id, &blog_path_str],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(blog)
+}
+
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------
 
 fn extract_metadata(md: &str) -> (String, Option<String>, Option<String>) {
