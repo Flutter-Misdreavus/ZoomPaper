@@ -217,7 +217,8 @@ pub fn delete_paper(db: State<'_, Db>, paper_id: String) -> Result<(), String> {
     {
         let conn = db.conn();
         for sql in [
-            "DELETE FROM vec_chunks WHERE paper_id = ?1",
+            // vec0 虚表只支持按 rowid 删除，沿用 rag 重索引的写法
+            "DELETE FROM vec_chunks WHERE rowid IN (SELECT id FROM paper_chunks WHERE paper_id = ?1)",
             "DELETE FROM paper_chunks WHERE paper_id = ?1",
             "DELETE FROM conversations WHERE paper_id = ?1",
             "DELETE FROM papers WHERE id = ?1",

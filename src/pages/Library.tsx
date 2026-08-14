@@ -155,7 +155,8 @@ export function Library({ onOpenPaper }: Props) {
         <div className="flex flex-col gap-3">
           {papers.map((paper, i) => {
             const st = STATUS_STYLE[paper.parse_status] ?? STATUS_STYLE.unparsed;
-            const parsing = paper.parse_status === "parsing" || parsingId === paper.id;
+            // 仅以本会话发起的解析为准：DB 里残留的 "parsing"（上次中断）不阻塞操作
+            const parsing = parsingId === paper.id;
             return (
               <motion.div
                 key={paper.id}
@@ -206,7 +207,7 @@ export function Library({ onOpenPaper }: Props) {
                     <Button
                       variant="ghost"
                       size="icon"
-                      disabled={parsing}
+                      disabled={parsingId === paper.id}
                       title="删除论文"
                       className="pressable h-8 w-8 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive"
                       onClick={(e) => {
