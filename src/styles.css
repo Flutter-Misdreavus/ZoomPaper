@@ -161,6 +161,19 @@
     letter-spacing: -0.01em;
     line-height: 1.25;
   }
+  /* 超长行内公式在窄列（问答/费曼气泡）内横向滚动，不撑破布局 */
+  .prose .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.25rem 0;
+  }
+  /* Markdown 图片居中、限高、圆角 */
+  .prose img {
+    display: block;
+    margin: 1rem auto;
+    max-height: 32rem;
+    border-radius: 0.5rem;
+  }
 
   /* popover origin-aware：从触发点生长（modal 除外） */
   [data-slot="popover-content"],

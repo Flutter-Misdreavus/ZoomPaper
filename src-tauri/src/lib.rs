@@ -9,6 +9,7 @@ mod fs;
 mod qa;
 mod rag;
 mod settings;
+mod translate;
 
 use tauri::Manager;
 
@@ -50,6 +51,9 @@ pub fn run() {
             commands::index_paper,
             commands::search,
             commands::generate_blog,
+            commands::translate_chunk,
+            commands::save_translation,
+            commands::get_translation,
             commands::ask_question,
             commands::list_conversations,
             commands::get_conversation,

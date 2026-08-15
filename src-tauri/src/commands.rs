@@ -308,6 +308,70 @@ pub async fn generate_blog(
     Ok(blog)
 }
 
+// ---------- AI 翻译 ----------
+
+/// 翻译单个英文块为中文（前端分块后逐块调用）。
+#[tauri::command]
+pub async fn translate_chunk(text: String) -> Result<String, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+    let zh = crate::translate::translate_text(&llm, &text)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(zh.trim().to_string())
+}
+
+/// 把翻译结果（en/zh 分块对）落盘为论文目录下的 translation.json。
+#[tauri::command]
+pub fn save_translation(
+    db: State<'_, Db>,
+    paper_id: String,
+    chunks: Vec<crate::translate::TranslationChunk>,
+) -> Result<(), String> {
+    let md_path = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [&paper_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let json = serde_json::to_string_pretty(&chunks).map_err(|e| e.to_string())?;
+    let path = Path::new(&md_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("translation.json");
+    crate::fs::write_md(&path, &json).map_err(|e| e.to_string())
+}
+
+/// 读取论文的翻译缓存（translation.json），不存在则返回 None。
+#[tauri::command]
+pub fn get_translation(
+    db: State<'_, Db>,
+    paper_id: String,
+) -> Result<Option<Vec<crate::translate::TranslationChunk>>, String> {
+    let md_path = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [&paper_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let path = Path::new(&md_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("translation.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = crate::fs::read_md(&path).map_err(|e| e.to_string())?;
+    let chunks = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    Ok(Some(chunks))
+}
+
 // ---------- RAG 问答 ----------
 
 const QA_TITLE_CHARS: usize = 40;

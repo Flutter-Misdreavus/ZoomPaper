@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CitationBadge } from "@/components/CitationBadge";
-import { resolveImgSrc } from "@/components/MarkdownView";
+import {
+  katexOptions,
+  markdownUrlTransform,
+  normalizeLatex,
+  resolveImgSrc,
+} from "@/lib/markdown";
 import {
   askQuestion,
   getConversation,
@@ -41,11 +48,10 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
   return (
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        // citation: 是内部引用标记协议，放行；其余走默认消毒
-        urlTransform={(url) =>
-          url.startsWith("citation:") ? url : defaultUrlTransform(url)
-        }
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, katexOptions]]}
+        // citation:/asset: 是内部协议，放行；其余走默认消毒
+        urlTransform={markdownUrlTransform}
         components={{
           img: ({ src, alt }) => <img src={resolveImgSrc(src)} alt={alt} />,
           a: ({ href, children }) => {
@@ -64,7 +70,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
           },
         }}
       >
-        {linkifyCitations(content)}
+        {normalizeLatex(linkifyCitations(content))}
       </ReactMarkdown>
     </article>
   );

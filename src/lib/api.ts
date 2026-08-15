@@ -150,3 +150,21 @@ export const feynmanReview = (conversationId: string) =>
 
 export const getFeynmanConversation = (paperId: string) =>
   invoke<Conversation | null>("get_feynman_conversation", { paperId });
+
+/** AI 翻译：一个分块对（en 为原文块，zh 为对应中文块） */
+export interface TranslationChunk {
+  en: string;
+  zh: string;
+}
+
+/** 读取论文的翻译缓存（translation.json），无缓存返回 null */
+export const getTranslation = (paperId: string) =>
+  invoke<TranslationChunk[] | null>("get_translation", { paperId });
+
+/** 翻译单个英文块为中文 */
+export const translateChunk = (text: string) =>
+  invoke<string>("translate_chunk", { text });
+
+/** 把分块对落盘为论文目录下的 translation.json */
+export const saveTranslation = (paperId: string, chunks: TranslationChunk[]) =>
+  invoke<void>("save_translation", { paperId, chunks });
