@@ -9,7 +9,12 @@ import {
   translateChunk,
   type TranslationChunk,
 } from "@/lib/api";
-import { buildBiDoc, buildZhDoc, chunkMarkdown } from "@/lib/translate";
+import {
+  buildZhDoc,
+  chunkMarkdown,
+  pairBlocks,
+  stripStandaloneImagesAndMath,
+} from "@/lib/translate";
 import { FileText, Languages, Loader2, RefreshCw } from "lucide-react";
 
 type Mode = "en" | "zh" | "bi";
@@ -26,8 +31,8 @@ interface Props {
 
 /**
  * AI 翻译：把论文 paper.md 分块译成中文，本地缓存为 translation.json。
- * 三种模式是同一份 Markdown 的不同拼接：纯英 = 原文；纯中 = 中文块拼接；
- * 对照 = 英文块与中文块按序交错（分段交错）。
+ * 纯英 = 原文；纯中 = 中文全文；对照 = 把英文原文与中文全文各自按段落切分后逐段配对
+ * （英文段黑色 + 中文段浅蓝色）。
  */
 export function TranslatePanel({ paperId }: Props) {
   const [mode, setMode] = useState<Mode>("en");
@@ -78,15 +83,20 @@ export function TranslatePanel({ paperId }: Props) {
     }
   }
 
-  // 当前模式对应的文档；切到中文/对照但尚未翻译时返回 null
+  // 当前模式对应的文档（纯英/纯中）；对照模式在渲染分支单独逐段渲染
   function docFor(): string | null {
     if (mode === "en") return enMd;
     if (!chunks) return null;
-    return mode === "zh" ? buildZhDoc(chunks) : buildBiDoc(chunks);
+    return mode === "zh" ? buildZhDoc(chunks) : null;
   }
 
   const doc = docFor();
   const needsTranslate = mode !== "en" && !chunks;
+  // 对照模式：英文原文与中文全文各自按段切分后配对
+  const bi =
+    mode === "bi" && chunks && enMd
+      ? pairBlocks(enMd, buildZhDoc(chunks))
+      : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -140,6 +150,28 @@ export function TranslatePanel({ paperId }: Props) {
             <Skeleton className="h-4 w-full" />
             <Skeleton className="h-4 w-full" />
             <Skeleton className="h-4 w-2/3" />
+          </div>
+        ) : bi ? (
+          <div className="flex flex-col gap-4">
+            {bi.enCount !== bi.zhCount && (
+              <p className="text-xs text-muted-foreground">
+                英文 {bi.enCount} 段 / 中文 {bi.zhCount} 段，已按序配对前 {bi.pairs.length}
+                段，其余未对齐。
+              </p>
+            )}
+            {bi.pairs.map((p, i) => {
+              // 中文段去掉单独成行的图片与整块公式（避免与英文段重复），保留行内公式
+              const zh = stripStandaloneImagesAndMath(p.zh).trim();
+              return (
+                <div key={i} className="flex flex-col gap-1.5">
+                  <MarkdownView markdown={p.en} />
+                  {zh && <MarkdownView markdown={zh} className="trans-zh" />}
+                </div>
+              );
+            })}
+            {bi.restEn.map((en, i) => (
+              <MarkdownView key={`un-${i}`} markdown={en} />
+            ))}
           </div>
         ) : needsTranslate ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">

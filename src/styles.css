@@ -188,6 +188,24 @@
   }
 }
 
+/* 中英对照：中文段浅蓝色（英文段保持默认黑色）。
+   注意：必须放在 @layer 之外（unlayered）——typography 的 .prose{color:...} 也是 unlayered，
+   非 layer 样式按特异性取胜，写进 @layer base 会被 typography 的黑色按层序压过。 */
+.prose.trans-zh {
+  color: #38bdf8; /* sky-400 */
+}
+.prose.trans-zh h1,
+.prose.trans-zh h2,
+.prose.trans-zh h3,
+.prose.trans-zh h4,
+.prose.trans-zh strong,
+.prose.trans-zh a {
+  color: inherit;
+}
+.dark .prose.trans-zh {
+  color: #7dd3fc; /* sky-300，深色下略亮 */
+}
+
 /* 减少动态：位移/弹簧降级为短 cross-fade，保留有助理解的透明度变化 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
