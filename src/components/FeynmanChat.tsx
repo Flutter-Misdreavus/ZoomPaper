@@ -4,14 +4,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/MarkdownView";
 import {
   feynmanReview,
+  feynmanStart,
   feynmanTurn,
   getFeynmanConversation,
   type FeynmanMessage,
 } from "@/lib/api";
 import {
+  ChevronDown,
+  ChevronUp,
   FileText,
   GraduationCap,
   Loader2,
+  Play,
   RotateCcw,
   SendHorizonal,
   Sparkles,
@@ -30,10 +34,12 @@ export function FeynmanChat({ paperId }: Props) {
   const [convId, setConvId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<string | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
+  const [notesOpen, setNotesOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -62,7 +68,24 @@ export function FeynmanChat({ paperId }: Props) {
   // 新消息 / 复盘滚动到底部
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, sending, review]);
+  }, [messages, sending, review, notes, starting]);
+
+  async function handleStart() {
+    if (starting) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const turn = await feynmanStart(paperId);
+      setConvId(turn.conversation_id);
+      if (turn.notes) setNotes(turn.notes);
+      setNotesOpen(true);
+      setMessages([{ role: "assistant", content: turn.reply }]);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  }
 
   async function handleSend() {
     const content = input.trim();
@@ -103,64 +126,88 @@ export function FeynmanChat({ paperId }: Props) {
     setMessages([]);
     setReview(null);
     setNotes(null);
+    setNotesOpen(true);
     setError(null);
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="flex items-center justify-end gap-1.5">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleRestart}
-          disabled={sending || reviewing}
-          title="重新开始"
-          className="pressable h-7 gap-1 px-2 text-xs text-muted-foreground"
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-          重新开始
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void handleReview()}
-          disabled={!convId || reviewing || sending}
-          title="生成教学复盘"
-          className="pressable h-7 gap-1 px-2 text-xs"
-        >
-          {reviewing ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Sparkles className="h-3.5 w-3.5" />
-          )}
-          复盘
-        </Button>
-      </div>
+      {messages.length > 0 && (
+        <div className="flex items-center justify-end gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRestart}
+            disabled={sending || reviewing}
+            title="重新开始"
+            className="pressable h-7 gap-1 px-2 text-xs text-muted-foreground"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            重新开始
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleReview()}
+            disabled={!convId || reviewing || sending}
+            title="生成教学复盘"
+            className="pressable h-7 gap-1 px-2 text-xs"
+          >
+            {reviewing ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            复盘
+          </Button>
+        </div>
+      )}
 
-      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
-        {notes && (
-          <div className="flex justify-start">
-            <div className="max-w-[95%] rounded-2xl border border-border bg-background px-4 py-3">
-              <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
-                <FileText className="h-3.5 w-3.5 text-primary" />
-                要点笔记
-              </div>
+      {/* 要点笔记：独立小窗口，固定在消息区上方，可收纳/展开 */}
+      {notes && (
+        <div className="overflow-hidden rounded-lg border border-border bg-background">
+          <button
+            onClick={() => setNotesOpen((o) => !o)}
+            title={notesOpen ? "收起要点笔记" : "展开要点笔记"}
+            className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span>要点笔记</span>
+            <span className="ml-auto text-muted-foreground">
+              {notesOpen ? (
+                <ChevronUp className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5" />
+              )}
+            </span>
+          </button>
+          {notesOpen && (
+            <div className="max-h-60 overflow-y-auto border-t px-4 py-3">
               <MarkdownView markdown={notes} className="prose-sm" />
             </div>
-          </div>
-        )}
+          )}
+        </div>
+      )}
+
+      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
         {loadingHistory ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             加载会话…
           </div>
-        ) : messages.length === 0 && !sending ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+        ) : starting ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
+            <Loader2 className="h-8 w-8 animate-spin" />
+            <p className="text-sm">正在通读全文并整理要点…</p>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
             <GraduationCap className="h-10 w-10" />
-            <p className="text-sm">
-              你现在是老师，挑一个论文里的概念讲给这个陌生的本科生听。
-            </p>
-            <p className="text-xs">首次对话 AI 会先通读全文并整理要点，可能稍慢。</p>
+            <p className="text-sm">点击开始，AI 会通读全文，以学生身份开场并向你提问。</p>
+            <Button onClick={() => void handleStart()} disabled={starting} className="pressable gap-2">
+              <Play className="h-4 w-4" />
+              开始
+            </Button>
           </div>
         ) : (
           messages.map((m, i) =>
@@ -207,33 +254,35 @@ export function FeynmanChat({ paperId }: Props) {
         </div>
       )}
 
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-          placeholder="向这个学生讲解论文里的一个概念…（Enter 发送，Shift+Enter 换行）"
-          className="min-h-11 flex-1 resize-none"
-          rows={1}
-        />
-        <Button
-          size="icon"
-          onClick={() => void handleSend()}
-          disabled={sending || !input.trim()}
-          className="pressable h-11 w-11"
-        >
-          {sending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <SendHorizonal className="h-4 w-4" />
-          )}
-        </Button>
-      </div>
+      {messages.length > 0 && (
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            placeholder="向这个学生讲解论文里的一个概念…（Enter 发送，Shift+Enter 换行）"
+            className="min-h-11 flex-1 resize-none"
+            rows={1}
+          />
+          <Button
+            size="icon"
+            onClick={() => void handleSend()}
+            disabled={sending || !input.trim()}
+            className="pressable h-11 w-11"
+          >
+            {sending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <SendHorizonal className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

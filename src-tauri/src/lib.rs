@@ -54,6 +54,7 @@ pub fn run() {
             commands::list_conversations,
             commands::get_conversation,
             commands::feynman_turn,
+            commands::feynman_start,
             commands::feynman_review,
             commands::get_feynman_conversation,
         ])

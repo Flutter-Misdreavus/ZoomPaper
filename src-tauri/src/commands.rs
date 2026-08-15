@@ -453,6 +453,63 @@ pub fn get_conversation(
 
 // ---------- 费曼学习法 ----------
 
+/// 开始费曼会话：通读全文生成要点笔记 + 学生开场白，并新建会话持久化。
+/// 无需用户输入；返回开场白 + 要点笔记 + 新会话 id。
+#[tauri::command]
+pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<FeynmanTurn, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().timestamp();
+
+    // 锁内：读论文 md 路径（不建会话）
+    let md_path: String = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [&paper_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    // 无锁：通读全文生成要点笔记
+    let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+    let notes = crate::feynman::generate_digest(&llm, &markdown)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 无锁：生成学生开场白
+    let opening = llm
+        .chat(&crate::feynman::build_start_messages(&notes))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 锁内：新建会话并一次性写入 notes + 开场白消息
+    let conv_id = Uuid::new_v4().to_string();
+    let history = vec![FeynmanMessage {
+        role: Role::Assistant,
+        content: opening.clone(),
+    }];
+    let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
+    {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO conversations \
+             (id, paper_id, type, title, messages, notes, created_at, updated_at) \
+             VALUES (?1, ?2, 'feynman', '费曼学习', ?3, ?4, ?5, ?5)",
+            params![&conv_id, &paper_id, &messages_json, &notes, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(FeynmanTurn {
+        conversation_id: conv_id,
+        reply: opening,
+        notes: Some(notes),
+    })
+}
+
 /// 一轮费曼对话：读/生成要点笔记 + 检索相关段落 + LLM 学生式回应，并持久化。
 /// `conversation_id` 为 `Some` 时续接多轮；否则新建 `type='feynman'` 会话。
 /// 要点笔记按会话存储（`conversations.notes`）：新会话首轮通读全文生成，后续轮次复用。

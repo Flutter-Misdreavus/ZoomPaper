@@ -131,6 +131,9 @@ export const listConversations = () =>
 export const getConversation = (conversationId: string) =>
   invoke<Conversation>("get_conversation", { conversationId });
 
+export const feynmanStart = (paperId: string) =>
+  invoke<FeynmanTurn>("feynman_start", { paperId });
+
 export const feynmanTurn = (
   message: string,
   paperId: string,

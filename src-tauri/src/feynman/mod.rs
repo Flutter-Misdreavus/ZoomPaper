@@ -1,9 +1,9 @@
 //! 费曼学习法多轮对话。
 //!
 //! AI 扮演「聪明但陌生的本科生」，用户扮演老师讲解论文概念。上下文策略：
-//! 首次把论文全文压成「要点笔记」（缓存为 `feynman_notes.md`）常驻 system，
+//! 每个新会话首轮把论文全文压成「要点笔记」（存于会话）常驻 system，
 //! 每轮用 RAG 检索该论文相关段落补细节。本模块只负责 prompt 与调用 LLM；
-//! 笔记落盘 / 会话持久化由命令层完成。
+//! 笔记与消息持久化由命令层完成。
 
 use crate::ai::llm::{ChatMessage, Llm, Role};
 use crate::db::models::SearchHit;
@@ -27,6 +27,9 @@ const DIGEST_PROMPT: &str = "你是一位精读助手。请阅读下面的论文
 
 /// 教学复盘 system prompt。
 const REVIEW_PROMPT: &str = "你是费曼学习法的复盘教练。下面是一段「老师（用户）教学生（AI）」的教学对话，老师讲解的是某篇论文里的概念。\n\n请评估老师讲解的质量，从以下三个维度展开：\n1. 简洁度：能否用简单语言讲清楚，有没有不必要的啰嗦或术语堆砌。\n2. 准确性：讲解是否与论文内容一致，有没有错误或含糊。\n3. 直觉性：是否给出类比/直觉，帮助真正理解，而非死记硬背。\n\n输出 Markdown：先给一个总评（两三句），再分三个维度分别点评（各点出「做得好的」和「可改进的」），最后给 2-3 条具体改进建议。语气客观、有建设性。";
+
+/// 开场指令：AI 以学生身份主动开场（说明读到什么 + 抛出几个问题）。
+const START_PROMPT: &str = "你已经通读了这篇论文（要点见上）。现在请以学生的身份开场：用一两句话说明你读到了什么、对什么最感兴趣，然后抛出 2-3 个你最想弄懂的问题，邀请老师（用户）讲解。语气自然、口语化，直接输出开场白，不要解释你正在做什么。";
 
 /// 会话中的一条消息（持久化到 conversations.messages 的 JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +93,38 @@ pub fn build_context(hits: &[SearchHit]) -> String {
     ctx
 }
 
+/// 组装「开始」开场消息：system（学生人格 + 论文要点笔记）+ 开场指令。
+pub fn build_start_messages(digest: &str) -> Vec<ChatMessage> {
+    let system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n【论文要点笔记】\n{digest}");
+    vec![
+        ChatMessage {
+            role: Role::System,
+            content: system,
+        },
+        ChatMessage {
+            role: Role::User,
+            content: START_PROMPT.to_string(),
+        },
+    ]
+}
+
+/// 压入历史消息；若历史以 assistant 开头（「开始」后无前置 user），先补占位 user，
+/// 满足 Anthropic Messages API「首条须为 user」的交替要求。
+fn push_history(messages: &mut Vec<ChatMessage>, history: &[FeynmanMessage]) {
+    if matches!(history.first().map(|m| m.role), Some(Role::Assistant)) {
+        messages.push(ChatMessage {
+            role: Role::User,
+            content: "开始".to_string(),
+        });
+    }
+    for m in history {
+        messages.push(ChatMessage {
+            role: m.role,
+            content: m.content.clone(),
+        });
+    }
+}
+
 /// 组装对话消息：system（学生人格 + 论文要点笔记）+ 历史 + 当前讲解（含相关段落）。
 pub fn build_turn_messages(
     digest: &str,
@@ -102,12 +137,7 @@ pub fn build_turn_messages(
         role: Role::System,
         content: system,
     }];
-    for m in history {
-        messages.push(ChatMessage {
-            role: m.role,
-            content: m.content.clone(),
-        });
-    }
+    push_history(&mut messages, history);
     let user_content = if context.is_empty() {
         user_msg.to_string()
     } else {
@@ -131,12 +161,7 @@ pub fn build_review_messages(history: &[FeynmanMessage]) -> Vec<ChatMessage> {
         role: Role::System,
         content: REVIEW_PROMPT.to_string(),
     }];
-    for m in history {
-        messages.push(ChatMessage {
-            role: m.role,
-            content: m.content.clone(),
-        });
-    }
+    push_history(&mut messages, history);
     messages
 }
 
@@ -234,5 +259,44 @@ mod tests {
         assert!(msgs[0].content.contains("复盘"));
         assert_eq!(msgs[1].role, Role::User);
         assert_eq!(msgs[1].content, "我来讲");
+    }
+
+    #[test]
+    fn build_start_messages_has_persona_digest_and_start_prompt() {
+        let msgs = build_start_messages("要点笔记");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        assert!(msgs[0].content.contains("本科生"));
+        assert!(msgs[0].content.contains("要点笔记"));
+        assert_eq!(msgs[1].role, Role::User);
+        assert!(msgs[1].content.contains("开场"));
+    }
+
+    #[test]
+    fn build_turn_messages_prepends_user_when_history_starts_with_assistant() {
+        let history = vec![FeynmanMessage {
+            role: Role::Assistant,
+            content: "我读完了，有几个问题…".into(),
+        }];
+        let msgs = build_turn_messages("要点", "", &history, "我来教你");
+        // [system, 占位user, assistant开场, user讲解]
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[1].role, Role::User);
+        assert_eq!(msgs[1].content, "开始");
+        assert_eq!(msgs[2].role, Role::Assistant);
+        assert_eq!(msgs[3].role, Role::User);
+        assert_eq!(msgs[3].content, "我来教你");
+    }
+
+    #[test]
+    fn build_review_messages_prepends_user_when_history_starts_with_assistant() {
+        let history = vec![FeynmanMessage {
+            role: Role::Assistant,
+            content: "开场白".into(),
+        }];
+        let msgs = build_review_messages(&history);
+        assert_eq!(msgs[1].role, Role::User);
+        assert_eq!(msgs[1].content, "开始");
+        assert_eq!(msgs[2].role, Role::Assistant);
     }
 }
