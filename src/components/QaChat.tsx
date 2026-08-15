@@ -3,12 +3,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import rehypeRaw from "rehype-raw";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CitationBadge } from "@/components/CitationBadge";
 import {
   katexOptions,
   markdownUrlTransform,
+  normalizeImageUrls,
   normalizeLatex,
   resolveImgSrc,
 } from "@/lib/markdown";
@@ -49,7 +51,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[[rehypeKatex, katexOptions]]}
+        rehypePlugins={[rehypeRaw, [rehypeKatex, katexOptions]]}
         // citation:/asset: 是内部协议，放行；其余走默认消毒
         urlTransform={markdownUrlTransform}
         components={{
@@ -70,7 +72,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
           },
         }}
       >
-        {normalizeLatex(linkifyCitations(content))}
+        {normalizeLatex(normalizeImageUrls(linkifyCitations(content)))}
       </ReactMarkdown>
     </article>
   );

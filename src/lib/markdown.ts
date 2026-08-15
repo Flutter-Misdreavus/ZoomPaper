@@ -22,6 +22,32 @@ export function normalizeLatex(markdown: string): string {
 }
 
 /**
+ * 把 Markdown 里图片地址含空格的 `![](path)` 用尖括号包裹为 `![](<path>)`。
+ * CommonMark 的链接目标不允许裸空格（macOS 绝对路径常含空格，如 `Application Support`），
+ * 不包裹会导致整行无法被解析成图片而沦为纯文本。处理前先保护代码块/行内代码。
+ * `<>` 内的地址允许任意字符（除 `<>`），解析出的 src 不含尖括号，后续可正常加载。
+ */
+export function normalizeImageUrls(markdown: string): string {
+  if (!markdown) return "";
+  const code: string[] = [];
+  const guarded = markdown.replace(/```[\s\S]*?```|`[^`\n]+`/g, (m) => {
+    code.push(m);
+    return `\u0000${code.length - 1}\u0000`;
+  });
+  const normalized = guarded.replace(
+    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    (match, alt, url) => {
+      // 已用 <> 包裹或地址无空白则不处理
+      if ((url.startsWith("<") && url.endsWith(">")) || !/\s/.test(url)) {
+        return match;
+      }
+      return `![${alt}](<${url}>)`;
+    },
+  );
+  return normalized.replace(/\u0000(\d+)\u0000/g, (_, i) => code[Number(i)]);
+}
+
+/**
  * react-markdown 默认只放行 https?/ircs?/mailto/xmpp；这里额外放行内部协议：
  * `asset:`（convertFileSrc 生成的本地文件 URL）与 `citation:`（问答引用标记），
  * 其余仍走默认消毒。
@@ -31,11 +57,20 @@ export const markdownUrlTransform: UrlTransform = (url) => {
   return defaultUrlTransform(url);
 };
 
+/** 容错解码：react-markdown 会把链接目标里的空格等字符 percent-encode，这里还原真实路径。 */
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
 /**
  * 把 markdown 图片 src 转成 WebView 可加载的 URL：
  * - http(s)/asset/data/blob 等协议原样放行；
- * - 绝对本地路径 → convertFileSrc（asset://）；
- * - 相对路径 → 用 baseDir 拼成绝对路径后再 convertFileSrc（无 baseDir 则原样返回，备用能力）。
+ * - 绝对本地路径 → 先解码（react-markdown 已 percent-encode 空格等）再 convertFileSrc（asset://）；
+ * - 相对路径 → 用 baseDir 拼成绝对路径后同样处理（无 baseDir 则原样返回，备用能力）。
  */
 export function resolveImgSrc(
   src: string | undefined,
@@ -44,10 +79,10 @@ export function resolveImgSrc(
   if (!src) return src;
   if (/^(https?:|asset:|data:|blob:)/i.test(src)) return src;
   if (/^[A-Za-z]:[\\/]/.test(src) || src.startsWith("/")) {
-    return convertFileSrc(src);
+    return convertFileSrc(safeDecode(src));
   }
   if (baseDir) {
-    return convertFileSrc(`${baseDir}/${src.replace(/^\.\//, "")}`);
+    return convertFileSrc(safeDecode(`${baseDir}/${src.replace(/^\.\//, "")}`));
   }
   return src;
 }

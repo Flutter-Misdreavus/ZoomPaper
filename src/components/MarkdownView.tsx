@@ -2,9 +2,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import rehypeRaw from "rehype-raw";
 import {
   katexOptions,
   markdownUrlTransform,
+  normalizeImageUrls,
   normalizeLatex,
   resolveImgSrc,
 } from "@/lib/markdown";
@@ -22,13 +24,13 @@ export function MarkdownView({ markdown, className, baseDir }: Props) {
     <article className={`prose prose-neutral max-w-none dark:prose-invert ${className ?? ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[[rehypeKatex, katexOptions]]}
+        rehypePlugins={[rehypeRaw, [rehypeKatex, katexOptions]]}
         urlTransform={markdownUrlTransform}
         components={{
           img: ({ src, alt }) => <img src={resolveImgSrc(src, baseDir)} alt={alt} />,
         }}
       >
-        {normalizeLatex(markdown)}
+        {normalizeLatex(normalizeImageUrls(markdown))}
       </ReactMarkdown>
     </article>
   );
