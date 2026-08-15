@@ -337,7 +337,11 @@ pub fn save_translation(
         )
         .map_err(|e| e.to_string())?
     };
-    let json = serde_json::to_string_pretty(&chunks).map_err(|e| e.to_string())?;
+    let file = crate::translate::TranslationFile {
+        version: crate::translate::CURRENT_VERSION,
+        chunks,
+    };
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     let path = Path::new(&md_path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -368,8 +372,17 @@ pub fn get_translation(
         return Ok(None);
     }
     let json = crate::fs::read_md(&path).map_err(|e| e.to_string())?;
-    let chunks = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    Ok(Some(chunks))
+    // 新版结构为 { version, chunks }；旧版缓存是纯数组 [{en,zh},...]（或文件损坏）——
+    // 解析失败一律视为无缓存返回 None，让前端重新翻译，不把解析错误抛给用户。
+    let file: crate::translate::TranslationFile = match serde_json::from_str(&json) {
+        Ok(f) => f,
+        Err(_) => return Ok(None),
+    };
+    // 旧版本号（格式已变更）同样视为不存在
+    if file.version != crate::translate::CURRENT_VERSION {
+        return Ok(None);
+    }
+    Ok(Some(file.chunks))
 }
 
 // ---------- RAG 问答 ----------

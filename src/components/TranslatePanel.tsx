@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
@@ -13,6 +13,7 @@ import {
   buildZhDoc,
   chunkMarkdown,
   pairBlocks,
+  splitReferences,
   stripStandaloneImagesAndMath,
 } from "@/lib/translate";
 import { FileText, Languages, Loader2, RefreshCw } from "lucide-react";
@@ -30,9 +31,9 @@ interface Props {
 }
 
 /**
- * AI 翻译：把论文 paper.md 分块译成中文，本地缓存为 translation.json。
- * 纯英 = 原文；纯中 = 中文全文；对照 = 把英文原文与中文全文各自按段落切分后逐段配对
- * （英文段黑色 + 中文段浅蓝色）。
+ * AI 翻译：把论文 paper.md 正文分块译成中文（参考文献不翻译、不进 LLM 省 token），
+ * 本地缓存为 translation.json（带版本号）。纯英 = 完整原文；纯中 = 正文译文 + 末尾英文原版
+ * 参考文献；对照 = 正文按段落逐段配对（英文段黑色 + 中文段浅蓝色）+ 末尾英文原版参考文献。
  */
 export function TranslatePanel({ paperId }: Props) {
   const [mode, setMode] = useState<Mode>("en");
@@ -42,6 +43,8 @@ export function TranslatePanel({ paperId }: Props) {
   const [translating, setTranslating] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 英文原文切成「正文 + 参考文献」：参考文献不翻译、不进 LLM，译文末尾附英文原版
+  const { body, references } = useMemo(() => splitReferences(enMd ?? ""), [enMd]);
 
   // 加载英文原文 + 翻译缓存
   useEffect(() => {
@@ -66,7 +69,8 @@ export function TranslatePanel({ paperId }: Props) {
     setTranslating(true);
     setError(null);
     try {
-      const parts = chunkMarkdown(enMd);
+      // 只翻译正文，参考文献不进 LLM（省 token）
+      const parts = chunkMarkdown(body);
       const zh: string[] = [];
       for (let i = 0; i < parts.length; i++) {
         zh.push(await translateChunk(parts[i]));
@@ -83,19 +87,21 @@ export function TranslatePanel({ paperId }: Props) {
     }
   }
 
-  // 当前模式对应的文档（纯英/纯中）；对照模式在渲染分支单独逐段渲染
+  // 当前模式对应的文档（纯英/纯中）；对照模式在渲染分支单独逐段渲染。
+  // 纯中：正文译文 + 末尾附英文原版参考文献。
   function docFor(): string | null {
     if (mode === "en") return enMd;
     if (!chunks) return null;
-    return mode === "zh" ? buildZhDoc(chunks) : null;
+    const zh = buildZhDoc(chunks);
+    return mode === "zh" ? (references ? `${zh}\n\n${references}` : zh) : null;
   }
 
   const doc = docFor();
   const needsTranslate = mode !== "en" && !chunks;
-  // 对照模式：英文原文与中文全文各自按段切分后配对
+  // 对照模式：正文（不含参考文献）与中文全文各自按段切分后配对
   const bi =
-    mode === "bi" && chunks && enMd
-      ? pairBlocks(enMd, buildZhDoc(chunks))
+    mode === "bi" && chunks && body
+      ? pairBlocks(body, buildZhDoc(chunks))
       : null;
 
   return (
@@ -172,6 +178,12 @@ export function TranslatePanel({ paperId }: Props) {
             {bi.restEn.map((en, i) => (
               <MarkdownView key={`un-${i}`} markdown={en} />
             ))}
+            {/* 末尾附英文原版参考文献（不翻译） */}
+            {references && (
+              <div className="border-t pt-3">
+                <MarkdownView markdown={references} />
+              </div>
+            )}
           </div>
         ) : needsTranslate ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">

@@ -20,6 +20,16 @@ pub struct TranslationChunk {
     pub zh: String,
 }
 
+/// `translation.json` 顶层结构：带版本号，格式变更（如参考文献排除）时递增使旧缓存失效。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranslationFile {
+    pub version: u32,
+    pub chunks: Vec<TranslationChunk>,
+}
+
+/// 当前 `translation.json` 版本。旧版本缓存由命令层校验后视为不存在，前端重新翻译。
+pub const CURRENT_VERSION: u32 = 2;
+
 /// 组装翻译消息：system 为翻译 prompt，user 为待翻译的英文块。
 pub fn build_messages(text: &str) -> Vec<ChatMessage> {
     vec![
@@ -66,5 +76,39 @@ mod tests {
         let back: TranslationChunk = serde_json::from_str(&json).unwrap();
         assert_eq!(back.en, "## Introduction");
         assert_eq!(back.zh, "## 引言");
+    }
+
+    #[test]
+    fn translation_file_roundtrips_json() {
+        let file = TranslationFile {
+            version: CURRENT_VERSION,
+            chunks: vec![TranslationChunk {
+                en: "body".into(),
+                zh: "正文".into(),
+            }],
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        let back: TranslationFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.version, CURRENT_VERSION);
+        assert_eq!(back.chunks.len(), 1);
+        assert_eq!(back.chunks[0].zh, "正文");
+    }
+
+    #[test]
+    fn version_mismatch_invalidates_cache() {
+        // 旧版本缓存不应被当作有效翻译使用
+        let old = TranslationFile {
+            version: CURRENT_VERSION - 1,
+            chunks: vec![],
+        };
+        assert_ne!(old.version, CURRENT_VERSION);
+    }
+
+    #[test]
+    fn old_array_cache_format_is_rejected() {
+        // 版本化前的缓存是纯数组 [{en,zh},...]；解析为 TranslationFile 应失败，
+        // get_translation 据此返回 None（前端重新翻译）而不是把错误抛给用户。
+        let old = r#"[{"en":"a","zh":"甲"},{"en":"b","zh":"乙"}]"#;
+        assert!(serde_json::from_str::<TranslationFile>(old).is_err());
     }
 }

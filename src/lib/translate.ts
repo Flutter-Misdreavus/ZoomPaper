@@ -154,3 +154,38 @@ export function stripStandaloneImagesAndMath(md: string): string {
   guarded = guarded.replace(/\n{3,}/g, "\n\n");
   return guarded.replace(/\u0000(\d+)\u0000/g, (_, i) => code[Number(i)]);
 }
+
+
+/**
+ * 把英文 Markdown 切成「正文 + 参考文献」两段，供翻译时排除参考文献（省 token）。
+ * 判定：逐行扫描（跳过 ``` 与 $$ 围栏块），命中「整行只有 References/Bibliography」的标题行即切分
+ * ——支持 `## REFERENCES` / `# References` / `## Bibliography` / `References` / `REFERENCES.` /
+ * `## 8 REFERENCES` 等变体；整行锚定避免误判正文句子或其它小节标题。取第一个命中；
+ * 命中行起（含标题）到文末为 references。未命中则整篇视为 body（保守，不丢内容）。
+ */
+export function splitReferences(md: string): { body: string; references: string } {
+  const lines = md.split("\n");
+  const RE = /^(#{1,6}\s*)?\d*\.?\s*(references|bibliography)\s*[.:]?\s*$/i;
+  let idx = -1;
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (fence) {
+      if (t.startsWith(fence)) fence = null;
+      continue;
+    }
+    if (t.startsWith("```") || t.startsWith("$$")) {
+      fence = t.startsWith("```") ? "```" : "$$";
+      continue;
+    }
+    if (RE.test(t)) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx === -1) return { body: md, references: "" };
+  return {
+    body: lines.slice(0, idx).join("\n"),
+    references: lines.slice(idx).join("\n"),
+  };
+}
