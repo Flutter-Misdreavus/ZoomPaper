@@ -10,9 +10,6 @@ import {
   type FeynmanMessage,
 } from "@/lib/api";
 import {
-  ChevronDown,
-  ChevronUp,
-  FileText,
   GraduationCap,
   Loader2,
   Play,
@@ -38,8 +35,6 @@ export function FeynmanChat({ paperId }: Props) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<string | null>(null);
-  const [notes, setNotes] = useState<string | null>(null);
-  const [notesOpen, setNotesOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -51,7 +46,6 @@ export function FeynmanChat({ paperId }: Props) {
       .then((conv) => {
         if (cancelled || !conv) return;
         setConvId(conv.id);
-        setNotes(conv.notes ?? null);
         try {
           setMessages(JSON.parse(conv.messages) as FeynmanMessage[]);
         } catch {
@@ -68,7 +62,7 @@ export function FeynmanChat({ paperId }: Props) {
   // 新消息 / 复盘滚动到底部
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, sending, review, notes, starting]);
+  }, [messages, sending, review, starting]);
 
   async function handleStart() {
     if (starting) return;
@@ -77,8 +71,6 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const turn = await feynmanStart(paperId);
       setConvId(turn.conversation_id);
-      if (turn.notes) setNotes(turn.notes);
-      setNotesOpen(true);
       setMessages([{ role: "assistant", content: turn.reply }]);
     } catch (e) {
       setError(String(e));
@@ -98,7 +90,6 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const turn = await feynmanTurn(content, paperId, convId);
       setMessages((prev) => [...prev, { role: "assistant", content: turn.reply }]);
-      if (turn.notes) setNotes(turn.notes);
       if (!convId) setConvId(turn.conversation_id);
     } catch (e) {
       setError(String(e));
@@ -125,8 +116,6 @@ export function FeynmanChat({ paperId }: Props) {
     setConvId(null);
     setMessages([]);
     setReview(null);
-    setNotes(null);
-    setNotesOpen(true);
     setError(null);
   }
 
@@ -163,32 +152,6 @@ export function FeynmanChat({ paperId }: Props) {
         </div>
       )}
 
-      {/* 要点笔记：独立小窗口，固定在消息区上方，可收纳/展开 */}
-      {notes && (
-        <div className="overflow-hidden rounded-lg border border-border bg-background">
-          <button
-            onClick={() => setNotesOpen((o) => !o)}
-            title={notesOpen ? "收起要点笔记" : "展开要点笔记"}
-            className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-          >
-            <FileText className="h-3.5 w-3.5 shrink-0 text-primary" />
-            <span>要点笔记</span>
-            <span className="ml-auto text-muted-foreground">
-              {notesOpen ? (
-                <ChevronUp className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronDown className="h-3.5 w-3.5" />
-              )}
-            </span>
-          </button>
-          {notesOpen && (
-            <div className="max-h-60 overflow-y-auto border-t px-4 py-3">
-              <MarkdownView markdown={notes} className="prose-sm" />
-            </div>
-          )}
-        </div>
-      )}
-
       <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
         {loadingHistory ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -198,15 +161,17 @@ export function FeynmanChat({ paperId }: Props) {
         ) : starting ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin" />
-            <p className="text-sm">正在通读全文并整理要点…</p>
+            <p className="text-sm">正在生成开场白…</p>
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center text-muted-foreground">
             <GraduationCap className="h-10 w-10" />
-            <p className="text-sm">点击开始，AI 会通读全文，以学生身份开场并向你提问。</p>
+            <p className="max-w-md text-sm">
+              你已经读完论文，扮演老师向学生讲解论文概念。可直接输入开始讲解，或让 AI 先开场。
+            </p>
             <Button onClick={() => void handleStart()} disabled={starting} className="pressable gap-2">
               <Play className="h-4 w-4" />
-              开始
+              AI 开场白
             </Button>
           </div>
         ) : (
@@ -254,35 +219,33 @@ export function FeynmanChat({ paperId }: Props) {
         </div>
       )}
 
-      {messages.length > 0 && (
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
-            placeholder="向这个学生讲解论文里的一个概念…（Enter 发送，Shift+Enter 换行）"
-            className="min-h-11 flex-1 resize-none"
-            rows={1}
-          />
-          <Button
-            size="icon"
-            onClick={() => void handleSend()}
-            disabled={sending || !input.trim()}
-            className="pressable h-11 w-11"
-          >
-            {sending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <SendHorizonal className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-      )}
+      <div className="flex items-end gap-2">
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void handleSend();
+            }
+          }}
+          placeholder="讲解你理解的论文概念…（Enter 发送，Shift+Enter 换行）"
+          className="min-h-11 flex-1 resize-none"
+          rows={1}
+        />
+        <Button
+          size="icon"
+          onClick={() => void handleSend()}
+          disabled={sending || !input.trim()}
+          className="pressable h-11 w-11"
+        >
+          {sending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <SendHorizonal className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
     </div>
   );
 }

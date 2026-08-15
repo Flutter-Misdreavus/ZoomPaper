@@ -57,6 +57,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE conversations ADD COLUMN notes TEXT;
     "#,
+    // v4：conversations 增加 summary 列（费曼会话滚动「教学进展」摘要，控长对话 token）
+    r#"
+    ALTER TABLE conversations ADD COLUMN summary TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。

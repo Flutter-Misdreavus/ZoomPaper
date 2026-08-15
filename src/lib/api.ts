@@ -76,8 +76,10 @@ export interface Conversation {
   messages: string;
   created_at: number;
   updated_at: number;
-  /** 费曼会话首轮生成的要点笔记（qa 会话为 null） */
+  /** 遗留：旧版费曼要点笔记，已弃用 */
   notes?: string | null;
+  /** 费曼会话滚动「教学进展」摘要（长对话控 token；qa 会话为 null） */
+  summary?: string | null;
 }
 
 export interface FeynmanMessage {
@@ -88,8 +90,6 @@ export interface FeynmanMessage {
 export interface FeynmanTurn {
   conversation_id: string;
   reply: string;
-  /** 首轮生成时返回的要点笔记，后续轮次为 null */
-  notes?: string | null;
 }
 
 export type BlogLevel = "popular" | "intro" | "expert";

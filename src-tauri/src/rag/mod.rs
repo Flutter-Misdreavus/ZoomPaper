@@ -9,6 +9,7 @@ use crate::db::models::SearchHit;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use zerocopy::AsBytes;
@@ -315,6 +316,70 @@ pub fn search_with_embedding(
     Ok(out)
 }
 
+/// 某篇论文按阅读顺序去重后的非空章节列表（供费曼章节地图 TOC，零 token 成本）。
+pub fn sections_for_paper(conn: &Connection, paper_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT section FROM paper_chunks WHERE paper_id = ?1 AND section <> '' \
+         GROUP BY section ORDER BY MIN(id)",
+    )?;
+    let rows = stmt.query_map([paper_id], |r| r.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// 把检索命中的段落升级为「章节级全文」：按相关性（distance 升序）取前 `max_sections`
+/// 个不同章节，拉取每个章节的完整文本（该 section 下所有 chunk 按 id 拼接）。
+/// 单个章节按 `max_section_chars`、总量按 `max_total_chars` 封顶；返回 `(section, text)`。
+pub fn expand_sections(
+    conn: &Connection,
+    paper_id: &str,
+    hits: &[SearchHit],
+    max_sections: usize,
+    max_section_chars: usize,
+    max_total_chars: usize,
+) -> Result<Vec<(String, String)>> {
+    let mut sorted: Vec<&SearchHit> = hits.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.distance
+            .partial_cmp(&b.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    for hit in sorted {
+        let section = hit.section.trim();
+        if section.is_empty() || !seen.insert(section.to_string()) {
+            continue;
+        }
+        if out.len() >= max_sections || total >= max_total_chars {
+            break;
+        }
+        let mut text = String::new();
+        let mut stmt = conn.prepare(
+            "SELECT content FROM paper_chunks WHERE paper_id = ?1 AND section = ?2 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![paper_id, section], |r| r.get::<_, String>(0))?;
+        for part in rows {
+            let part = part?;
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&part);
+            if text.chars().count() >= max_section_chars {
+                text = text.chars().take(max_section_chars).collect();
+                break;
+            }
+        }
+        if text.trim().is_empty() {
+            continue;
+        }
+        total += text.chars().count();
+        out.push((section.to_string(), text));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +489,89 @@ mod tests {
         // paper_id 过滤：查不存在的论文，返回空
         let filtered = search_with_embedding(&conn, &v0, 2, Some("paper-b")).unwrap();
         assert!(filtered.is_empty());
+    }
+
+    fn insert_chunks_with_sections(conn: &Connection, sections: &[(&str, &str)]) {
+        let drafts: Vec<ChunkDraft> = sections
+            .iter()
+            .map(|(s, c)| ChunkDraft {
+                section: s.to_string(),
+                content: c.to_string(),
+                start_block: 0,
+                end_block: 0,
+                page_idx: Some(0),
+                bbox: None,
+            })
+            .collect();
+        let embeddings = vec![vec![0.0f32; 384]; drafts.len()];
+        insert_chunks(conn, "paper-a", &drafts, &embeddings).unwrap();
+    }
+
+    fn hit_for(section: &str, content: &str, distance: f32) -> SearchHit {
+        SearchHit {
+            chunk_id: 1,
+            paper_id: "paper-a".into(),
+            paper_title: "A".into(),
+            section: section.into(),
+            content: content.into(),
+            page_idx: Some(0),
+            distance,
+        }
+    }
+
+    #[test]
+    fn sections_for_paper_returns_ordered_distinct_nonempty() {
+        let conn = setup_db();
+        insert_chunks_with_sections(
+            &conn,
+            &[
+                ("Intro", "alpha"),
+                ("Intro", "beta"),
+                ("Method", "gamma"),
+                ("", "no heading"), // 空 section 应跳过
+                ("Intro", "delta"),
+            ],
+        );
+        let sections = sections_for_paper(&conn, "paper-a").unwrap();
+        assert_eq!(sections, vec!["Intro", "Method"]);
+    }
+
+    #[test]
+    fn expand_sections_picks_top_sections_dedups_and_caps() {
+        let conn = setup_db();
+        insert_chunks_with_sections(
+            &conn,
+            &[("Intro", "intro one"), ("Intro", "intro two"), ("Method", "method text")],
+        );
+
+        // 按 distance 排序：Method(0.1) 最先，Intro 两个命中去重为一个章节
+        let hits = vec![
+            hit_for("Intro", "intro one", 0.3),
+            hit_for("Method", "method text", 0.1),
+            hit_for("Intro", "intro two", 0.5),
+        ];
+        let out = expand_sections(&conn, "paper-a", &hits, 2, 1000, 2000).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "Method");
+        assert_eq!(out[0].1, "method text");
+        assert_eq!(out[1].0, "Intro");
+        assert_eq!(out[1].1, "intro one\nintro two");
+
+        // max_sections=1 → 只取最相关章节
+        let one = expand_sections(&conn, "paper-a", &hits, 1, 1000, 2000).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, "Method");
+    }
+
+    #[test]
+    fn expand_sections_respects_char_cap() {
+        let conn = setup_db();
+        let content = "a".repeat(100);
+        insert_chunks_with_sections(&conn, &[("Method", content.as_str())]);
+        let hits = vec![hit_for("Method", "x", 0.1)];
+
+        let out = expand_sections(&conn, "paper-a", &hits, 2, 10, 2000).unwrap();
+        assert_eq!(out[0].1.chars().count(), 10);
     }
 
     /// 真实端到端：真实数据库 + 真实 content_list + 真实 embedding 模型。

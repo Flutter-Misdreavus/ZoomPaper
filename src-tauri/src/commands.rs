@@ -481,7 +481,7 @@ pub async fn ask_question(
 #[tauri::command]
 pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String> {
     let conn = db.conn();
-    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
+    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary \
                FROM conversations WHERE type = 'qa' ORDER BY updated_at DESC";
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -495,6 +495,7 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
                 notes: r.get(7)?,
+                summary: r.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -509,7 +510,7 @@ pub fn get_conversation(
 ) -> Result<Conversation, String> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary \
          FROM conversations WHERE id = ?1",
         [&conversation_id],
         |r| {
@@ -522,6 +523,7 @@ pub fn get_conversation(
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
                 notes: r.get(7)?,
+                summary: r.get(8)?,
             })
         },
     )
@@ -530,8 +532,8 @@ pub fn get_conversation(
 
 // ---------- 费曼学习法 ----------
 
-/// 开始费曼会话：通读全文生成要点笔记 + 学生开场白，并新建会话持久化。
-/// 无需用户输入；返回开场白 + 要点笔记 + 新会话 id。
+/// 开始费曼会话：首轮通读论文全文，生成学生开场白，并新建会话持久化。
+/// 无需用户输入；返回开场白 + 新会话 id。
 #[tauri::command]
 pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
@@ -539,7 +541,7 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
 
     let now = chrono::Utc::now().timestamp();
 
-    // 锁内：读论文 md 路径（不建会话）
+    // 锁内：读论文 md 路径
     let md_path: String = {
         let conn = db.conn();
         conn.query_row(
@@ -550,19 +552,24 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         .map_err(|e| e.to_string())?
     };
 
-    // 无锁：通读全文生成要点笔记
+    // 无锁：首轮通读全文（一次性，作为开场白上下文）
     let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
-    let notes = crate::feynman::generate_digest(&llm, &markdown)
-        .await
-        .map_err(|e| e.to_string())?;
+    let full_paper = crate::feynman::build_full_paper(&markdown);
 
-    // 无锁：生成学生开场白
+    // 锁内：读章节地图（TOC）
+    let toc = {
+        let conn = db.conn();
+        let sections = crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
+        crate::feynman::build_toc(&sections)
+    };
+
+    // 无锁：生成学生开场白（基于论文全文）
     let opening = llm
-        .chat(&crate::feynman::build_start_messages(&notes))
+        .chat(&crate::feynman::build_start_messages(&toc, &full_paper))
         .await
         .map_err(|e| e.to_string())?;
 
-    // 锁内：新建会话并一次性写入 notes + 开场白消息
+    // 锁内：新建会话并写入开场白消息
     let conv_id = Uuid::new_v4().to_string();
     let history = vec![FeynmanMessage {
         role: Role::Assistant,
@@ -573,9 +580,9 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         let conn = db.conn();
         conn.execute(
             "INSERT INTO conversations \
-             (id, paper_id, type, title, messages, notes, created_at, updated_at) \
-             VALUES (?1, ?2, 'feynman', '费曼学习', ?3, ?4, ?5, ?5)",
-            params![&conv_id, &paper_id, &messages_json, &notes, now],
+             (id, paper_id, type, title, messages, created_at, updated_at) \
+             VALUES (?1, ?2, 'feynman', '费曼学习', ?3, ?4, ?4)",
+            params![&conv_id, &paper_id, &messages_json, now],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -583,13 +590,13 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
     Ok(FeynmanTurn {
         conversation_id: conv_id,
         reply: opening,
-        notes: Some(notes),
     })
 }
 
-/// 一轮费曼对话：读/生成要点笔记 + 检索相关段落 + LLM 学生式回应，并持久化。
+/// 一轮费曼对话：检索相关章节全文 + 章节地图 + 历史滚动窗口摘要 + LLM 学生式回应，并持久化。
 /// `conversation_id` 为 `Some` 时续接多轮；否则新建 `type='feynman'` 会话。
-/// 要点笔记按会话存储（`conversations.notes`）：新会话首轮通读全文生成，后续轮次复用。
+/// 上下文策略：TOC 常驻 system；每轮带命中的章节全文；历史只发最近 `WINDOW_MAX_MSGS`
+/// 条原文 + 滚动「教学进展」摘要（窗口溢出时在线压缩一次，主模型）。
 #[tauri::command]
 pub async fn feynman_turn(
     db: State<'_, Db>,
@@ -603,9 +610,9 @@ pub async fn feynman_turn(
     let now = chrono::Utc::now().timestamp();
     let conv_id: String;
     let mut history: Vec<FeynmanMessage>;
-    let mut notes: Option<String>;
+    let summary: Option<String>;
 
-    // 取/建会话，并读论文 md 路径 + 会话已有笔记
+    // 取/建会话，读历史 + 已有「教学进展」摘要 + 论文 md 路径
     let md_path: String;
     {
         let conn = db.conn();
@@ -618,15 +625,15 @@ pub async fn feynman_turn(
             .map_err(|e| e.to_string())?;
         match conversation_id {
             Some(id) => {
-                let (messages_json, existing_notes): (String, Option<String>) = conn
+                let (messages_json, existing_summary): (String, Option<String>) = conn
                     .query_row(
-                        "SELECT messages, notes FROM conversations WHERE id = ?1",
+                        "SELECT messages, summary FROM conversations WHERE id = ?1",
                         [&id],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .map_err(|e| format!("会话不存在: {e}"))?;
                 history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
-                notes = existing_notes;
+                summary = existing_summary;
                 conv_id = id;
             }
             None => {
@@ -640,49 +647,69 @@ pub async fn feynman_turn(
                 )
                 .map_err(|e| e.to_string())?;
                 history = vec![];
-                notes = None;
+                summary = None;
             }
         }
     }
 
-    // 新会话首轮：通读全文并生成要点笔记（已有会话复用其笔记）
-    let mut new_notes: Option<String> = None;
-    if notes.is_none() {
+    // 无锁：首轮（新会话）通读全文，放入 system；已有会话不带全文
+    let full_paper: Option<String> = if history.is_empty() {
         let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
-        let digest = crate::feynman::generate_digest(&llm, &markdown)
-            .await
-            .map_err(|e| e.to_string())?;
-        notes = Some(digest.clone());
-        new_notes = Some(digest);
-    }
+        Some(crate::feynman::build_full_paper(&markdown))
+    } else {
+        None
+    };
 
-    // 检索相关段落 + 组装（同步，用完即释放数据库锁）；新生成笔记先写回
-    let messages = {
+    // 锁内：检索相关段落 → 升级为章节全文 + 章节地图（纯 DB，无 LLM）
+    let (toc, context) = {
         let conn = db.conn();
-        if let Some(n) = &new_notes {
-            conn.execute(
-                "UPDATE conversations SET notes = ?2 WHERE id = ?1",
-                params![&conv_id, n],
-            )
-            .map_err(|e| e.to_string())?;
-        }
         let hits = crate::rag::search(&conn, &message, crate::feynman::TOP_K, Some(&paper_id))
             .map_err(|e| e.to_string())?;
-        let context = crate::feynman::build_context(&hits);
-        crate::feynman::build_turn_messages(
-            notes.as_deref().unwrap_or(""),
-            &context,
-            &history,
-            &message,
+        let sections = crate::rag::expand_sections(
+            &conn,
+            &paper_id,
+            &hits,
+            crate::feynman::MAX_SECTIONS,
+            crate::feynman::SECTION_MAX_CHARS,
+            crate::feynman::SECTION_CTX_TOTAL_MAX,
+        )
+        .map_err(|e| e.to_string())?;
+        let context = crate::feynman::build_section_context(&sections);
+        let toc_sections =
+            crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
+        let toc = crate::feynman::build_toc(&toc_sections);
+        (toc, context)
+    };
+
+    // 无锁：历史滑出窗口则在线压缩「教学进展」摘要（窗口溢出时一次，非每轮）
+    let (overflow, window) =
+        crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
+    let new_summary: Option<String> = if overflow.is_empty() {
+        summary
+    } else {
+        Some(
+            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+                .await
+                .map_err(|e| e.to_string())?,
         )
     };
 
-    // LLM（await 期间不持有数据库锁）
-    let reply = crate::feynman::turn(&llm, &messages)
-        .await
-        .map_err(|e| e.to_string())?;
+    // 无锁：组装并调用 LLM（await 期间不持有数据库锁）
+    let reply = crate::feynman::turn(
+        &llm,
+        &crate::feynman::build_turn_messages(
+            &toc,
+            full_paper.as_deref(),
+            new_summary.as_deref(),
+            &context,
+            &window,
+            &message,
+        ),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
-    // 追加 user + assistant 两条消息并写回
+    // 锁内：追加 user + assistant 两条消息并写回（含滚动摘要）
     {
         let conn = db.conn();
         history.push(FeynmanMessage {
@@ -695,8 +722,8 @@ pub async fn feynman_turn(
         });
         let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
-            params![&conv_id, messages_json, now],
+            "UPDATE conversations SET messages = ?2, summary = ?3, updated_at = ?4 WHERE id = ?1",
+            params![&conv_id, messages_json, new_summary, now],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -704,11 +731,11 @@ pub async fn feynman_turn(
     Ok(FeynmanTurn {
         conversation_id: conv_id,
         reply,
-        notes: new_notes,
     })
 }
 
-/// 生成教学复盘：基于该会话完整历史，评估讲解质量（不写回 messages）。
+/// 生成教学复盘：基于该会话历史（滚动摘要 + 最近窗口）评估讲解质量（不写回 messages）。
+/// 长会话下复盘输入同样有上界；若摘要尚未覆盖滑出历史，先在线压缩一次再复盘。
 #[tauri::command]
 pub async fn feynman_review(
     db: State<'_, Db>,
@@ -717,19 +744,35 @@ pub async fn feynman_review(
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
 
-    let history: Vec<FeynmanMessage> = {
+    let (history, summary): (Vec<FeynmanMessage>, Option<String>) = {
         let conn = db.conn();
-        let messages_json: String = conn
+        let (messages_json, summary): (String, Option<String>) = conn
             .query_row(
-                "SELECT messages FROM conversations WHERE id = ?1",
+                "SELECT messages, summary FROM conversations WHERE id = ?1",
                 [&conversation_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|e| format!("会话不存在: {e}"))?;
-        serde_json::from_str(&messages_json).map_err(|e| e.to_string())?
+        (
+            serde_json::from_str(&messages_json).map_err(|e| e.to_string())?,
+            summary,
+        )
     };
 
-    crate::feynman::review(&llm, &history)
+    let (overflow, window) =
+        crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
+    // 有滑出历史则把当前 overflow 并入摘要，保证复盘覆盖全量进展（在线一次）
+    let summary = if overflow.is_empty() {
+        summary
+    } else {
+        Some(
+            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    };
+
+    crate::feynman::review(&llm, summary.as_deref(), &window)
         .await
         .map_err(|e| e.to_string())
 }
@@ -742,7 +785,7 @@ pub fn get_feynman_conversation(
 ) -> Result<Option<Conversation>, String> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary \
          FROM conversations WHERE paper_id = ?1 AND type = 'feynman' \
          ORDER BY updated_at DESC LIMIT 1",
         [&paper_id],
@@ -756,6 +799,7 @@ pub fn get_feynman_conversation(
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
                 notes: r.get(7)?,
+                summary: r.get(8)?,
             })
         },
     )

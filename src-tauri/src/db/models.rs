@@ -58,6 +58,8 @@ pub struct Conversation {
     pub messages: String,
     pub created_at: i64,
     pub updated_at: i64,
-    /// 费曼会话首轮生成的要点笔记（qa 会话恒为 None）。
+    /// 费曼会话滚动「教学进展」摘要（长对话控 token；qa 会话恒为 None）。
+    pub summary: Option<String>,
+    /// 遗留：旧版费曼要点笔记，已弃用（保留惰性列，不再写入）。
     pub notes: Option<String>,
 }
