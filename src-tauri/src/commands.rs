@@ -3,10 +3,11 @@
 use crate::ai::llm::Role;
 use crate::ai::mineru::MineruClient;
 use crate::db::models::{Conversation, Paper, SearchHit};
+use crate::feynman::{FeynmanMessage, FeynmanTurn};
 use crate::qa::{Answer, QaMessage};
 use crate::db::Db;
 use crate::settings::Settings;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::path::Path;
 use tauri::State;
 use uuid::Uuid;
@@ -403,7 +404,7 @@ pub async fn ask_question(
 #[tauri::command]
 pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String> {
     let conn = db.conn();
-    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at \
+    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
                FROM conversations WHERE type = 'qa' ORDER BY updated_at DESC";
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -416,6 +417,7 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
                 messages: r.get(4)?,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
+                notes: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -430,7 +432,7 @@ pub fn get_conversation(
 ) -> Result<Conversation, String> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, paper_id, type, title, messages, created_at, updated_at \
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
          FROM conversations WHERE id = ?1",
         [&conversation_id],
         |r| {
@@ -442,9 +444,188 @@ pub fn get_conversation(
                 messages: r.get(4)?,
                 created_at: r.get(5)?,
                 updated_at: r.get(6)?,
+                notes: r.get(7)?,
             })
         },
     )
+    .map_err(|e| e.to_string())
+}
+
+// ---------- 费曼学习法 ----------
+
+/// 一轮费曼对话：读/生成要点笔记 + 检索相关段落 + LLM 学生式回应，并持久化。
+/// `conversation_id` 为 `Some` 时续接多轮；否则新建 `type='feynman'` 会话。
+/// 要点笔记按会话存储（`conversations.notes`）：新会话首轮通读全文生成，后续轮次复用。
+#[tauri::command]
+pub async fn feynman_turn(
+    db: State<'_, Db>,
+    paper_id: String,
+    message: String,
+    conversation_id: Option<String>,
+) -> Result<FeynmanTurn, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now().timestamp();
+    let conv_id: String;
+    let mut history: Vec<FeynmanMessage>;
+    let mut notes: Option<String>;
+
+    // 取/建会话，并读论文 md 路径 + 会话已有笔记
+    let md_path: String;
+    {
+        let conn = db.conn();
+        md_path = conn
+            .query_row(
+                "SELECT md_path FROM papers WHERE id = ?1",
+                [&paper_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        match conversation_id {
+            Some(id) => {
+                let (messages_json, existing_notes): (String, Option<String>) = conn
+                    .query_row(
+                        "SELECT messages, notes FROM conversations WHERE id = ?1",
+                        [&id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|e| format!("会话不存在: {e}"))?;
+                history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
+                notes = existing_notes;
+                conv_id = id;
+            }
+            None => {
+                conv_id = Uuid::new_v4().to_string();
+                let title = crate::qa::truncate(&message, QA_TITLE_CHARS);
+                conn.execute(
+                    "INSERT INTO conversations \
+                     (id, paper_id, type, title, messages, created_at, updated_at) \
+                     VALUES (?1, ?2, 'feynman', ?3, '[]', ?4, ?4)",
+                    params![&conv_id, &paper_id, &title, now],
+                )
+                .map_err(|e| e.to_string())?;
+                history = vec![];
+                notes = None;
+            }
+        }
+    }
+
+    // 新会话首轮：通读全文并生成要点笔记（已有会话复用其笔记）
+    let mut new_notes: Option<String> = None;
+    if notes.is_none() {
+        let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+        let digest = crate::feynman::generate_digest(&llm, &markdown)
+            .await
+            .map_err(|e| e.to_string())?;
+        notes = Some(digest.clone());
+        new_notes = Some(digest);
+    }
+
+    // 检索相关段落 + 组装（同步，用完即释放数据库锁）；新生成笔记先写回
+    let messages = {
+        let conn = db.conn();
+        if let Some(n) = &new_notes {
+            conn.execute(
+                "UPDATE conversations SET notes = ?2 WHERE id = ?1",
+                params![&conv_id, n],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let hits = crate::rag::search(&conn, &message, crate::feynman::TOP_K, Some(&paper_id))
+            .map_err(|e| e.to_string())?;
+        let context = crate::feynman::build_context(&hits);
+        crate::feynman::build_turn_messages(
+            notes.as_deref().unwrap_or(""),
+            &context,
+            &history,
+            &message,
+        )
+    };
+
+    // LLM（await 期间不持有数据库锁）
+    let reply = crate::feynman::turn(&llm, &messages)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 追加 user + assistant 两条消息并写回
+    {
+        let conn = db.conn();
+        history.push(FeynmanMessage {
+            role: Role::User,
+            content: message.clone(),
+        });
+        history.push(FeynmanMessage {
+            role: Role::Assistant,
+            content: reply.clone(),
+        });
+        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
+            params![&conv_id, messages_json, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(FeynmanTurn {
+        conversation_id: conv_id,
+        reply,
+        notes: new_notes,
+    })
+}
+
+/// 生成教学复盘：基于该会话完整历史，评估讲解质量（不写回 messages）。
+#[tauri::command]
+pub async fn feynman_review(
+    db: State<'_, Db>,
+    conversation_id: String,
+) -> Result<String, String> {
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    let history: Vec<FeynmanMessage> = {
+        let conn = db.conn();
+        let messages_json: String = conn
+            .query_row(
+                "SELECT messages FROM conversations WHERE id = ?1",
+                [&conversation_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("会话不存在: {e}"))?;
+        serde_json::from_str(&messages_json).map_err(|e| e.to_string())?
+    };
+
+    crate::feynman::review(&llm, &history)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 取某篇论文最近的费曼会话（供前端恢复进度；无则返回 None）。
+#[tauri::command]
+pub fn get_feynman_conversation(
+    db: State<'_, Db>,
+    paper_id: String,
+) -> Result<Option<Conversation>, String> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes \
+         FROM conversations WHERE paper_id = ?1 AND type = 'feynman' \
+         ORDER BY updated_at DESC LIMIT 1",
+        [&paper_id],
+        |r| {
+            Ok(Conversation {
+                id: r.get(0)?,
+                paper_id: r.get(1)?,
+                conv_type: r.get(2)?,
+                title: r.get(3)?,
+                messages: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+                notes: r.get(7)?,
+            })
+        },
+    )
+    .optional()
     .map_err(|e| e.to_string())
 }
 

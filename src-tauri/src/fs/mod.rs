@@ -61,11 +61,6 @@ pub fn write_extracted_files(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<
     Ok(())
 }
 
-/// 路径是否存在。
-pub fn exists(path: &Path) -> bool {
-    path.exists()
-}
-
 /// 删除整篇论文目录（不存在则视为成功）。
 pub fn remove_paper_dir(library: &Path, paper_id: &str) -> Result<()> {
     let dir = paper_dir(library, paper_id);

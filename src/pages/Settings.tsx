@@ -71,7 +71,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-4 overflow-y-auto">
+    <div className="mx-auto min-h-0 w-full max-w-2xl flex-1 space-y-4 overflow-y-auto">
       <div>
         <h1 className="text-2xl font-bold">设置</h1>
         <p className="text-sm text-muted-foreground">所有 API 信息都在这里配置，数据仅存本机。</p>

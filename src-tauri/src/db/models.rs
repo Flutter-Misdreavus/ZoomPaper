@@ -58,4 +58,6 @@ pub struct Conversation {
     pub messages: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 费曼会话首轮生成的要点笔记（qa 会话恒为 None）。
+    pub notes: Option<String>,
 }

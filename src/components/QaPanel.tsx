@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { QaChat } from "@/components/QaChat";
-import { MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { FeynmanChat } from "@/components/FeynmanChat";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 
 const WIDTH_KEY = "zoompaper.qaWidth";
 const COLLAPSED_KEY = "zoompaper.qaCollapsed";
@@ -117,35 +119,40 @@ export function QaPanel({ paperId, onJumpPage }: Props) {
         {/* 收纳态：整根竖条可点击展开 */}
         <button
           onClick={() => toggleCollapsed(false)}
-          title="展开问答"
+          title="展开对话"
           className={`flex-col items-center gap-2 py-3 text-muted-foreground transition-colors hover:text-foreground ${
             collapsed ? "flex flex-1" : "hidden"
           }`}
         >
           <PanelRightOpen className="h-4 w-4" />
-          <span className="text-xs [writing-mode:vertical-rl]">问答</span>
+          <span className="text-xs [writing-mode:vertical-rl]">对话</span>
         </button>
 
         {/* 展开态：display:none 保持挂载，不丢会话状态 */}
         <div
           className={`min-h-0 flex-1 flex-col ${collapsed ? "hidden" : "flex"}`}
         >
-          <div className="flex items-center justify-between border-b px-3 py-2">
-            <div className="flex items-center gap-1.5 text-sm font-medium">
-              <MessageSquare className="h-4 w-4 text-primary" />
-              问答
+          <Tabs defaultValue="qa" className="flex min-h-0 flex-1 flex-col gap-0">
+            <div className="flex items-center justify-between border-b px-2 py-1.5">
+              <TabsList>
+                <TabsTrigger value="qa">普通问答</TabsTrigger>
+                <TabsTrigger value="feynman">费曼学习法</TabsTrigger>
+              </TabsList>
+              <button
+                onClick={() => toggleCollapsed(true)}
+                title="收起对话"
+                className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <PanelRightClose className="h-4 w-4" />
+              </button>
             </div>
-            <button
-              onClick={() => toggleCollapsed(true)}
-              title="收起问答"
-              className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <PanelRightClose className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col p-3">
-            <QaChat paperId={paperId} onJumpPage={onJumpPage} />
-          </div>
+            <TabsContent value="qa" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
+              <QaChat paperId={paperId} onJumpPage={onJumpPage} />
+            </TabsContent>
+            <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
+              <FeynmanChat paperId={paperId} />
+            </TabsContent>
+          </Tabs>
         </div>
       </aside>
     </div>

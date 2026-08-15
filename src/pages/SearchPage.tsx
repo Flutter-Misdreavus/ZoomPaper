@@ -49,7 +49,7 @@ export function SearchPage({ onOpenPaper }: Props) {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">语义搜索</h1>
         <p className="text-sm text-muted-foreground">按语义检索论文段落，支持中英文</p>

@@ -115,7 +115,7 @@ export function Library({ onOpenPaper }: Props) {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">论文库</h1>

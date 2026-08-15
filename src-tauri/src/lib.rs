@@ -53,6 +53,9 @@ pub fn run() {
             commands::ask_question,
             commands::list_conversations,
             commands::get_conversation,
+            commands::feynman_turn,
+            commands::feynman_review,
+            commands::get_feynman_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

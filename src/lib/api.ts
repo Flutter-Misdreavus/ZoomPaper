@@ -76,6 +76,20 @@ export interface Conversation {
   messages: string;
   created_at: number;
   updated_at: number;
+  /** 费曼会话首轮生成的要点笔记（qa 会话为 null） */
+  notes?: string | null;
+}
+
+export interface FeynmanMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface FeynmanTurn {
+  conversation_id: string;
+  reply: string;
+  /** 首轮生成时返回的要点笔记，后续轮次为 null */
+  notes?: string | null;
 }
 
 export type BlogLevel = "popular" | "intro" | "expert";
@@ -116,3 +130,20 @@ export const listConversations = () =>
 
 export const getConversation = (conversationId: string) =>
   invoke<Conversation>("get_conversation", { conversationId });
+
+export const feynmanTurn = (
+  message: string,
+  paperId: string,
+  conversationId?: string | null,
+) =>
+  invoke<FeynmanTurn>("feynman_turn", {
+    message,
+    paperId,
+    conversationId: conversationId ?? null,
+  });
+
+export const feynmanReview = (conversationId: string) =>
+  invoke<string>("feynman_review", { conversationId });
+
+export const getFeynmanConversation = (paperId: string) =>
+  invoke<Conversation | null>("get_feynman_conversation", { paperId });

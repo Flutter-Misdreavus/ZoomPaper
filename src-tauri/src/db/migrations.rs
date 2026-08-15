@@ -53,6 +53,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE paper_chunks ADD COLUMN page_idx INTEGER;
     ALTER TABLE paper_chunks ADD COLUMN bbox TEXT;
     "#,
+    // v3：conversations 增加 notes 列（费曼会话首轮通读全文生成的要点笔记）
+    r#"
+    ALTER TABLE conversations ADD COLUMN notes TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
