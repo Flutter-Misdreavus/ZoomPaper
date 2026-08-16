@@ -29,6 +29,21 @@ export interface Paper {
   reading_status: string;
   /** unparsed / parsing / ready / failed */
   parse_status: string;
+  /** 所属文件夹 id 列表（多归属；空数组 = 未分类） */
+  folder_ids: string[];
+}
+
+/** 虚拟文件夹（多归属集合式整理容器；不对应磁盘目录） */
+export interface Folder {
+  id: string;
+  name: string;
+  /** 父文件夹 id；null = 顶级 */
+  parent_id: string | null;
+  /** 色板 key（见 folderColors） */
+  color: string;
+  /** 自由文本标签列表 */
+  tags: string[];
+  created_at: number;
 }
 
 export interface SearchHit {
@@ -105,6 +120,38 @@ export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
 export const parsePdf = (paperId: string) => invoke<Paper>("parse_pdf", { paperId });
 export const deletePaper = (paperId: string) => invoke<void>("delete_paper", { paperId });
+
+// ---------- 论文整理（虚拟文件夹） ----------
+
+export const listFolders = () => invoke<Folder[]>("list_folders");
+export const createFolder = (
+  name: string,
+  opts?: { parentId?: string | null; color?: string; tags?: string[] },
+) =>
+  invoke<Folder>("create_folder", {
+    name,
+    parentId: opts?.parentId ?? null,
+    color: opts?.color ?? null,
+    tags: opts?.tags ?? null,
+  });
+export const updateFolder = (
+  folderId: string,
+  opts?: { name?: string | null; color?: string | null; tags?: string[] | null },
+) =>
+  invoke<Folder>("update_folder", {
+    folderId,
+    name: opts?.name ?? null,
+    color: opts?.color ?? null,
+    tags: opts?.tags ?? null,
+  });
+export const deleteFolder = (folderId: string) =>
+  invoke<void>("delete_folder", { folderId });
+export const addPapersToFolder = (paperIds: string[], folderId: string) =>
+  invoke<number>("add_papers_to_folder", { paperIds, folderId });
+export const removePapersFromFolder = (paperIds: string[], folderId: string) =>
+  invoke<number>("remove_papers_from_folder", { paperIds, folderId });
+export const renamePaper = (paperId: string, newTitle: string) =>
+  invoke<Paper>("rename_paper", { paperId, newTitle });
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
 

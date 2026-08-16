@@ -2,7 +2,7 @@
 
 use crate::ai::llm::Role;
 use crate::ai::mineru::MineruClient;
-use crate::db::models::{Conversation, Paper, SearchHit};
+use crate::db::models::{Conversation, Folder, Paper, SearchHit};
 use crate::feynman::{FeynmanMessage, FeynmanTurn};
 use crate::qa::{Answer, QaMessage};
 use crate::db::Db;
@@ -27,10 +27,26 @@ pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
 
 // ---------- 论文 ----------
 
-const PAPER_COLS: &str = "id, title, authors, abstract, pdf_path, md_path, \
-                          blog_md_path, created_at, last_read_at, reading_status, parse_status";
+/// 论文查询公共前缀：LEFT JOIN paper_folders 聚合所属文件夹（多归属）。
+/// 调用方需追加 GROUP BY p.id（及可选 WHERE / ORDER BY）。
+const PAPER_SELECT: &str = "
+    SELECT p.id, p.title, p.authors, p.abstract, p.pdf_path, p.md_path, p.blog_md_path,
+           p.created_at, p.last_read_at, p.reading_status, p.parse_status,
+           GROUP_CONCAT(pf.folder_id)
+    FROM papers p
+    LEFT JOIN paper_folders pf ON pf.paper_id = p.id
+";
 
 fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
+    let folder_ids: Option<String> = row.get(11)?;
+    let folder_ids = folder_ids
+        .map(|s| {
+            s.split(',')
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Paper {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -43,13 +59,18 @@ fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
         last_read_at: row.get(8)?,
         reading_status: row.get(9)?,
         parse_status: row.get(10)?,
+        folder_ids,
     })
 }
 
 #[tauri::command]
 pub fn list_papers(db: State<'_, Db>) -> Result<Vec<Paper>, String> {
+    list_papers_inner(&db)
+}
+
+fn list_papers_inner(db: &Db) -> Result<Vec<Paper>, String> {
     let conn = db.conn();
-    let sql = format!("SELECT {PAPER_COLS} FROM papers ORDER BY created_at DESC");
+    let sql = format!("{PAPER_SELECT} GROUP BY p.id ORDER BY p.created_at DESC");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], row_to_paper)
@@ -59,9 +80,13 @@ pub fn list_papers(db: State<'_, Db>) -> Result<Vec<Paper>, String> {
 
 #[tauri::command]
 pub fn get_paper(db: State<'_, Db>, paper_id: String) -> Result<Paper, String> {
+    get_paper_inner(&db, &paper_id)
+}
+
+fn get_paper_inner(db: &Db, paper_id: &str) -> Result<Paper, String> {
     let conn = db.conn();
-    let sql = format!("SELECT {PAPER_COLS} FROM papers WHERE id = ?1");
-    conn.query_row(&sql, [&paper_id], row_to_paper)
+    let sql = format!("{PAPER_SELECT} WHERE p.id = ?1 GROUP BY p.id");
+    conn.query_row(&sql, [paper_id], row_to_paper)
         .map_err(|e| e.to_string())
 }
 
@@ -119,6 +144,7 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
         last_read_at: None,
         reading_status: "unread".to_string(),
         parse_status: "unparsed".to_string(),
+        folder_ids: vec![],
     };
 
     let conn = db.conn();
@@ -236,6 +262,284 @@ pub fn delete_paper(db: State<'_, Db>, paper_id: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ---------- 论文整理（虚拟文件夹，多归属） ----------
+
+const FOLDER_COLS: &str = "id, name, parent_id, color, tags, created_at";
+
+fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
+    let tags_json: String = row.get(4)?;
+    let tags = serde_json::from_str(&tags_json).unwrap_or_default();
+    Ok(Folder {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        parent_id: row.get(2)?,
+        color: row.get(3)?,
+        tags,
+        created_at: row.get(5)?,
+    })
+}
+
+fn get_folder_by_id(conn: &rusqlite::Connection, folder_id: &str) -> Result<Folder, String> {
+    let sql = format!("SELECT {FOLDER_COLS} FROM folders WHERE id = ?1");
+    conn.query_row(&sql, [folder_id], row_to_folder)
+        .map_err(|e| e.to_string())
+}
+
+/// 同级重名校验：同一 parent_id（含 None=顶级）下不允许同名文件夹。
+fn folder_name_taken(
+    conn: &rusqlite::Connection,
+    parent_id: Option<&str>,
+    name: &str,
+    exclude_id: Option<&str>,
+) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, parent_id FROM folders WHERE name = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([name], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (id, pid) = row.map_err(|e| e.to_string())?;
+        if Some(id.as_str()) == exclude_id {
+            continue;
+        }
+        if pid.as_deref() == parent_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 列出全部文件夹（扁平返回，前端自组树）。
+#[tauri::command]
+pub fn list_folders(db: State<'_, Db>) -> Result<Vec<Folder>, String> {
+    list_folders_inner(&db)
+}
+
+fn list_folders_inner(db: &Db) -> Result<Vec<Folder>, String> {
+    let conn = db.conn();
+    let sql = format!("SELECT {FOLDER_COLS} FROM folders ORDER BY created_at ASC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], row_to_folder)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 新建文件夹（parent_id 为 None = 顶级）。同级重名拒绝。
+#[tauri::command]
+pub fn create_folder(
+    db: State<'_, Db>,
+    name: String,
+    parent_id: Option<String>,
+    color: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Folder, String> {
+    create_folder_inner(&db, &name, parent_id, color, tags)
+}
+
+fn create_folder_inner(
+    db: &Db,
+    name: &str,
+    parent_id: Option<String>,
+    color: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Folder, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("文件夹名称不能为空".into());
+    }
+    let color = color.unwrap_or_else(|| "gray".to_string());
+    let tags = tags.unwrap_or_default();
+    let conn = db.conn();
+    if folder_name_taken(&conn, parent_id.as_deref(), &name, None)? {
+        return Err("同级下已存在同名文件夹".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let tags_json = serde_json::to_string(&tags).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO folders (id, name, parent_id, color, tags, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![&id, &name, parent_id, &color, &tags_json, now],
+    )
+    .map_err(|e| e.to_string())?;
+    get_folder_by_id(&conn, &id)
+}
+
+/// 更新文件夹（重命名 / 改色 / 改标签；parent_id 重组预留，v1 不开放）。
+#[tauri::command]
+pub fn update_folder(
+    db: State<'_, Db>,
+    folder_id: String,
+    name: Option<String>,
+    color: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Folder, String> {
+    update_folder_inner(&db, &folder_id, name, color, tags)
+}
+
+fn update_folder_inner(
+    db: &Db,
+    folder_id: &str,
+    name: Option<String>,
+    color: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<Folder, String> {
+    let conn = db.conn();
+    let (old_name, parent_id): (String, Option<String>) = conn
+        .query_row(
+            "SELECT name, parent_id FROM folders WHERE id = ?1",
+            [folder_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "文件夹不存在".to_string())?;
+
+    let name = name.map(|n| n.trim().to_string()).unwrap_or(old_name);
+    if name.is_empty() {
+        return Err("文件夹名称不能为空".into());
+    }
+    if folder_name_taken(&conn, parent_id.as_deref(), &name, Some(folder_id))? {
+        return Err("同级下已存在同名文件夹".into());
+    }
+
+    let color = color.unwrap_or_else(|| "gray".to_string());
+    let tags = tags.unwrap_or_default();
+    let tags_json = serde_json::to_string(&tags).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE folders SET name = ?2, color = ?3, tags = ?4 WHERE id = ?1",
+        params![folder_id, &name, &color, &tags_json],
+    )
+    .map_err(|e| e.to_string())?;
+    get_folder_by_id(&conn, folder_id)
+}
+
+/// 删除文件夹：子文件夹上移一级（父变为被删文件夹的父），
+/// paper_folders 由外键级联清除；**不删除任何论文**（受影响论文失去该归属）。
+#[tauri::command]
+pub fn delete_folder(db: State<'_, Db>, folder_id: String) -> Result<(), String> {
+    delete_folder_inner(&db, &folder_id)
+}
+
+fn delete_folder_inner(db: &Db, folder_id: &str) -> Result<(), String> {
+    let conn = db.conn();
+    // 子文件夹的父指向被删文件夹的父（顶级则为 NULL）
+    conn.execute(
+        "UPDATE folders SET parent_id = \
+             (SELECT parent_id FROM folders WHERE id = ?1) \
+          WHERE parent_id = ?1",
+        [folder_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute("DELETE FROM folders WHERE id = ?1", [folder_id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("文件夹不存在".into());
+    }
+    Ok(())
+}
+
+/// 把多篇论文加入某文件夹（多归属添加语义；已存在的为 no-op）。返回实际新增条数。
+#[tauri::command]
+pub fn add_papers_to_folder(
+    db: State<'_, Db>,
+    paper_ids: Vec<String>,
+    folder_id: String,
+) -> Result<usize, String> {
+    add_papers_to_folder_inner(&db, &paper_ids, &folder_id)
+}
+
+fn add_papers_to_folder_inner(
+    db: &Db,
+    paper_ids: &[String],
+    folder_id: &str,
+) -> Result<usize, String> {
+    let conn = db.conn();
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM folders WHERE id = ?1",
+            [folder_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists == 0 {
+        return Err("文件夹不存在".into());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let mut added = 0;
+    for pid in paper_ids {
+        let n = conn
+            .execute(
+                "INSERT OR IGNORE INTO paper_folders (paper_id, folder_id, created_at) \
+                 VALUES (?1, ?2, ?3)",
+                params![pid, folder_id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        added += n;
+    }
+    Ok(added)
+}
+
+/// 把多篇论文从某文件夹移除归属（不删除论文）。返回实际移除条数。
+#[tauri::command]
+pub fn remove_papers_from_folder(
+    db: State<'_, Db>,
+    paper_ids: Vec<String>,
+    folder_id: String,
+) -> Result<usize, String> {
+    remove_papers_from_folder_inner(&db, &paper_ids, &folder_id)
+}
+
+fn remove_papers_from_folder_inner(
+    db: &Db,
+    paper_ids: &[String],
+    folder_id: &str,
+) -> Result<usize, String> {
+    let conn = db.conn();
+    let mut removed = 0;
+    for pid in paper_ids {
+        let n = conn
+            .execute(
+                "DELETE FROM paper_folders WHERE paper_id = ?1 AND folder_id = ?2",
+                params![pid, folder_id],
+            )
+            .map_err(|e| e.to_string())?;
+        removed += n;
+    }
+    Ok(removed)
+}
+
+/// 重命名论文（仅更新 title 元数据；磁盘文件不动）。trim 后非空校验。
+#[tauri::command]
+pub fn rename_paper(db: State<'_, Db>, paper_id: String, new_title: String) -> Result<Paper, String> {
+    rename_paper_inner(&db, &paper_id, &new_title)
+}
+
+fn rename_paper_inner(db: &Db, paper_id: &str, new_title: &str) -> Result<Paper, String> {
+    let title = new_title.trim().to_string();
+    if title.is_empty() {
+        return Err("论文标题不能为空".into());
+    }
+    {
+        let conn = db.conn();
+        let n = conn
+            .execute(
+                "UPDATE papers SET title = ?2 WHERE id = ?1",
+                params![paper_id, &title],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("论文不存在".into());
+        }
+    }
+    get_paper_inner(db, paper_id)
 }
 
 // ---------- 检索 / 索引 ----------
@@ -996,6 +1300,154 @@ mod tests {
             .join(&paper.id)
             .join("annotations.json");
         assert!(file.exists(), "annotations.json 应写入论文目录");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    // ---------- 论文整理（虚拟文件夹） ----------
+
+    /// 测试夹具：内存库 + 两篇论文。
+    fn folder_test_setup() -> (Db, std::path::PathBuf, Vec<String>) {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        let db = db::Db::from_connection(conn);
+
+        let tmp = std::env::temp_dir().join(format!("zoompaper-test-{}", uuid::Uuid::new_v4()));
+        let library = tmp.join("papers");
+        fs::create_dir_all(&library).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..2 {
+            let src = tmp.join(format!("src-{i}.pdf"));
+            fs::write(&src, b"%PDF-1.4 test").unwrap();
+            let paper = import_pdf_inner(&db, &library, src.to_str().unwrap()).unwrap();
+            ids.push(paper.id);
+        }
+        (db, tmp, ids)
+    }
+
+    #[test]
+    fn folder_crud_and_sibling_name_check() {
+        let (db, tmp, _ids) = folder_test_setup();
+
+        // 新建顶级文件夹（含颜色与标签）
+        let root = create_folder_inner(
+            &db,
+            "AI",
+            None,
+            Some("blue".into()),
+            Some(vec!["深度学习".into(), "2024".into()]),
+        )
+        .unwrap();
+        assert_eq!(root.color, "blue");
+        assert_eq!(root.tags, vec!["深度学习", "2024"]);
+
+        // 子文件夹
+        let child = create_folder_inner(
+            &db,
+            "Transformer",
+            Some(root.id.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
+
+        // 同级重名拒绝；不同父级允许
+        assert!(create_folder_inner(&db, "AI", None, None, None).is_err());
+        assert!(create_folder_inner(&db, "AI", Some(child.id.clone()), None, None).is_ok());
+
+        // 重命名 + 改色 + 改标签
+        let updated = update_folder_inner(
+            &db,
+            &root.id,
+            Some("  LLM  ".into()),
+            Some("purple".into()),
+            Some(vec!["大模型".into()]),
+        )
+        .unwrap();
+        assert_eq!(updated.name, "LLM");
+        assert_eq!(updated.color, "purple");
+        assert_eq!(updated.tags, vec!["大模型"]);
+
+        // 空名拒绝
+        assert!(update_folder_inner(&db, &root.id, Some("   ".into()), None, None).is_err());
+
+        // 删除文件夹：子文件夹上移一级（顶级）
+        delete_folder_inner(&db, &root.id).unwrap();
+        let folders = list_folders_inner(&db).unwrap();
+        let child_now = folders.iter().find(|f| f.id == child.id).unwrap();
+        assert_eq!(child_now.parent_id, None, "子文件夹应上移为顶级");
+        assert_eq!(folders.len(), 2, "剩两个顶级文件夹（AI 的后代重名文件夹 + 上移的 Transformer）");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn paper_membership_and_aggregation() {
+        let (db, tmp, ids) = folder_test_setup();
+        let a = create_folder_inner(&db, "AI", None, None, None).unwrap();
+        let b = create_folder_inner(&db, "CV", None, None, None).unwrap();
+
+        // 多归属：论文 0 同时进 AI + CV；论文 1 只进 AI
+        assert_eq!(
+            add_papers_to_folder_inner(&db, &[ids[0].clone()], &a.id).unwrap(),
+            1
+        );
+        assert_eq!(
+            add_papers_to_folder_inner(&db, &[ids[0].clone()], &b.id).unwrap(),
+            1
+        );
+        assert_eq!(
+            add_papers_to_folder_inner(&db, &[ids[1].clone()], &a.id).unwrap(),
+            1
+        );
+        // 幂等：重复加入为 no-op
+        assert_eq!(
+            add_papers_to_folder_inner(&db, &[ids[0].clone()], &a.id).unwrap(),
+            0
+        );
+
+        // list_papers 聚合出 folder_ids
+        let papers = list_papers_inner(&db).unwrap();
+        let p0 = papers.iter().find(|p| p.id == ids[0]).unwrap();
+        let p1 = papers.iter().find(|p| p.id == ids[1]).unwrap();
+        assert_eq!(p0.folder_ids.len(), 2);
+        assert!(p0.folder_ids.contains(&a.id) && p0.folder_ids.contains(&b.id));
+        assert_eq!(p1.folder_ids, vec![a.id.clone()]);
+
+        // get_paper 同样聚合
+        let g0 = get_paper_inner(&db, &ids[0]).unwrap();
+        assert_eq!(g0.folder_ids.len(), 2);
+
+        // 移除：论文 0 从 CV 移除
+        assert_eq!(
+            remove_papers_from_folder_inner(&db, &[ids[0].clone()], &b.id).unwrap(),
+            1
+        );
+        let papers = list_papers_inner(&db).unwrap();
+        let p0 = papers.iter().find(|p| p.id == ids[0]).unwrap();
+        assert_eq!(p0.folder_ids, vec![a.id.clone()]);
+
+        // 删除文件夹：paper_folders 级联清空，论文行保留（变未分类）
+        delete_folder_inner(&db, &a.id).unwrap();
+        let papers = list_papers_inner(&db).unwrap();
+        assert_eq!(papers.len(), 2, "删除文件夹不删论文");
+        assert!(papers.iter().all(|p| p.folder_ids.is_empty()));
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn rename_paper_validates_and_persists() {
+        let (db, tmp, ids) = folder_test_setup();
+        assert!(rename_paper_inner(&db, &ids[0], "   ").is_err());
+        assert!(rename_paper_inner(&db, "不存在", "x").is_err());
+
+        let renamed = rename_paper_inner(&db, &ids[0], "  Attention Is All You Need  ").unwrap();
+        assert_eq!(renamed.title, "Attention Is All You Need");
+        let back = get_paper_inner(&db, &ids[0]).unwrap();
+        assert_eq!(back.title, "Attention Is All You Need");
 
         fs::remove_dir_all(&tmp).ok();
     }

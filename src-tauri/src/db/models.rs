@@ -18,6 +18,22 @@ pub struct Paper {
     pub reading_status: String,
     /// 解析状态：unparsed / parsing / ready / failed
     pub parse_status: String,
+    /// 所属文件夹 id 列表（多归属；空数组 = 未分类）。由 list/get 聚合填充。
+    pub folder_ids: Vec<String>,
+}
+
+/// 虚拟文件夹（多归属集合式，论文库内的整理容器；不对应磁盘目录）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+    /// 父文件夹 id；None = 顶级文件夹。
+    pub parent_id: Option<String>,
+    /// 色板 key（红/橙/黄/绿/蓝/紫/粉/灰/棕/青 之一）。
+    pub color: String,
+    /// 自由文本标签列表。
+    pub tags: Vec<String>,
+    pub created_at: i64,
 }
 
 /// 论文文本分块（RAG 检索单元）。
