@@ -1,0 +1,101 @@
+# ZoomPaper 发布工作流
+#
+# 触发方式（二选一）：
+#   1. 推送 v* 标签（推荐）：git tag v0.1.0 && git push origin v0.1.0
+#   2. 手动触发：Actions 页面 → Release → Run workflow → 填写版本号（如 0.2.0）
+#
+# 产物：macOS 通用版安装包 ZoomPaper_<ver>_universal.dmg
+#       （Apple Silicon 与 Intel 通用，上传为草稿 Release，审核后手动发布）
+#
+# 说明：macos-13（Intel）runner 已被 GitHub 弃用，故统一在 Apple Silicon
+#       runner 上构建 universal 二进制，避免依赖已下线的 x64 runner。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号（如 0.2.0；tag 触发时自动取标签版本）"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest # Apple Silicon（arm64）
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "${VERSION}" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -z "${VERSION}" ]; then
+            echo "::error::无法解析版本号：请推送 v* 标签，或在手动触发时填写 version"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sync app version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Syncing version to ${VERSION}"
+          npm pkg set version="${VERSION}"
+          sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
+          grep -n '"version"' src-tauri/tauri.conf.json
+
+      - name: Build & publish universal .dmg
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: "ZoomPaper v${{ steps.version.outputs.version }}"
+          releaseBody: |
+            ZoomPaper —— 本地优先的论文阅读与知识管理平台。
+
+            ## 安装
+
+            - macOS（Apple Silicon 与 Intel 通用）：`ZoomPaper_${{ steps.version.outputs.version }}_universal.dmg`
+
+            **首次打开**：应用未经过 Apple 签名公证，请在访达中右键点击应用图标 →「打开」；
+            如提示「无法验证开发者」，点击「仍要打开」；或执行：
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
+            ```
+
+            详细说明见 [README](https://github.com/${{ github.repository }})。
+          releaseDraft: true
+          # 如需推送 tag 后自动发布（无需手动确认），把 releaseDraft 改为 false
+          prerelease: false
+          args: --bundles dmg --target universal-apple-darwin
