@@ -565,14 +565,13 @@ pub fn search(
 
 // ---------- 博客生成 ----------
 
-/// 调用 LLM 生成博客，落盘 `blog.md` 并回写 `blog_md_path`。返回博客 Markdown 文本。
+/// 调用 LLM 生成博客（科普版正文 + 第一性原理深度剖析），落盘 `blog.md` 并回写
+/// `blog_md_path`。返回组合后的博客 Markdown 文本。
 #[tauri::command]
 pub async fn generate_blog(
     db: State<'_, Db>,
     paper_id: String,
-    level: String,
 ) -> Result<String, String> {
-    let level = crate::blog::BlogLevel::parse(&level).map_err(|e| e.to_string())?;
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
 
@@ -587,9 +586,11 @@ pub async fn generate_blog(
         .map_err(|e| e.to_string())?
     };
     let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+    // 提取论文图表清单（编号 + 说明 + 相对路径），供博客正文嵌入原图
+    let figures = crate::blog::extract_figures(&markdown);
 
     // 生成（网络调用，await 期间不持有数据库锁）
-    let blog = crate::blog::generate_blog(&llm, level, &markdown)
+    let blog = crate::blog::generate_blog(&llm, &markdown, &figures)
         .await
         .map_err(|e| e.to_string())?;
 

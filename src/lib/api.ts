@@ -107,9 +107,9 @@ export interface FeynmanTurn {
   reply: string;
 }
 
-export type BlogLevel = "popular" | "intro" | "expert";
-
 export const getSettings = () => invoke<Settings>("get_settings");
+export const generateBlog = (paperId: string) =>
+  invoke<string>("generate_blog", { paperId });
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
@@ -157,9 +157,6 @@ export const indexPaper = (paperId: string) => invoke<number>("index_paper", { p
 
 export const search = (query: string, topK: number, paperId?: string | null) =>
   invoke<SearchHit[]>("search", { query, topK, paperId: paperId ?? null });
-
-export const generateBlog = (paperId: string, level: BlogLevel) =>
-  invoke<string>("generate_blog", { paperId, level });
 
 export const askQuestion = (
   question: string,

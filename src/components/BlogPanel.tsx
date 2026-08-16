@@ -3,14 +3,14 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
-import { generateBlog, type BlogLevel, type Paper } from "@/lib/api";
+import { generateBlog, type Paper } from "@/lib/api";
+import {
+  ANALYSIS_TAGS,
+  parseBlog,
+  type AnalysisKey,
+  type ParsedBlog,
+} from "@/lib/blog";
 import { FileText, Loader2, RefreshCw, Sparkles } from "lucide-react";
-
-const LEVELS: { value: BlogLevel; label: string; hint: string }[] = [
-  { value: "popular", label: "科普版", hint: "面向大众，类比驱动" },
-  { value: "intro", label: "入门版", hint: "面向跨领域读者" },
-  { value: "expert", label: "专业速读版", hint: "面向同行，提炼要点" },
-];
 
 interface Props {
   paper: Paper;
@@ -20,7 +20,8 @@ interface Props {
 
 export function BlogPanel({ paper, onBlogGenerated }: Props) {
   const [blog, setBlog] = useState<string | null>(null);
-  const [level, setLevel] = useState<BlogLevel>("intro");
+  const [parsed, setParsed] = useState<ParsedBlog | null>(null);
+  const [activeKey, setActiveKey] = useState<AnalysisKey>("task");
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +37,10 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
         return r.text();
       })
       .then((text) => {
-        if (!cancelled) setBlog(text);
+        if (!cancelled) {
+          setBlog(text);
+          setParsed(parseBlog(text));
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -53,8 +57,9 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
     setGenerating(true);
     setError(null);
     try {
-      const md = await generateBlog(paper.id, level);
+      const md = await generateBlog(paper.id);
       setBlog(md);
+      setParsed(parseBlog(md));
       // blog.md 落盘在 paper.md 同级目录，与后端保持一致
       const blogPath = paper.md_path.replace(/[^/\\]+$/, "blog.md");
       onBlogGenerated(blogPath);
@@ -64,6 +69,9 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
       setGenerating(false);
     }
   }
+
+  // 论文目录：博客与 paper.md 同目录，相对图片路径（images/...）以此为基准解析
+  const baseDir = paper.md_path.replace(/[^/\\]+$/, "").replace(/[\\/]+$/, "");
 
   if (loading) {
     return (
@@ -76,25 +84,13 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
     );
   }
 
+  const sections = parsed?.sections ?? null;
+  const activeText = (sections && sections[activeKey]) || null;
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
+      {/* 操作区 */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-lg bg-muted p-[3px]">
-          {LEVELS.map((l) => (
-            <button
-              key={l.value}
-              title={l.hint}
-              onClick={() => setLevel(l.value)}
-              className={`pressable rounded-md px-3 py-1 text-sm font-medium transition-colors ${
-                level === l.value
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {l.label}
-            </button>
-          ))}
-        </div>
         <Button onClick={handleGenerate} disabled={generating} size="sm">
           {generating ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -105,6 +101,11 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
           )}
           {generating ? "生成中…" : blog ? "重新生成" : "生成博客"}
         </Button>
+        {blog && !sections && (
+          <span className="text-xs text-muted-foreground">
+            该博客由旧版本生成，缺少深度剖析，可点击「重新生成」
+          </span>
+        )}
       </div>
 
       {error && (
@@ -121,12 +122,51 @@ export function BlogPanel({ paper, onBlogGenerated }: Props) {
           <Skeleton className="h-4 w-3/4" />
         </div>
       ) : blog ? (
-        <MarkdownView markdown={blog} />
+        <>
+          {/* 深度剖析窗口：上方 Tab 标签，下方对应维度内容 */}
+          {sections && (
+            <div className="flex flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
+              <div className="flex flex-wrap items-center gap-1 border-b px-3 py-2">
+                <span className="mr-1 text-sm font-semibold">深度剖析</span>
+                <div className="inline-flex rounded-lg bg-muted p-[3px]">
+                  {ANALYSIS_TAGS.map((t) => (
+                    <button
+                      key={t.key}
+                      onClick={() => setActiveKey(t.key)}
+                      className={`pressable rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+                        activeKey === t.key
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="min-h-0 p-4">
+                {activeText ? (
+                  <MarkdownView markdown={activeText} baseDir={baseDir} />
+                ) : (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    该部分内容缺失，可点击「重新生成」获取
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 博客正文 */}
+          <div className="flex flex-col gap-2 border-t pt-5">
+            <h2 className="text-base font-semibold">博客正文</h2>
+            <MarkdownView markdown={parsed?.body ?? blog} baseDir={baseDir} />
+          </div>
+        </>
       ) : (
         !error && (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
             <FileText className="h-10 w-10" />
-            <p className="text-sm">还没有博客，选择层级后点击「生成博客」</p>
+            <p className="text-sm">还没有博客，点击「生成博客」即可获得科普版正文与深度剖析</p>
           </div>
         )
       )}

@@ -1,100 +1,441 @@
-//! AI 博客生成：论文 Markdown → 分层通俗博客。
+//! AI 博客生成：论文 Markdown → 公众号风格科普博客正文 + 第一性原理深度剖析。
 //!
-//! 三种层级（科普 / 入门 / 专业速读）对应三套 system prompt，输出结构对齐
-//! 「核心问题 → 方法直觉 → 结果意义 → 局限延伸」。本模块只负责 prompt 与
-//! 调用 LLM；落盘 `blog.md` 与回写 `blog_md_path` 由命令层完成。
+//! 一次生成包含两次顺序 LLM 调用：
+//! 1. 正文：按「中文技术自媒体爆款风格」prompt 生成通俗文章，并从论文 Markdown
+//!    提取图表清单（编号 + 说明 + 相对路径）注入 prompt，强制嵌入论文原图；
+//!    若 LLM 输出未引用任何已知图片，[`ensure_figures_embedded`] 自动在文末补
+//!    「论文原图」区块兜底，保证「一定引用原文图片」。
+//! 2. 剖析：按「第一性原理思考者」prompt 生成六维深度剖析（Task / Challenge /
+//!    Insight / Novelty / Potential Flaw / Motivation）。
+//!
+//! 两部分拼接为单一 Markdown 落盘：正文在前，`# 深度剖析` 标记之后为六个 `##`
+//! 段落（标题为英文锚点，界面显示中文标签）。本模块只负责 prompt 与调用 LLM；
+//! 落盘 `blog.md` 与回写 `blog_md_path` 由命令层完成。
 
 use crate::ai::llm::{ChatMessage, Llm, Role};
 use anyhow::Result;
+use std::collections::HashSet;
 
 /// 超长论文截断阈值（字符）。约 12 万字符 ≈ 3 万 token，
 /// 低于 gpt-4o-mini / Claude 的上下文上限，避免越界。
 const MAX_MD_CHARS: usize = 120_000;
 
-/// 博客层级。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlogLevel {
-    /// 科普版：外行也能读懂，生活化类比，规避术语。
-    Popular,
-    /// 入门版：面向有基础的读者（本科生 / 研究生入门）。
-    Intro,
-    /// 专业速读版：面向同领域研究者。
-    Expert,
+/// 博客正文与深度剖析的分界标记（H1），前端 `parseBlog` 依赖该行精确切分。
+const ANALYSIS_MARKER: &str = "# 深度剖析";
+
+/// 注入 prompt 的图表数量上限（防 token 膨胀）。
+const MAX_FIGURES: usize = 30;
+
+/// 图片上方查找 Figure/Table 说明的最大行数。
+const CAPTION_LOOKBACK: usize = 4;
+
+/// 论文中提取出的图表条目（供博客嵌入原图）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Figure {
+    /// 图表编号，如 `Figure 1` / `Table 2`；无法识别时为兜底编号。
+    pub id: String,
+    /// 图表说明（caption），无说明时为空。
+    pub caption: String,
+    /// 相对论文目录的图片路径（如 `images/1.jpg`）。
+    pub path: String,
 }
 
-impl BlogLevel {
-    /// 从字符串解析（前端传 `popular` / `intro` / `expert`）。
-    pub fn parse(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "popular" => Ok(BlogLevel::Popular),
-            "intro" => Ok(BlogLevel::Intro),
-            "expert" => Ok(BlogLevel::Expert),
-            other => anyhow::bail!("未知博客层级: {other}（可选 popular/intro/expert）"),
-        }
-    }
+/// 公众号/技术博客风格正文 system prompt（后续若重写博客提示词，改这里即可）。
+const BLOG_SYSTEM_PROMPT: &str = "你是一位中文科技自媒体爆款写手，擅长把艰深的学术论文改写成微信公众号/技术博客风格的通俗文章。风格参考「程序员鱼皮」「量子位」「机器之心」。目标读者是对技术感兴趣但并非该领域专家的程序员、工程师与 AI 爱好者。
 
-    /// 各层级的中文 system prompt。
-    pub fn system_prompt(&self) -> &'static str {
-        match self {
-            BlogLevel::Popular => "你是一位擅长科普的科技作家，把艰深的学术论文讲给完全外行的读者听。\n\n要求：\n1. 用生活化的类比解释核心概念，尽量规避专业术语；必须用术语时，先给出通俗解释。\n2. 结构依次为：这篇论文解决了什么问题 → 用了什么巧妙的方法 → 结果意味着什么 → 局限与延伸。\n3. 语言轻松易懂，篇幅适中，直接输出 Markdown 正文（不要写「好的」等寒暄）。",
-            BlogLevel::Intro => "你是一位面向研究生新生的论文导读员，帮助有基础背景的读者快速抓住论文要点。\n\n要求：\n1. 解释论文的核心贡献与方法的直觉，保留关键术语，但每个关键术语给出简洁解释。\n2. 结构依次为：核心问题 → 方法直觉 → 结果意义 → 局限与延伸。\n3. 专业但克制，直接输出 Markdown 正文（不要写寒暄）。",
-            BlogLevel::Expert => "你是一位同领域资深研究者，为同行写论文速读笔记。\n\n要求：\n1. 直接、专业、精炼，不解释常识性术语。\n2. 结构依次为：核心问题 → 方法要点 → 结果与贡献 → 局限及与相关工作的关系。\n3. 指出方法的关键假设与潜在缺陷。直接输出 Markdown 正文（不要写寒暄）。",
-        }
-    }
-}
+【语言风格】
+1. 像技术圈的老朋友在聊天，而不是教授在讲课；允许第一人称（如「我第一时间测试了…」「说实话我一开始也不信…」）。
+2. 短句为主，长句拆分；多用设问（「这到底是什么来头？」「真的会更强吗？」）、感叹（「废话不多说，直接开测！」）。
+3. 多用口语连接词：「说白了」「其实」「讲道理」「有一说一」；网络流行语适度使用（「起飞」「拉满了」「汗流浃背了」）。
+4. 允许适度表达个人情绪与自嘲，但不要油腻、不要满屏感叹号。
+5. 术语处理：首次出现专业术语必须给出通俗解释（如「GRPO = 群体相对策略优化，说白了就是让模型自己跟自己比」）；复杂公式用生活化类比替代（如「注意力机制就像你在人群中一眼找到喜欢的人」）；保留必要英文术语但紧跟中文解释。
 
-/// 组装对话消息：system 为层级 prompt，user 为论文 Markdown 全文（超长截断）。
-pub fn build_messages(level: BlogLevel, markdown: &str) -> Vec<ChatMessage> {
+【文章结构】（按顺序，可根据论文类型微调）
+1. 【开头：热点钩子】个人视角引入 + 行业热点关联 + 悬念抛出。
+2. 【背景：为什么这篇论文值得关注】当前痛点 + 现有方法的局限 + 「直到这篇论文出现…」。
+3. 【核心方法：用人话讲清楚】一句话类比（必须）+ 分步骤图解（1-2-3 步骤 + emoji）+ 关键创新点（加粗）。
+4. 【实验实测：数据说话】Markdown 对比表格（论文方法 vs baseline vs SOTA）+ 反直觉发现（「但是！这里有个坑…」）+ 消融实验亮点。
+5. 【深度解读：为什么有效】原理层面的通俗解释 + 与已知知识的联系（「这其实和 XX 是一个道理」）。
+6. 【业界影响：对我们意味着什么】实际应用场景 + 对现有工具的潜在影响 + 未来展望。
+7. 【结尾：个人观点 + 互动】一句话总结 + 个人态度 + 引导互动（「你怎么看？」）。
+
+【视觉元素】
+1. 必须包含至少一个 Markdown 对比表格。
+2. 关键数字用 **粗体** 或 `代码块` 高亮。
+3. 复杂方法用 1-2-3 步骤 + emoji 展示。
+4. 提及论文图表处标注「见论文 Figure N」。
+
+【引用论文原图（强制要求）】
+- 用户消息会提供「图表清单」，列出论文中的图表编号、说明与图片相对路径（博客与论文同一目录，相对路径可直接使用）。
+- 必须在文章合适位置（如核心方法、实验实测部分）嵌入至少 1-2 张与内容相关的原图，写法为 Markdown 图片：![图片说明](相对路径)。
+- 图片路径必须与清单中给出的完全一致，原样复制，严禁改写、拼凑或臆造路径。
+- 嵌入图片的同时，在正文用「见论文 Figure N」标注对应图表。
+- 若清单为空（论文未提取到图表），则只用文字描述，不要编造图片。
+
+【输出要求】
+- 直接输出 Markdown 正文，不要写「好的」「以下是…」等寒暄。
+- 禁止在正文中出现「# 深度剖析」这一标题（该标记为深度剖析栏目保留）。
+- 篇幅适中，信息密度高，不要注水。";
+
+/// 第一性原理深度剖析 system prompt。
+const ANALYSIS_SYSTEM_PROMPT: &str = "你是第一性原理思考者，擅长从万物基本原理和常识出发，推演做事思路。请仔细阅读并分析这篇文章，就以下 6 点进行有条理的列举与讲解：
+
+1. Task：这篇文章解决的是什么问题？请尽可能形式化！
+2. Challenge：传统的方法在解决这个问题时遇到了什么挑战？
+3. Insight：
+   1). 作者的 Insight 是被什么 Inspiration 启发的？
+   2). 作者的 Insight 究竟是什么？是在什么方面上的 Insight？对于每个 Insight，是哪些上述的 Inspiration 启发的？
+4. Novelty：作者本篇文章的 Novelty 体现在何处？是否有架构上、方法上还是策略上的，支持自己 Insight 的创新？
+   对于每一个 Novelty，请清晰严格按这个格式描述：【创新点解决的问题是什么】->【受哪个 insight 启发】->【设计了什么创新点，尽可能具体描述】
+5. Potential Flaw：
+   1). 当前问题的情境是否有局限？有没有可能通过延伸架构，解决一些新情境（例如：维度更多、条件更多、约束更多）下的问题？
+   2). 在目前情境下，若数据有什么样的不好的性质，解决可能会遇到特别的困难？
+   3). 在以上这些困难中，哪种困难值得深度挖掘写成 paper？
+6. Motivation：
+   请你总结这篇文章想到 general idea 的方式，最好以问句形式给出（如：之前的方法……，那可不可以尝试一下 xxx），遵循第一性原理，从问题的本质出发，找到最合理、最容易的，想到本篇文章 idea 的方式。
+
+输出要求（严格遵守）：
+- 依次输出以下六个部分，每部分以二级标题开头，标题必须精确为：Task、Challenge、Insight、Novelty、Potential Flaw、Motivation。
+- 不得遗漏任何部分，不得增改标题；六个部分之外不要输出寒暄或总结。
+- 每部分内容用 Markdown 撰写，简明扼要。";
+
+/// 截断超长论文 Markdown，博客正文与深度剖析两次调用共用。
+fn truncate_markdown(markdown: &str) -> String {
     let mut md = markdown.to_string();
     if md.chars().count() > MAX_MD_CHARS {
         md = md.chars().take(MAX_MD_CHARS).collect();
         md.push_str("\n\n……（论文过长，已截断）");
     }
+    md
+}
+
+/// 提取一行内的 Markdown 行内图片引用 `![alt](path)`，返回 (alt, path) 列表。
+fn inline_image_refs(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    loop {
+        let Some(open) = rest.find("![") else { break };
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find(']') else { break };
+        let alt = after_open[..close].trim();
+        let after_close = &after_open[close + 1..];
+        let Some(open_paren) = after_close.strip_prefix('(') else { break };
+        let Some(paren_end) = open_paren.find(')') else { break };
+        let path = open_paren[..paren_end].trim();
+        out.push((alt.to_string(), path.to_string()));
+        rest = &open_paren[paren_end + 1..];
+    }
+    out
+}
+
+/// 在行中查找 `Figure N` / `Table N`（不区分大小写），返回规范化编号。
+fn find_figure_label(line: &str) -> Option<String> {
+    let lower = line.to_lowercase();
+    for kw in ["figure ", "table "] {
+        if let Some(pos) = lower.find(kw) {
+            let rest = &line[pos + kw.len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() {
+                let word = &line[pos..pos + kw.len()];
+                let label = format!("{} {}", word.trim(), digits);
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
+/// 判断是否为可用的相对图片路径（排除远程 / data URI / 绝对路径 / Windows 盘符）。
+fn is_relative_image_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if path.starts_with("http://")
+        || path.starts_with("https://")
+        || path.starts_with("data:")
+    {
+        return false;
+    }
+    if path.starts_with('/') || path.starts_with('\\') {
+        return false;
+    }
+    // Windows 盘符（`C:\...` / `C:/...`）
+    if path.len() >= 2 && path.as_bytes()[1] == b':' {
+        return false;
+    }
+    true
+}
+
+/// 从论文 Markdown 提取图表清单：扫描图片引用，向上查找 Figure/Table 说明，
+/// 按路径去重，上限 [`MAX_FIGURES`] 张。
+pub fn extract_figures(markdown: &str) -> Vec<Figure> {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut figures = Vec::new();
+    let mut seen = HashSet::new();
+
+    'outer: for (idx, line) in lines.iter().enumerate() {
+        for (alt, path) in inline_image_refs(line) {
+            if !is_relative_image_path(&path) || !seen.insert(path.clone()) {
+                continue;
+            }
+            // 向上最多 CAPTION_LOOKBACK 行找最近的 Figure/Table 说明
+            let mut id = String::new();
+            let mut caption = String::new();
+            for k in (idx.saturating_sub(CAPTION_LOOKBACK)..idx).rev() {
+                if let Some(label) = find_figure_label(lines[k]) {
+                    id = label;
+                    caption = lines[k].trim().to_string();
+                    break;
+                }
+            }
+            if id.is_empty() {
+                if !alt.is_empty() {
+                    caption = alt;
+                }
+                id = format!("图片 {}", figures.len() + 1);
+            }
+            figures.push(Figure { id, caption, path });
+            if figures.len() >= MAX_FIGURES {
+                break 'outer;
+            }
+        }
+    }
+    figures
+}
+
+/// 图表清单段落文本（追加到 user 消息，供 LLM 按原样路径嵌入原图）。
+fn figure_inventory(figures: &[Figure]) -> String {
+    if figures.is_empty() {
+        return "（论文未提取到图表，本次博客不嵌入图片，仅文字描述。）".to_string();
+    }
+    let mut s = String::from(
+        "以下是论文中提取到的图表清单（图片路径为相对论文目录的相对路径，博客与论文在同一目录，可直接用于 Markdown 图片引用）：\n",
+    );
+    for f in figures {
+        let caption = if f.caption.is_empty() {
+            "（无说明）".to_string()
+        } else {
+            f.caption.clone()
+        };
+        s.push_str(&format!("- {}（{}）：{}\n", f.id, f.path, caption));
+    }
+    s
+}
+
+/// 组装博客正文对话消息：system 为公众号风格 prompt，user 为论文全文（超长截断）
+/// + 图表清单。
+pub fn build_messages(markdown: &str, figures: &[Figure]) -> Vec<ChatMessage> {
+    let mut user = format!(
+        "以下是一篇论文的 Markdown 全文，请据此撰写博客：\n\n{}",
+        truncate_markdown(markdown)
+    );
+    user.push('\n');
+    user.push_str(&figure_inventory(figures));
     vec![
         ChatMessage {
             role: Role::System,
-            content: level.system_prompt().to_string(),
+            content: BLOG_SYSTEM_PROMPT.to_string(),
         },
         ChatMessage {
             role: Role::User,
-            content: format!("以下是一篇论文的 Markdown 全文，请据此撰写博客：\n\n{md}"),
+            content: user,
         },
     ]
 }
 
-/// 调用 LLM 生成博客，返回博客 Markdown 文本。
-pub async fn generate_blog(llm: &Llm, level: BlogLevel, markdown: &str) -> Result<String> {
-    let messages = build_messages(level, markdown);
-    llm.chat(&messages).await
+/// 组装深度剖析对话消息：system 为第一性原理 prompt，user 为论文 Markdown 全文。
+pub fn build_analysis_messages(markdown: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage {
+            role: Role::System,
+            content: ANALYSIS_SYSTEM_PROMPT.to_string(),
+        },
+        ChatMessage {
+            role: Role::User,
+            content: format!(
+                "以下是一篇论文的 Markdown 全文，请据此完成深度剖析：\n\n{}",
+                truncate_markdown(markdown)
+            ),
+        },
+    ]
+}
+
+/// 兜底：若正文未引用任何清单内的图片路径，在文末追加「论文原图」区块
+/// （至多前 3 张），保证「一定引用原文图片」。
+pub fn ensure_figures_embedded(blog: &str, figures: &[Figure]) -> String {
+    if figures.is_empty() {
+        return blog.to_string();
+    }
+    let referenced = figures.iter().any(|f| blog.contains(f.path.as_str()));
+    if referenced {
+        return blog.to_string();
+    }
+    let mut extra = String::from("\n\n## 论文原图\n\n");
+    for f in figures.iter().take(3) {
+        let caption = if f.caption.is_empty() {
+            f.id.clone()
+        } else {
+            f.caption.clone()
+        };
+        extra.push_str(&format!("![{caption}]({})\n\n", f.path));
+    }
+    format!("{blog}{extra}")
+}
+
+/// 拼接博客正文与深度剖析为单一 Markdown 文件内容（前端按 `ANALYSIS_MARKER` 切分）。
+pub fn join_blog(body: &str, analysis: &str) -> String {
+    format!("{body}\n\n{ANALYSIS_MARKER}\n\n{analysis}")
+}
+
+/// 生成博客：先按公众号风格 prompt 生成正文（含原图嵌入 + 兜底），
+/// 再生成六维深度剖析，拼接返回组合 Markdown。
+pub async fn generate_blog(llm: &Llm, markdown: &str, figures: &[Figure]) -> Result<String> {
+    let body = llm.chat(&build_messages(markdown, figures)).await?;
+    let body = ensure_figures_embedded(&body, figures);
+    let analysis = llm.chat(&build_analysis_messages(markdown)).await?;
+    Ok(join_blog(&body, &analysis))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 剖析要求的六个段落标题（与 `ANALYSIS_SYSTEM_PROMPT` 一致）。
+    const ANALYSIS_HEADINGS: [&str; 6] = [
+        "Task",
+        "Challenge",
+        "Insight",
+        "Novelty",
+        "Potential Flaw",
+        "Motivation",
+    ];
+
+    fn fig(id: &str, caption: &str, path: &str) -> Figure {
+        Figure {
+            id: id.to_string(),
+            caption: caption.to_string(),
+            path: path.to_string(),
+        }
+    }
+
     #[test]
-    fn build_messages_uses_level_prompt_and_includes_markdown() {
-        let md = "# Title\n\nAbstract text.";
-        let msgs = build_messages(BlogLevel::Popular, md);
+    fn build_messages_uses_blog_prompt_and_includes_markdown() {
+        let msgs = build_messages("# Title\n\nAbstract text.", &[]);
 
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, Role::System);
-        assert!(msgs[0].content.contains("科普"));
+        assert!(msgs[0].content.contains("爆款"));
         assert_eq!(msgs[1].role, Role::User);
         assert!(msgs[1].content.contains("# Title"));
     }
 
     #[test]
-    fn build_messages_truncates_long_markdown() {
-        let long = "a".repeat(MAX_MD_CHARS + 100);
-        let msgs = build_messages(BlogLevel::Expert, &long);
-        assert!(msgs[1].content.contains("已截断"));
+    fn build_analysis_messages_requires_all_six_headings() {
+        let msgs = build_analysis_messages("# Title\n\nAbstract text.");
+
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::System);
+        for h in ANALYSIS_HEADINGS {
+            assert!(msgs[0].content.contains(h), "剖析 prompt 缺少标题 {h}");
+        }
+        assert_eq!(msgs[1].role, Role::User);
+        assert!(msgs[1].content.contains("# Title"));
     }
 
     #[test]
-    fn parse_level_accepts_known_and_rejects_unknown() {
-        assert_eq!(BlogLevel::parse("popular").unwrap(), BlogLevel::Popular);
-        assert_eq!(BlogLevel::parse("EXPERT").unwrap(), BlogLevel::Expert);
-        assert!(BlogLevel::parse("bogus").is_err());
+    fn truncation_applies_to_both_message_builders() {
+        let long = "a".repeat(MAX_MD_CHARS + 100);
+        assert!(build_messages(&long, &[])[1].content.contains("已截断"));
+        assert!(build_analysis_messages(&long)[1].content.contains("已截断"));
+    }
+
+    #[test]
+    fn join_blog_concatenates_body_analysis_and_marker() {
+        let joined = join_blog("正文", "## Task\nxxx");
+
+        assert!(joined.starts_with("正文"));
+        assert!(joined.contains("# 深度剖析"));
+        assert!(joined.ends_with("## Task\nxxx"));
+    }
+
+    #[test]
+    fn extract_figures_finds_images_with_preceding_captions() {
+        let md = "正文\n\n**Figure 1**: 方法总览\n\n![](images/1.jpg)\n\n**Table 2** | 实验结果\n\n![](images/2.png)";
+        let figs = extract_figures(md);
+
+        assert_eq!(figs.len(), 2);
+        assert_eq!(figs[0].id, "Figure 1");
+        assert!(figs[0].caption.contains("方法总览"));
+        assert_eq!(figs[0].path, "images/1.jpg");
+        assert_eq!(figs[1].id, "Table 2");
+        assert_eq!(figs[1].path, "images/2.png");
+    }
+
+    #[test]
+    fn extract_figures_uses_alt_fallback_and_dedupes() {
+        let md = "![架构图](images/a.jpg)\n\n![架构图](images/a.jpg)\n\n文字";
+        let figs = extract_figures(md);
+
+        assert_eq!(figs.len(), 1);
+        assert_eq!(figs[0].id, "图片 1");
+        assert_eq!(figs[0].caption, "架构图");
+        assert_eq!(figs[0].path, "images/a.jpg");
+    }
+
+    #[test]
+    fn extract_figures_ignores_remote_and_absolute_paths() {
+        let md = "![远程](https://example.com/a.png)\n\n![](/abs/b.png)\n\n![](images/ok.jpg)";
+        let figs = extract_figures(md);
+
+        assert_eq!(figs.len(), 1);
+        assert_eq!(figs[0].path, "images/ok.jpg");
+    }
+
+    #[test]
+    fn build_messages_includes_figure_inventory() {
+        let figs = vec![fig("Figure 1", "方法总览", "images/1.jpg")];
+        let msgs = build_messages("# T\n\ntext", &figs);
+
+        assert!(msgs[1].content.contains("图表清单"));
+        assert!(msgs[1].content.contains("Figure 1"));
+        assert!(msgs[1].content.contains("images/1.jpg"));
+    }
+
+    #[test]
+    fn build_messages_notes_when_no_figures() {
+        let msgs = build_messages("# T\n\ntext", &[]);
+
+        assert!(msgs[1].content.contains("未提取到图表"));
+    }
+
+    #[test]
+    fn ensure_figures_embeds_fallback_when_missing() {
+        let figs = vec![
+            fig("Figure 1", "a", "images/1.jpg"),
+            fig("Figure 2", "b", "images/2.jpg"),
+            fig("Figure 3", "c", "images/3.jpg"),
+            fig("Figure 4", "d", "images/4.jpg"),
+        ];
+        let out = ensure_figures_embedded("只有文字", &figs);
+
+        assert!(out.contains("## 论文原图"));
+        assert!(out.contains("images/1.jpg"));
+        assert!(out.contains("images/3.jpg"));
+        assert!(!out.contains("images/4.jpg")); // 至多前 3 张
+    }
+
+    #[test]
+    fn ensure_figures_keeps_blog_when_any_referenced() {
+        let figs = vec![fig("Figure 1", "a", "images/1.jpg")];
+        let blog = "见论文 Figure 1\n\n![](images/1.jpg)";
+        let out = ensure_figures_embedded(blog, &figs);
+
+        assert_eq!(out, blog);
+    }
+
+    #[test]
+    fn ensure_figures_noop_when_empty_list() {
+        let out = ensure_figures_embedded("只有文字", &[]);
+        assert_eq!(out, "只有文字");
     }
 }
