@@ -385,6 +385,66 @@ pub fn get_translation(
     Ok(Some(file.chunks))
 }
 
+// ---------- 阅读标注（高亮 / 笔记） ----------
+
+/// 读取论文的阅读标注（annotations.json），不存在则返回 None。
+/// 返回原始 JSON 字符串，schema 由前端维护（与 save 侧对称）。
+#[tauri::command]
+pub fn get_annotations(
+    db: State<'_, Db>,
+    paper_id: String,
+) -> Result<Option<String>, String> {
+    get_annotations_inner(&db, &paper_id)
+}
+
+fn get_annotations_inner(db: &Db, paper_id: &str) -> Result<Option<String>, String> {
+    let md_path = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [paper_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let path = Path::new(&md_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("annotations.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = crate::fs::read_md(&path).map_err(|e| e.to_string())?;
+    Ok(Some(json))
+}
+
+/// 把阅读标注（高亮 / 笔记，前端序列化的 JSON）落盘为论文目录下的 annotations.json。
+#[tauri::command]
+pub fn save_annotations(
+    db: State<'_, Db>,
+    paper_id: String,
+    data: String,
+) -> Result<(), String> {
+    save_annotations_inner(&db, &paper_id, &data)
+}
+
+fn save_annotations_inner(db: &Db, paper_id: &str, data: &str) -> Result<(), String> {
+    let md_path = {
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT md_path FROM papers WHERE id = ?1",
+            [paper_id],
+            |r| r.get::<_, String>(0),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    let path = Path::new(&md_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("annotations.json");
+    crate::fs::write_md(&path, data).map_err(|e| e.to_string())
+}
+
 // ---------- RAG 问答 ----------
 
 const QA_TITLE_CHARS: usize = 40;
@@ -899,5 +959,36 @@ mod tests {
         assert_eq!(title, "Attention Is All You Need");
         assert_eq!(authors, None);
         assert!(abstract_text.unwrap().contains("dominant sequence transduction"));
+    }
+
+    #[test]
+    fn annotations_roundtrip() {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        let db = db::Db::from_connection(conn);
+
+        let tmp = std::env::temp_dir().join(format!("zoompaper-test-{}", uuid::Uuid::new_v4()));
+        let library = tmp.join("papers");
+        let src = tmp.join("src-paper.pdf");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(&src, b"%PDF-1.4 test").unwrap();
+
+        let paper = import_pdf_inner(&db, &library, src.to_str().unwrap()).unwrap();
+
+        // 初始无标注
+        assert_eq!(get_annotations_inner(&db, &paper.id).unwrap(), None);
+
+        // 保存后可读回，且落在论文目录下
+        let data = r#"{"version":1,"highlights":[{"id":"h1","page_idx":0,"rects":[{"x":0.1,"y":0.2,"w":0.4,"h":0.015}],"color":"rgba(255,213,0,.45)","text":"hello","note":null,"created_at":1712000000}]}"#;
+        save_annotations_inner(&db, &paper.id, data).unwrap();
+        let back = get_annotations_inner(&db, &paper.id).unwrap().unwrap();
+        assert_eq!(back, data);
+        let file = library
+            .join(&paper.id)
+            .join("annotations.json");
+        assert!(file.exists(), "annotations.json 应写入论文目录");
+
+        fs::remove_dir_all(&tmp).ok();
     }
 }

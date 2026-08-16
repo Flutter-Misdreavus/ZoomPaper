@@ -168,3 +168,40 @@ export const translateChunk = (text: string) =>
 /** 把分块对落盘为论文目录下的 translation.json */
 export const saveTranslation = (paperId: string, chunks: TranslationChunk[]) =>
   invoke<void>("save_translation", { paperId, chunks });
+
+// ---------- 阅读标注（高亮 / 笔记） ----------
+
+/** 高亮矩形，坐标为相对页面宽高的归一化值（0..1），随缩放自动缩放 */
+export interface AnnotationRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 一条高亮标注；note 为空表示纯高亮 */
+export interface PdfAnnotation {
+  id: string;
+  /** 0-based 页码 */
+  page_idx: number;
+  rects: AnnotationRect[];
+  /** CSS 颜色（rgba 字符串） */
+  color: string;
+  /** 选中时的原文文本 */
+  text: string;
+  note: { text: string; updated_at: number } | null;
+  created_at: number;
+}
+
+export interface AnnotationsFile {
+  version: number;
+  highlights: PdfAnnotation[];
+}
+
+/** 读取论文的阅读标注（annotations.json），无标注返回 null */
+export const getAnnotations = (paperId: string) =>
+  invoke<string | null>("get_annotations", { paperId });
+
+/** 把阅读标注 JSON 落盘为论文目录下的 annotations.json */
+export const saveAnnotations = (paperId: string, data: string) =>
+  invoke<void>("save_annotations", { paperId, data });

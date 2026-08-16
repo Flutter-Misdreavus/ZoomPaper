@@ -85,6 +85,7 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
               <PdfViewer
                 ref={pdfRef}
                 pdfPath={paper.pdf_path}
+                paperId={paperId}
                 initialPageIdx={initialPageIdx}
               />
             </TabsContent>

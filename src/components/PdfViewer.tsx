@@ -7,17 +7,78 @@ import {
   useState,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Minus, Plus } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  List,
+  ListTree,
+  Minus,
+  Plus,
+  StickyNote,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  getAnnotations,
+  saveAnnotations,
+  type AnnotationRect,
+  type PdfAnnotation,
+} from "@/lib/api";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const SCALE_STEP = 0.25;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
+
+/** 高亮色板（rgba，叠在白底页面上） */
+const HIGHLIGHT_COLORS = [
+  { name: "黄", color: "rgba(255,213,0,.45)" },
+  { name: "绿", color: "rgba(0,200,83,.35)" },
+  { name: "蓝", color: "rgba(64,156,255,.32)" },
+  { name: "粉", color: "rgba(255,64,129,.32)" },
+];
+
+/** PDF 大纲节点（doc.getOutline() 返回值的子集） */
+interface OutlineNode {
+  title: string;
+  bold: boolean;
+  italic: boolean;
+  dest: string | unknown[] | null;
+  url: string | null;
+  items: OutlineNode[];
+}
+
+/** 划选结果：按页分组的归一化矩形 */
+interface SelGroup {
+  pageIdx: number;
+  rects: AnnotationRect[];
+}
+
+/** 划选后的浮动工具条状态 */
+interface SelToolbar {
+  x: number;
+  y: number;
+  text: string;
+  groups: SelGroup[];
+}
+
+/** 笔记编辑弹层状态 */
+interface NoteEditor {
+  highlightId: string;
+  draft: string;
+  x: number;
+  y: number;
+}
 
 export interface PdfViewerHandle {
   /** 0-based 页码，对齐后端 page_idx */
@@ -26,6 +87,8 @@ export interface PdfViewerHandle {
 
 interface Props {
   pdfPath: string;
+  /** 论文 id：高亮/笔记按论文持久化到 annotations.json */
+  paperId: string;
   /** 初始跳入的目标页（0-based），文档加载后自动跳转 */
   initialPageIdx?: number;
 }
@@ -43,12 +106,50 @@ interface GestureEventLike extends Event {
   clientY: number;
 }
 
+function clamp01(v: number) {
+  return Math.min(1, Math.max(0, v));
+}
+
+/** 找到节点所属的页面容器（划选 range 的 startContainer 通常是文本 span） */
+function closestPage(node: Node | null): HTMLElement | null {
+  if (!node) return null;
+  const el =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as HTMLElement)
+      : node.parentElement;
+  return el?.closest?.(".zp-page") ?? null;
+}
+
+/** 复制兜底：navigator.clipboard 不可用时走 execCommand */
+async function copyTextToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    /* 走兜底 */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+}
+
 /**
  * 论文 PDF 直出：连续滚动 + 懒渲染（接近视口才 render canvas）。
  * 数据经 fetch(asset URL) → arrayBuffer 加载，避开 asset:// 协议的 range 请求兼容问题。
+ *
+ * 阅读体验：
+ * - 每页叠 pdf.js TextLayer（透明文字）→ 原生选中/复制；
+ * - 划选后浮动工具条 → 高亮（4 色）/ 笔记 / 复制；
+ * - 高亮/笔记持久化到论文目录 annotations.json（归一化矩形，随缩放自动缩放）；
+ * - 原生带 outline 的 PDF 显示目录侧栏，点击跳页。
  */
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfPath, initialPageIdx },
+  { pdfPath, paperId, initialPageIdx },
   ref,
 ) {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
@@ -62,9 +163,26 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // 设备像素比（封顶 2 控制内存）：Retina 屏需以更高密度渲染 canvas 后备缓冲
   const [dpr, setDpr] = useState(() => Math.min(window.devicePixelRatio || 1, 2));
 
+  // 阅读标注（高亮/笔记）
+  const [annotations, setAnnotations] = useState<PdfAnnotation[]>([]);
+  const [showAnnotations, setShowAnnotations] = useState(false);
+  const [selToolbar, setSelToolbar] = useState<SelToolbar | null>(null);
+  const [noteEditor, setNoteEditor] = useState<NoteEditor | null>(null);
+
+  // 目录（仅原生 outline）
+  const [outline, setOutline] = useState<OutlineNode[] | null>(null);
+  const [showToc, setShowToc] = useState(false);
+  const [expanded, setExpanded] = useState<Set<OutlineNode>>(new Set());
+  const [outlineTick, setOutlineTick] = useState(0);
+  const outlinePageRef = useRef<Map<OutlineNode, number>>(new Map());
+  const annotationsLoadedRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const renderedRef = useRef<Set<number>>(new Set());
+  // 每页的 TextLayer 实例（缩放重建时 cancel 旧实例）
+  const textLayersRef = useRef<(pdfjs.TextLayer | null)[]>([]);
   const effectiveScale = scale * fitScale;
   // 渲染用最新 effectiveScale（懒渲染 observer 不随 scale 重建，读 ref 避免闭包过期）
   const effectiveScaleRef = useRef(effectiveScale);
@@ -113,11 +231,14 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     };
     scaleRef.current = clamped;
     setScale(clamped);
+    // 缩放过程中旧选区已不对齐，收起浮动工具条
+    setSelToolbar(null);
   }
 
-  // 拖拽平移（仅放大后生效）
+  // 拖拽平移（仅放大后生效；文本层上不启动，保证放大后仍可划选文字）
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (scale <= 1 || !scrollRef.current) return;
+    if ((e.target as HTMLElement).closest?.(".textLayer")) return;
     const el = scrollRef.current;
     dragStartRef.current = {
       x: e.clientX,
@@ -152,6 +273,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       setError(null);
       setDoc(null);
       renderedRef.current.clear();
+      textLayersRef.current.forEach((tl) => tl?.cancel());
+      textLayersRef.current = [];
       try {
         const resp = await fetch(convertFileSrc(pdfPath));
         if (!resp.ok) throw new Error(`读取 PDF 失败（${resp.status}）`);
@@ -172,6 +295,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         setDoc(docProxy);
         setScale(1);
         setCurrentPage(1);
+        setShowToc(false);
+        setShowAnnotations(false);
       } catch (e) {
         if (!cancelled) setError(String(e));
       } finally {
@@ -183,6 +308,129 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       void task?.destroy();
     };
   }, [pdfPath]);
+
+  // 读取该论文已持久化的标注
+  useEffect(() => {
+    if (!doc) return;
+    let cancelled = false;
+    annotationsLoadedRef.current = false;
+    getAnnotations(paperId)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed.highlights)) {
+              const list = parsed.highlights.filter(
+                (h: unknown): h is PdfAnnotation =>
+                  !!h &&
+                  typeof (h as PdfAnnotation).id === "string" &&
+                  Number.isFinite((h as PdfAnnotation).page_idx) &&
+                  Array.isArray((h as PdfAnnotation).rects) &&
+                  (h as PdfAnnotation).rects.length > 0,
+              );
+              setAnnotations(list);
+              return;
+            }
+          } catch {
+            /* 解析失败视为无标注 */
+          }
+        }
+        setAnnotations([]);
+      })
+      .catch(() => {
+        if (!cancelled) setAnnotations([]);
+      })
+      .finally(() => {
+        if (!cancelled) annotationsLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, paperId]);
+
+  // 标注变更后防抖落盘（笔记输入防抖，增删改色即时进入该队列）
+  useEffect(() => {
+    if (!annotationsLoadedRef.current) return;
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      void saveAnnotations(
+        paperId,
+        JSON.stringify({ version: 1, highlights: annotations }),
+      ).catch(() => {});
+    }, 400);
+    return () => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [annotations, paperId]);
+
+  // 读取原生目录（无 outline 则保持 null，不显示目录按钮）
+  useEffect(() => {
+    if (!doc) return;
+    let cancelled = false;
+    outlinePageRef.current.clear();
+    setOutline(null);
+    doc
+      .getOutline()
+      .then((nodes) => {
+        if (cancelled) return;
+        const list = (nodes ?? []) as OutlineNode[];
+        if (list.length) {
+          setOutline(list);
+          setExpanded(new Set(list.filter((n) => n.items?.length)));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setOutline(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+
+  // 目录侧栏打开时一次性预解析所有节点页码（顺序 await + 缓存）
+  useEffect(() => {
+    if (!showToc || !doc || !outline) return;
+    let cancelled = false;
+    (async () => {
+      const stack = [...outline];
+      while (stack.length) {
+        const node = stack.pop()!;
+        if (node.items?.length) stack.push(...node.items);
+        if (!node.dest || outlinePageRef.current.has(node)) continue;
+        try {
+          const dest = Array.isArray(node.dest)
+            ? node.dest
+            : await doc.getDestination(node.dest);
+          if (dest && dest.length > 0 && dest[0] != null) {
+            const ref = dest[0];
+            const pageIdx =
+              typeof ref === "number"
+                ? ref - 1
+                : await doc.getPageIndex(
+                    ref as Parameters<typeof doc.getPageIndex>[0],
+                  );
+            if (!cancelled) {
+              outlinePageRef.current.set(node, pageIdx);
+              setOutlineTick((t) => t + 1);
+            }
+          }
+        } catch {
+          /* 无法解析页码的节点保持无页码 */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToc, doc, outline]);
 
   // fit-width：容器宽 / 第一页原始宽
   useEffect(() => {
@@ -304,11 +552,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     rerenderTimerRef.current = window.setTimeout(() => {
       renderedRef.current.clear();
       pageRefs.current.forEach((el, idx) => {
-        if (el) {
-          const canvas = el.querySelector("canvas");
-          if (canvas) canvas.remove();
-        }
-        void idx;
+        if (!el) return;
+        const canvas = el.querySelector("canvas");
+        if (canvas) canvas.remove();
+        textLayersRef.current[idx]?.cancel();
+        textLayersRef.current[idx] = null;
+        el.querySelector(".textLayer")?.remove();
       });
       // 对可见页直接渲染
       pageRefs.current.forEach((el, idx) => {
@@ -331,23 +580,243 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, effectiveScale, dpr]);
 
+  // 划选结束：把选区换算为各页归一化矩形，弹出浮动工具条
+  function handleMouseUp(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      setSelToolbar(null);
+      return;
+    }
+    const text = sel.toString().trim();
+    if (!text) {
+      setSelToolbar(null);
+      return;
+    }
+    const groups: SelGroup[] = [];
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const range = sel.getRangeAt(i);
+      const pageEl = closestPage(range.startContainer);
+      if (!pageEl) continue;
+      const pageIdx = Number(pageEl.dataset.pageIdx);
+      if (!Number.isFinite(pageIdx)) continue;
+      const pr = pageEl.getBoundingClientRect();
+      if (pr.width === 0 || pr.height === 0) continue;
+      const rects: AnnotationRect[] = [];
+      for (const r of Array.from(range.getClientRects())) {
+        const x = clamp01((r.left - pr.left) / pr.width);
+        const y = clamp01((r.top - pr.top) / pr.height);
+        const x2 = clamp01((r.right - pr.left) / pr.width);
+        const y2 = clamp01((r.bottom - pr.top) / pr.height);
+        if (x2 - x > 0.0005 && y2 - y > 0.0005) {
+          rects.push({ x, y, w: x2 - x, h: y2 - y });
+        }
+      }
+      if (rects.length) groups.push({ pageIdx, rects });
+    }
+    if (!groups.length) {
+      setSelToolbar(null);
+      return;
+    }
+    const last = sel.getRangeAt(sel.rangeCount - 1).getBoundingClientRect();
+    setSelToolbar({
+      x: Math.min(last.left, window.innerWidth - 320),
+      y: last.bottom + 8,
+      text,
+      groups,
+    });
+  }
+
+  // 建高亮（openNote 时同时打开笔记编辑）
+  function createHighlights(color: string, openNote = false) {
+    if (!selToolbar) return;
+    const now = Date.now();
+    const created: PdfAnnotation[] = selToolbar.groups.map((g) => ({
+      id: crypto.randomUUID(),
+      page_idx: g.pageIdx,
+      rects: g.rects,
+      color,
+      text: selToolbar.text.slice(0, 500),
+      note: null,
+      created_at: now,
+    }));
+    setAnnotations((prev) => [...prev, ...created]);
+    const pos = { x: selToolbar.x, y: selToolbar.y };
+    setSelToolbar(null);
+    // 清除浏览器原生选区，只保留我们绘制的高亮
+    window.getSelection()?.removeAllRanges();
+    if (openNote && created.length) {
+      setNoteEditor({ highlightId: created[0].id, draft: "", x: pos.x, y: pos.y + 44 });
+    }
+  }
+
+  async function copySelection() {
+    if (!selToolbar) return;
+    await copyTextToClipboard(selToolbar.text);
+    setSelToolbar(null);
+  }
+
+  function saveNote() {
+    if (!noteEditor) return;
+    const text = noteEditor.draft.trim();
+    setAnnotations((prev) =>
+      prev.map((a) =>
+        a.id === noteEditor.highlightId
+          ? { ...a, note: text ? { text, updated_at: Date.now() } : null }
+          : a,
+      ),
+    );
+    setNoteEditor(null);
+  }
+
+  function deleteHighlight(id: string) {
+    setAnnotations((prev) => prev.filter((a) => a.id !== id));
+  }
+
+  function startEditNote(hl: PdfAnnotation) {
+    setNoteEditor({
+      highlightId: hl.id,
+      draft: hl.note?.text ?? "",
+      x: Math.max(16, window.innerWidth / 2 - 160),
+      y: 120,
+    });
+  }
+
+  // Esc 关闭浮动层
+  useEffect(() => {
+    if (!selToolbar && !noteEditor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelToolbar(null);
+        setNoteEditor(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selToolbar, noteEditor]);
+
+  // 目录节点点击：跳页或打开外链
+  async function onOutlineClick(node: OutlineNode) {
+    if (node.url) {
+      void openUrl(node.url).catch(() => {});
+      return;
+    }
+    if (!node.dest || !doc) return;
+    const cached = outlinePageRef.current.get(node);
+    if (cached != null) {
+      jumpToPage(cached);
+      return;
+    }
+    try {
+      const dest = Array.isArray(node.dest)
+        ? node.dest
+        : await doc.getDestination(node.dest);
+      if (dest && dest.length > 0 && dest[0] != null) {
+        const ref = dest[0];
+        const pageIdx =
+          typeof ref === "number"
+            ? ref - 1
+            : await doc.getPageIndex(
+                ref as Parameters<typeof doc.getPageIndex>[0],
+              );
+        outlinePageRef.current.set(node, pageIdx);
+        setOutlineTick((t) => t + 1);
+        jumpToPage(pageIdx);
+      }
+    } catch {
+      /* 无法解析则忽略 */
+    }
+  }
+
+  function toggleExpand(node: OutlineNode) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(node)) next.delete(node);
+      else next.add(node);
+      return next;
+    });
+  }
+
+  function renderOutlineNodes(nodes: OutlineNode[], depth: number) {
+    return nodes.map((node, i) => (
+      <div key={i}>
+        <button
+          className={`group flex w-full items-center gap-1 rounded-md py-1 pr-1.5 text-left text-[13px] hover:bg-accent ${
+            node.bold ? "font-semibold" : ""
+          } ${node.italic ? "italic" : ""}`}
+          style={{ paddingLeft: 6 + depth * 14 }}
+          onClick={() => void onOutlineClick(node)}
+          title={node.title}
+        >
+          {node.items?.length ? (
+            expanded.has(node) ? (
+              <ChevronDown
+                className="h-3 w-3 shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleExpand(node);
+                }}
+              />
+            ) : (
+              <ChevronRight
+                className="h-3 w-3 shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleExpand(node);
+                }}
+              />
+            )
+          ) : (
+            <span className="w-3 shrink-0" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{node.title}</span>
+          {outlinePageRef.current.has(node) && (
+            <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+              {outlinePageRef.current.get(node)! + 1}
+            </span>
+          )}
+        </button>
+        {node.items?.length && expanded.has(node) && (
+          <div>{renderOutlineNodes(node.items, depth + 1)}</div>
+        )}
+      </div>
+    ));
+  }
+
   async function renderPage(
     docProxy: pdfjs.PDFDocumentProxy,
     idx: number,
   ) {
     const container = pageRefs.current[idx];
     if (!container || container.querySelector("canvas")) return;
-    const page = await docProxy.getPage(idx + 1);
-    // 后备缓冲按 dpr 倍渲染：canvas 物理像素 = CSS 像素 × dpr，显示尺寸不变 → 文字锐利
-    const viewport = page.getViewport({ scale: effectiveScaleRef.current * dpr });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(viewport.width);
-    canvas.height = Math.floor(viewport.height);
-    canvas.className = "block h-auto w-full";
-    container.appendChild(canvas);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+    try {
+      const page = await docProxy.getPage(idx + 1);
+      // 后备缓冲按 dpr 倍渲染：canvas 物理像素 = CSS 像素 × dpr，显示尺寸不变 → 文字锐利
+      const viewport = page.getViewport({ scale: effectiveScaleRef.current * dpr });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      canvas.className = "block h-auto w-full";
+      container.appendChild(canvas);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      // 文本层：CSS 比例（不乘 dpr），与 canvas 并行渲染
+      const textDiv = document.createElement("div");
+      textDiv.className = "textLayer";
+      container.appendChild(textDiv);
+      const textLayer = new pdfjs.TextLayer({
+        textContentSource: page.streamTextContent(),
+        container: textDiv,
+        viewport: page.getViewport({ scale: effectiveScaleRef.current }),
+      });
+      textLayersRef.current[idx] = textLayer;
+      const textLayerTask = textLayer.render().catch(() => {
+        /* 文档销毁/缩放取消时静默忽略 */
+      });
+      await Promise.all([page.render({ canvas, canvasContext: ctx, viewport }).promise, textLayerTask]);
+    } catch {
+      /* 文档销毁/缩放取消时静默忽略 */
+    }
   }
 
   function jumpToPage(pageIdx: number) {
@@ -384,10 +853,47 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     );
   }
 
+  // 按页分组高亮（供 overlay 渲染）
+  const highlightsByPage = new Map<number, PdfAnnotation[]>();
+  for (const hl of annotations) {
+    const list = highlightsByPage.get(hl.page_idx);
+    if (list) list.push(hl);
+    else highlightsByPage.set(hl.page_idx, [hl]);
+  }
+  const sortedAnnotations = [...annotations].sort(
+    (a, b) => a.page_idx - b.page_idx || a.created_at - b.created_at,
+  );
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center justify-end gap-2 pt-2 pr-4">
+      <div className="flex items-center gap-2 pt-2 pr-4">
+        <div className="mr-auto flex items-center gap-1 pl-4">
+          {outline && outline.length > 0 && (
+            <Button
+              variant={showToc ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowToc((v) => !v)}
+              title="目录"
+            >
+              <ListTree className="h-3.5 w-3.5" />
+              <span className="ml-1 hidden sm:inline">目录</span>
+            </Button>
+          )}
+          <Button
+            variant={showAnnotations ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => setShowAnnotations((v) => !v)}
+            title="注释"
+          >
+            <List className="h-3.5 w-3.5" />
+            <span className="ml-1 hidden sm:inline">
+              注释{annotations.length ? ` ${annotations.length}` : ""}
+            </span>
+          </Button>
+        </div>
         <span className="text-xs text-muted-foreground tabular-nums">
           {currentPage} / {slots.length}
         </span>
@@ -423,29 +929,238 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onMouseUp={handleMouseUp}
+        onScroll={() => setSelToolbar(null)}
         className={`min-h-0 flex-1 overflow-auto pt-2 pr-4 pb-4 ${
           scale > 1 ? (dragging ? "cursor-grabbing" : "cursor-grab") : ""
         }`}
       >
         <div className="flex flex-col gap-3">
-          {slots.map((slot, idx) => (
-            <div
-              key={idx}
-              data-page-idx={idx}
-              ref={(el) => {
-                pageRefs.current[idx] = el;
-              }}
-              className={`mx-auto overflow-hidden rounded-sm bg-white shadow-sm ring-1 ring-border transition-shadow ${
-                jumpFlash === idx ? "ring-2 ring-primary" : ""
-              }`}
-              style={{
-                width: slot.width * effectiveScale,
-                aspectRatio: `${slot.width} / ${slot.height}`,
-              }}
-            />
-          ))}
+          {slots.map((slot, idx) => {
+            const pageHighlights = highlightsByPage.get(idx);
+            return (
+              <div
+                key={idx}
+                data-page-idx={idx}
+                ref={(el) => {
+                  pageRefs.current[idx] = el;
+                }}
+                className={`zp-page relative mx-auto overflow-hidden rounded-sm bg-white shadow-sm ring-1 ring-border transition-shadow ${
+                  jumpFlash === idx ? "ring-2 ring-primary" : ""
+                }`}
+                style={
+                  {
+                    width: slot.width * effectiveScale,
+                    aspectRatio: `${slot.width} / ${slot.height}`,
+                    // pdf.js 文本层契约：尺寸/字号按该变量实时缩放（随 canvas CSS 拉伸对齐）
+                    "--total-scale-factor": effectiveScale,
+                    "--scale-round-x": "0.01px",
+                    "--scale-round-y": "0.01px",
+                  } as React.CSSProperties
+                }
+              >
+                {pageHighlights?.length ? (
+                  <div className="zp-highlights">
+                    {pageHighlights.map((hl) =>
+                      hl.rects.map((r, i) => (
+                        <div
+                          key={`${hl.id}-${i}`}
+                          className="rounded-[2px]"
+                          style={{
+                            position: "absolute",
+                            left: `${r.x * 100}%`,
+                            top: `${r.y * 100}%`,
+                            width: `${r.w * 100}%`,
+                            height: `${r.h * 100}%`,
+                            background: hl.color,
+                          }}
+                        />
+                      )),
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </div>
+
+      {/* 划选浮动工具条 */}
+      {selToolbar && (
+        <div
+          className="fixed z-50 flex items-center gap-1 rounded-lg border bg-popover px-1.5 py-1 shadow-lg select-none"
+          style={{ left: selToolbar.x, top: selToolbar.y }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {HIGHLIGHT_COLORS.map((c) => (
+            <button
+              key={c.name}
+              title={`高亮：${c.name}`}
+              className="h-5 w-5 rounded-full ring-1 ring-black/15 transition-transform hover:scale-110"
+              style={{ background: c.color }}
+              onClick={() => createHighlights(c.color)}
+            />
+          ))}
+          <Separator orientation="vertical" className="mx-0.5 h-4" />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-xs"
+            onClick={() => createHighlights(HIGHLIGHT_COLORS[0].color, true)}
+          >
+            <StickyNote className="h-3 w-3" />
+            笔记
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-xs"
+            onClick={() => void copySelection()}
+          >
+            <Copy className="h-3 w-3" />
+            复制
+          </Button>
+        </div>
+      )}
+
+      {/* 笔记编辑弹层 */}
+      {noteEditor && (
+        <div
+          className="fixed z-50 w-72 rounded-lg border bg-popover p-3 shadow-lg"
+          style={{
+            left: Math.max(8, Math.min(noteEditor.x, window.innerWidth - 300)),
+            top: Math.max(8, noteEditor.y),
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <Textarea
+            autoFocus
+            value={noteEditor.draft}
+            onChange={(e) =>
+              setNoteEditor({ ...noteEditor, draft: e.target.value })
+            }
+            placeholder="写下你的笔记…"
+            className="min-h-20 text-sm"
+          />
+          <div className="mt-2 flex justify-end gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setNoteEditor(null)}
+            >
+              取消
+            </Button>
+            <Button size="sm" className="h-7 px-2 text-xs" onClick={saveNote}>
+              <Check className="h-3 w-3" />
+              保存
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 目录侧栏（仅原生 outline） */}
+      {showToc && outline && outline.length > 0 && (
+        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background/95 backdrop-blur">
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-sm font-semibold">目录</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setShowToc(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div
+            key={outlineTick}
+            className="min-h-0 flex-1 overflow-y-auto px-2 pb-3"
+          >
+            {renderOutlineNodes(outline, 0)}
+          </div>
+        </div>
+      )}
+
+      {/* 注释列表面板 */}
+      {showAnnotations && (
+        <div className="absolute inset-y-0 right-0 z-20 flex w-72 flex-col border-l bg-background/95 backdrop-blur">
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-sm font-semibold">
+              注释（{annotations.length}）
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setShowAnnotations(false)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+            {sortedAnnotations.length === 0 && (
+              <p className="px-1 text-xs text-muted-foreground">
+                暂无高亮/笔记。划选文字后点「高亮」即可添加。
+              </p>
+            )}
+            {sortedAnnotations.map((hl) => (
+              <div
+                key={hl.id}
+                className="group mb-1.5 cursor-pointer rounded-lg border p-2 hover:bg-accent/60"
+                onClick={() => {
+                  jumpToPage(hl.page_idx);
+                  setJumpFlash(hl.page_idx);
+                }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ background: hl.color }}
+                  />
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    第 {hl.page_idx + 1} 页
+                  </span>
+                  <span className="ml-auto flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5"
+                      title="编辑笔记"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEditNote(hl);
+                      }}
+                    >
+                      <StickyNote className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-destructive"
+                      title="删除高亮"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteHighlight(hl.id);
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-xs leading-snug text-foreground/85">
+                  {hl.text}
+                </p>
+                {hl.note && (
+                  <p className="mt-1 line-clamp-2 border-l-2 border-primary/40 pl-2 text-xs text-muted-foreground italic">
+                    {hl.note.text}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 });

@@ -54,6 +54,8 @@ pub fn run() {
             commands::translate_chunk,
             commands::save_translation,
             commands::get_translation,
+            commands::get_annotations,
+            commands::save_annotations,
             commands::ask_question,
             commands::list_conversations,
             commands::get_conversation,

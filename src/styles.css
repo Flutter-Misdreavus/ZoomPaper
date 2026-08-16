@@ -214,5 +214,74 @@
   }
   .pressable:active {
     transform: none;
-  }
+  }}
+/* ============ 论文 PDF 阅读：pdf.js 文本层与标注 ============ */
+
+/* 文本层：叠在 canvas 上的透明文字，提供原生选中/复制。
+   契约与 pdfjs-dist/web/pdf_viewer.css 的 .textLayer 一致：
+   --total-scale-factor / --scale-round-x|y 由页容器内联样式提供（React style），
+   --min-font-size 由 TextLayer 构造时写入。 */
+.textLayer {
+  color-scheme: only light;
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  -webkit-text-size-adjust: none;
+  -moz-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  /* 高于高亮 overlay（z-index:0），保证选区底色/划选始终在最上层 */
+  z-index: 1;
+}
+
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+}
+
+.textLayer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+/* 选区底色（透明文字靠它显形） */
+.textLayer ::selection {
+  background: rgba(0, 110, 255, 0.28);
+}
+
+/* 高亮 overlay：归一化矩形，百分比定位随缩放自动缩放；不拦截指针，保证文本仍可划选。
+   层级：canvas(普通流) < overlay(z-index:0) < textLayer(z-index:1) */
+.zp-highlights {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
 }
