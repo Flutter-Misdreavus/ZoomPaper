@@ -78,6 +78,21 @@ interface NoteEditor {
   draft: string;
   x: number;
   y: number;
+  /** 创建模式：从划选工具条「笔记」进入时携带本次新建的高亮 id，取消时回滚删除 */
+  pendingIds?: string[];
+}
+
+/**
+ * 文本层宽度校正用的 item 记录：与 TextLayer.textDivs 严格一一对应
+ * （仅记录 typeof str === "string" 的 item；空串 item 两者都记但 span 不挂载，
+ * marked-content item 两者都跳过）。
+ */
+interface TextItemLog {
+  str: string;
+  /** PDF 空间下的字形推进宽度 */
+  width: number;
+  transform: number[];
+  dir: string;
 }
 
 export interface PdfViewerHandle {
@@ -136,6 +151,43 @@ async function copyTextToClipboard(text: string) {
   ta.select();
   document.execCommand("copy");
   ta.remove();
+}
+
+/**
+ * 按 canvas 字形宽度校正文本层 span。
+ *
+ * 根因：pdf.js 文本层 span 使用通用字体族（serif/sans-serif/monospace）渲染，
+ * 而 canvas 用 PDF 内嵌字体绘制字形，两者宽度度量不同 → 选中框比真实文字宽（右缘超出）。
+ * span 左缘（left%）与 canvas 线性映射一致，只需校正宽度：把 --scale-x 设为
+ * (item.width × cssScale) / span 实际渲染宽度，transform-origin 0% 0% 保证左缘不动、
+ * 右缘精确对齐 canvas 字形。与 pdf.js 自带 stretched-text 校正同机制。
+ *
+ * 用 getBoundingClientRect().width（含 scaleX / scale(min-font-size-inv) 叠加效果）作基准，
+ * 天然免疫最小字号等叠加缩放；ratio 与缩放比例无关，缩放手势期间仍保持有效。
+ */
+function correctTextLayerWidths(
+  textLayer: pdfjs.TextLayer,
+  log: TextItemLog[],
+  cssScale: number,
+) {
+  const divs = textLayer.textDivs;
+  const n = Math.min(divs.length, log.length);
+  for (let i = 0; i < n; i++) {
+    const div = divs[i];
+    if (!div.isConnected) continue;
+    const item = log[i];
+    if (item.dir === "rtl") continue;
+    // 跳过旋转/竖排文本：角度由 item transform 的前两个元素决定
+    const angle = Math.atan2(item.transform[1], item.transform[0]);
+    if (Math.abs(angle) > 0.01) continue;
+    const target = item.width * cssScale;
+    const actual = div.getBoundingClientRect().width;
+    if (actual > 0.5 && Math.abs(target - actual) > 0.5) {
+      // 宽夹紧仅防病态数据；真实字体度量差异通常在 0.85–1.25 之间
+      const ratio = Math.min(4, Math.max(0.25, target / actual));
+      div.style.setProperty("--scale-x", String(ratio));
+    }
+  }
 }
 
 /**
@@ -646,7 +698,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     // 清除浏览器原生选区，只保留我们绘制的高亮
     window.getSelection()?.removeAllRanges();
     if (openNote && created.length) {
-      setNoteEditor({ highlightId: created[0].id, draft: "", x: pos.x, y: pos.y + 44 });
+      setNoteEditor({
+        highlightId: created[0].id,
+        draft: "",
+        x: pos.x,
+        y: pos.y + 44,
+        pendingIds: created.map((a) => a.id),
+      });
     }
   }
 
@@ -669,6 +727,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     setNoteEditor(null);
   }
 
+  /** 关闭笔记弹层；创建模式（带 pendingIds）下取消即回滚本次新建的高亮 */
+  function closeNoteEditor() {
+    if (noteEditor?.pendingIds?.length) {
+      const pending = new Set(noteEditor.pendingIds);
+      setAnnotations((prev) => prev.filter((a) => !pending.has(a.id)));
+    }
+    setNoteEditor(null);
+  }
+
   function deleteHighlight(id: string) {
     setAnnotations((prev) => prev.filter((a) => a.id !== id));
   }
@@ -682,17 +749,18 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     });
   }
 
-  // Esc 关闭浮动层
+  // Esc 关闭浮动层（创建中的笔记一并回滚）
   useEffect(() => {
     if (!selToolbar && !noteEditor) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setSelToolbar(null);
-        setNoteEditor(null);
+        closeNoteEditor();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selToolbar, noteEditor]);
 
   // 目录节点点击：跳页或打开外链
@@ -800,19 +868,56 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       container.appendChild(canvas);
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      // 文本层：CSS 比例（不乘 dpr），与 canvas 并行渲染
+      // 文本层：CSS 比例（不乘 dpr），与 canvas 并行渲染。
+      // 包装 textContentSource 以按序记录每个文本 item（与 textDivs 一一对应），
+      // 渲染完成后做宽度校正，解决通用字体族与内嵌字体的宽度度量差异。
       const textDiv = document.createElement("div");
       textDiv.className = "textLayer";
       container.appendChild(textDiv);
+      const itemLog: TextItemLog[] = [];
+      const wrappedStream = new ReadableStream({
+        async start(controller) {
+          const reader = page.streamTextContent().getReader();
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) {
+                controller.close();
+                return;
+              }
+              if (value?.items) {
+                for (const it of value.items) {
+                  if (typeof it.str === "string") {
+                    itemLog.push({
+                      str: it.str,
+                      width: it.width,
+                      transform: it.transform,
+                      dir: it.dir,
+                    });
+                  }
+                }
+              }
+              controller.enqueue(value);
+            }
+          } catch (e) {
+            controller.error(e);
+          }
+        },
+      });
       const textLayer = new pdfjs.TextLayer({
-        textContentSource: page.streamTextContent(),
+        textContentSource: wrappedStream,
         container: textDiv,
         viewport: page.getViewport({ scale: effectiveScaleRef.current }),
       });
       textLayersRef.current[idx] = textLayer;
-      const textLayerTask = textLayer.render().catch(() => {
-        /* 文档销毁/缩放取消时静默忽略 */
-      });
+      const textLayerTask = textLayer
+        .render()
+        .then(() => {
+          correctTextLayerWidths(textLayer, itemLog, effectiveScaleRef.current);
+        })
+        .catch(() => {
+          /* 文档销毁/缩放取消时静默忽略 */
+        });
       await Promise.all([page.render({ canvas, canvasContext: ctx, viewport }).promise, textLayerTask]);
     } catch {
       /* 文档销毁/缩放取消时静默忽略 */
@@ -1047,7 +1152,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
               variant="ghost"
               size="sm"
               className="h-7 px-2 text-xs"
-              onClick={() => setNoteEditor(null)}
+              onClick={closeNoteEditor}
             >
               取消
             </Button>
