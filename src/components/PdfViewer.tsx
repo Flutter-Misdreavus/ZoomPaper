@@ -190,6 +190,66 @@ function correctTextLayerWidths(
   }
 }
 
+/** 链接/目录目标解析结果：pageIdx 0-based；yFrac 为目标点距页顶比例（0..1，无则跳页顶） */
+interface DestTarget {
+  pageIdx: number;
+  yFrac?: number;
+}
+
+/** 仅放行 http/https 外部链接（拦截 javascript:/file:/data: 等危险协议与无 scheme 的裸串） */
+function validateLinkUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (!/^https?:\/\//i.test(url)) return null;
+  try {
+    const u = new URL(url);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+  } catch {
+    /* 非法 URL */
+  }
+  return null;
+}
+
+/**
+ * 解析 PDF 链接/目录目标为页码与页内位置。
+ * dest 为数组直接使用，为字符串（命名目标）先 doc.getDestination 解析；
+ * 目标格式 [ref, {name:'XYZ'|'FitH'|...}, x, y, zoom]。
+ * 带 y 坐标的目标用目标页 viewport 换算为自顶向下比例（旋转页也正确）。
+ */
+async function resolveDestination(
+  dest: string | unknown[],
+  doc: pdfjs.PDFDocumentProxy,
+): Promise<DestTarget | null> {
+  try {
+    const d = Array.isArray(dest) ? dest : await doc.getDestination(dest);
+    if (!d || d.length === 0 || d[0] == null) return null;
+    const ref = d[0];
+    const pageIdx =
+      typeof ref === "number"
+        ? ref - 1
+        : await doc.getPageIndex(ref as Parameters<typeof doc.getPageIndex>[0]);
+    // 定位参数：d[1] 为 {name:...}，d[2..] 为坐标（PDF 空间，y 向上）
+    const fit = d[1] as { name?: string } | null | undefined;
+    let x: number | null | undefined;
+    let y: number | null | undefined;
+    if (fit?.name === "XYZ") {
+      x = d[2] as number | null;
+      y = d[3] as number | null;
+    } else if (fit?.name === "FitH" || fit?.name === "FitBH") {
+      y = d[2] as number | null;
+    }
+    let yFrac: number | undefined;
+    if (typeof y === "number") {
+      const page = await doc.getPage(pageIdx + 1);
+      const vp = page.getViewport({ scale: 1 });
+      const [, vy] = vp.convertToViewportPoint(typeof x === "number" ? x : 0, y);
+      yFrac = Math.min(1, Math.max(0, vy / vp.height));
+    }
+    return { pageIdx, yFrac };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 论文 PDF 直出：连续滚动 + 懒渲染（接近视口才 render canvas）。
  * 数据经 fetch(asset URL) → arrayBuffer 加载，避开 asset:// 协议的 range 请求兼容问题。
@@ -235,6 +295,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const renderedRef = useRef<Set<number>>(new Set());
   // 每页的 TextLayer 实例（缩放重建时 cancel 旧实例）
   const textLayersRef = useRef<(pdfjs.TextLayer | null)[]>([]);
+  // 已构建链接层的页（链接层为百分比定位，缩放重建时无需重建）
+  const linksBuiltRef = useRef<Set<number>>(new Set());
   const effectiveScale = scale * fitScale;
   // 渲染用最新 effectiveScale（懒渲染 observer 不随 scale 重建，读 ref 避免闭包过期）
   const effectiveScaleRef = useRef(effectiveScale);
@@ -287,10 +349,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     setSelToolbar(null);
   }
 
-  // 拖拽平移（仅放大后生效；文本层上不启动，保证放大后仍可划选文字）
+  // 拖拽平移（仅放大后生效；文本层/链接层上不启动，保证放大后仍可划选与点击链接）
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (scale <= 1 || !scrollRef.current) return;
-    if ((e.target as HTMLElement).closest?.(".textLayer")) return;
+    if ((e.target as HTMLElement).closest?.(".textLayer, .zp-links")) return;
     const el = scrollRef.current;
     dragStartRef.current = {
       x: e.clientX,
@@ -325,6 +387,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       setError(null);
       setDoc(null);
       renderedRef.current.clear();
+      linksBuiltRef.current.clear();
       textLayersRef.current.forEach((tl) => tl?.cancel());
       textLayersRef.current = [];
       try {
@@ -457,25 +520,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         const node = stack.pop()!;
         if (node.items?.length) stack.push(...node.items);
         if (!node.dest || outlinePageRef.current.has(node)) continue;
-        try {
-          const dest = Array.isArray(node.dest)
-            ? node.dest
-            : await doc.getDestination(node.dest);
-          if (dest && dest.length > 0 && dest[0] != null) {
-            const ref = dest[0];
-            const pageIdx =
-              typeof ref === "number"
-                ? ref - 1
-                : await doc.getPageIndex(
-                    ref as Parameters<typeof doc.getPageIndex>[0],
-                  );
-            if (!cancelled) {
-              outlinePageRef.current.set(node, pageIdx);
-              setOutlineTick((t) => t + 1);
-            }
-          }
-        } catch {
-          /* 无法解析页码的节点保持无页码 */
+        const target = await resolveDestination(node.dest, doc);
+        if (!cancelled && target) {
+          outlinePageRef.current.set(node, target.pageIdx);
+          setOutlineTick((t) => t + 1);
         }
       }
     })();
@@ -483,6 +531,41 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       cancelled = true;
     };
   }, [showToc, doc, outline]);
+
+  // 选择结束（mouseup / 选区清空）移除各页文本层 selecting，恢复链接可点；
+  // 选区存在期间保持链接禁用（官方行为：先点空白清除选区，再点链接）
+  useEffect(() => {
+    if (!doc) return;
+    const clearSelecting = () => {
+      for (const el of pageRefs.current) {
+        el?.querySelector(".textLayer")?.classList.remove("selecting");
+      }
+    };
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      const textLayers = pageRefs.current
+        .map((el) => el?.querySelector(".textLayer"))
+        .filter((tl): tl is HTMLElement => !!tl);
+      if (!sel || sel.isCollapsed) {
+        for (const tl of textLayers) tl.classList.remove("selecting");
+        return;
+      }
+      // 先全部清除，再给选区相交的页加上（避免陈旧 selecting 残留）
+      for (const tl of textLayers) tl.classList.remove("selecting");
+      for (let i = 0; i < sel.rangeCount; i++) {
+        const range = sel.getRangeAt(i);
+        for (const tl of textLayers) {
+          if (range.intersectsNode(tl)) tl.classList.add("selecting");
+        }
+      }
+    };
+    document.addEventListener("mouseup", clearSelecting);
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => {
+      document.removeEventListener("mouseup", clearSelecting);
+      document.removeEventListener("selectionchange", onSelectionChange);
+    };
+  }, [doc]);
 
   // fit-width：容器宽 / 第一页原始宽
   useEffect(() => {
@@ -775,24 +858,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       jumpToPage(cached);
       return;
     }
-    try {
-      const dest = Array.isArray(node.dest)
-        ? node.dest
-        : await doc.getDestination(node.dest);
-      if (dest && dest.length > 0 && dest[0] != null) {
-        const ref = dest[0];
-        const pageIdx =
-          typeof ref === "number"
-            ? ref - 1
-            : await doc.getPageIndex(
-                ref as Parameters<typeof doc.getPageIndex>[0],
-              );
-        outlinePageRef.current.set(node, pageIdx);
-        setOutlineTick((t) => t + 1);
-        jumpToPage(pageIdx);
-      }
-    } catch {
-      /* 无法解析则忽略 */
+    const target = await resolveDestination(node.dest, doc);
+    if (target) {
+      outlinePageRef.current.set(node, target.pageIdx);
+      setOutlineTick((t) => t + 1);
+      jumpToPage(target.pageIdx);
     }
   }
 
@@ -874,6 +944,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const textDiv = document.createElement("div");
       textDiv.className = "textLayer";
       container.appendChild(textDiv);
+      // 官方 selecting 机制：从文本层按下进入选择模式 → 链接层临时失效（可划选穿越链接）
+      textDiv.addEventListener("mousedown", () => {
+        textDiv.classList.add("selecting");
+      });
       const itemLog: TextItemLog[] = [];
       const wrappedStream = new ReadableStream({
         async start(controller) {
@@ -918,7 +992,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         .catch(() => {
           /* 文档销毁/缩放取消时静默忽略 */
         });
-      await Promise.all([page.render({ canvas, canvasContext: ctx, viewport }).promise, textLayerTask]);
+      // 链接层：每页仅构建一次（百分比定位，缩放重建时无需重建）
+      const linksTask = buildLinksLayer(page, idx).catch(() => {});
+      await Promise.all([page.render({ canvas, canvasContext: ctx, viewport }).promise, textLayerTask, linksTask]);
     } catch {
       /* 文档销毁/缩放取消时静默忽略 */
     }
@@ -931,6 +1007,99 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     setCurrentPage(pageIdx + 1);
     setJumpFlash(pageIdx);
     window.setTimeout(() => setJumpFlash(null), 1200);
+  }
+
+  /** 跳转到目标：有 yFrac 时精确滚动到页内位置，否则跳页顶 */
+  function jumpToDest(target: DestTarget) {
+    const scroller = scrollRef.current;
+    const el = pageRefs.current[target.pageIdx];
+    const slot = slots[target.pageIdx];
+    if (!scroller || !el || !slot || target.yFrac == null) {
+      jumpToPage(target.pageIdx);
+      return;
+    }
+    const pageTop =
+      el.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    const targetTop = pageTop + target.yFrac * slot.height * effectiveScale;
+    scroller.scrollTo({ top: targetTop, behavior: "smooth" });
+    setCurrentPage(target.pageIdx + 1);
+    setJumpFlash(target.pageIdx);
+    window.setTimeout(() => setJumpFlash(null), 1200);
+  }
+
+  /** 链接点击：外链放行 http/https 打开系统浏览器；内部 dest 解析后精确跳转 */
+  async function handleLinkClick(annotation: unknown) {
+    const a = annotation as {
+      url?: string | null;
+      unsafeUrl?: string | null;
+      dest?: string | unknown[] | null;
+    };
+    if (a.url || a.unsafeUrl) {
+      const url = validateLinkUrl(a.url ?? a.unsafeUrl);
+      if (url) void openUrl(url).catch(() => {});
+      return;
+    }
+    if (a.dest && doc) {
+      const target = await resolveDestination(a.dest, doc);
+      if (target) jumpToDest(target);
+    }
+  }
+
+  /** 构建某页的链接层（百分比定位，缩放自动缩放；每页仅一次） */
+  async function buildLinksLayer(page: pdfjs.PDFPageProxy, idx: number) {
+    const container = pageRefs.current[idx];
+    if (!container || linksBuiltRef.current.has(idx)) return;
+    linksBuiltRef.current.add(idx);
+    let annotations: Array<{
+      annotationType?: number;
+      rect?: number[];
+      url?: string | null;
+      unsafeUrl?: string | null;
+      dest?: string | unknown[] | null;
+    }> = [];
+    try {
+      annotations = await page.getAnnotations({ intent: "display" });
+    } catch {
+      return;
+    }
+    const links = annotations.filter(
+      (a) =>
+        a.annotationType === pdfjs.AnnotationType.LINK &&
+        (a.url || a.unsafeUrl || a.dest) &&
+        Array.isArray(a.rect) &&
+        a.rect.length === 4,
+    );
+    if (!links.length) return;
+    const viewport = page.getViewport({ scale: 1 });
+    const W = viewport.width;
+    const H = viewport.height;
+    const layer = document.createElement("div");
+    layer.className = "zp-links";
+    for (const link of links) {
+      const rect = link.rect!;
+      const [x1, y1] = viewport.convertToViewportPoint(rect[0], rect[1]);
+      const [x2, y2] = viewport.convertToViewportPoint(rect[2], rect[3]);
+      const left = clamp01(Math.min(x1, x2) / W);
+      const top = clamp01(Math.min(y1, y2) / H);
+      const right = clamp01(Math.max(x1, x2) / W);
+      const bottom = clamp01(Math.max(y1, y2) / H);
+      if (right - left <= 0.0005 || bottom - top <= 0.0005) continue;
+      const el = document.createElement("a");
+      el.className = "zp-link";
+      el.style.left = `${left * 100}%`;
+      el.style.top = `${top * 100}%`;
+      el.style.width = `${(right - left) * 100}%`;
+      el.style.height = `${(bottom - top) * 100}%`;
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleLinkClick(link);
+      });
+      layer.appendChild(el);
+    }
+    if (layer.childElementCount) container.appendChild(layer);
   }
 
   useImperativeHandle(ref, () => ({ jumpToPage }));

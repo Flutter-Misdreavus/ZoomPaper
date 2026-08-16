@@ -285,3 +285,33 @@
   z-index: 0;
   pointer-events: none;
 }
+
+/* 链接 overlay：PDF 内部/外部超链接可点击区域。
+   层级：canvas(普通流) < highlights(z0) < textLayer(z1) < links(z2)。
+   容器不拦截指针，仅链接 <a> 可点；悬停显示浅黄色提示（pdf.js 官方同款）。 */
+.zp-links {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.zp-links a {
+  position: absolute;
+  /* pointer-events 是继承属性：容器为 none，链接必须显式重新启用，否则收不到 hover/点击 */
+  pointer-events: auto;
+  cursor: pointer;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+.zp-links a:hover {
+  opacity: 0.15;
+  background: #ffd800;
+}
+
+/* 选择期间禁用链接：从文本层按住拖动划选时，链接让位给文字（官方 .selecting 机制） */
+.textLayer.selecting ~ .zp-links a {
+  pointer-events: none;
+}
