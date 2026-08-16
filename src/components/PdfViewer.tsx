@@ -21,6 +21,7 @@ import {
   Copy,
   List,
   ListTree,
+  MessageSquare,
   Minus,
   Plus,
   StickyNote,
@@ -98,6 +99,8 @@ interface TextItemLog {
 export interface PdfViewerHandle {
   /** 0-based 页码，对齐后端 page_idx */
   jumpToPage: (pageIdx: number) => void;
+  /** 跳转到选中段落位置：有 rects 时精确滚动到段落顶部，否则跳页顶 */
+  jumpToSelection: (pageIdx: number, rects?: AnnotationRect[]) => void;
 }
 
 interface Props {
@@ -106,6 +109,8 @@ interface Props {
   paperId: string;
   /** 初始跳入的目标页（0-based），文档加载后自动跳转 */
   initialPageIdx?: number;
+  /** 点浮动工具条「提问」时回调（text 选中文本，pageIdx 0-based，rects 归一化矩形用于精确定位） */
+  onAskSelection?: (text: string, pageIdx: number, rects?: AnnotationRect[]) => void;
 }
 
 interface PageSlot {
@@ -261,7 +266,7 @@ async function resolveDestination(
  * - 原生带 outline 的 PDF 显示目录侧栏，点击跳页。
  */
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfPath, paperId, initialPageIdx },
+  { pdfPath, paperId, initialPageIdx, onAskSelection },
   ref,
 ) {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
@@ -797,6 +802,14 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     setSelToolbar(null);
   }
 
+  /** 点「提问」：把选中文本（含页码与归一化矩形）同步到右侧 AI 会话的上下文引用区 */
+  function askSelection() {
+    if (!selToolbar || !onAskSelection) return;
+    const g = selToolbar.groups[0];
+    onAskSelection(selToolbar.text, g.pageIdx, g.rects);
+    setSelToolbar(null);
+  }
+
   function saveNote() {
     if (!noteEditor) return;
     const text = noteEditor.draft.trim();
@@ -1103,7 +1116,16 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     if (layer.childElementCount) container.appendChild(layer);
   }
 
-  useImperativeHandle(ref, () => ({ jumpToPage }));
+  /** 跳转到选中段落位置：有归一化矩形时精确滚动到段落顶部（跨缩放仍有效），否则跳页顶 */
+  function jumpToSelection(pageIdx: number, rects?: AnnotationRect[]) {
+    if (rects?.length) {
+      jumpToDest({ pageIdx, yFrac: rects[0].y });
+    } else {
+      jumpToPage(pageIdx);
+    }
+  }
+
+  useImperativeHandle(ref, () => ({ jumpToPage, jumpToSelection }));
 
   // 文档就绪后跳到外部指定页（搜索/引用定位）
   useEffect(() => {
@@ -1277,6 +1299,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             />
           ))}
           <Separator orientation="vertical" className="mx-0.5 h-4" />
+          {onAskSelection && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-xs"
+              onClick={askSelection}
+            >
+              <MessageSquare className="h-3 w-3" />
+              提问
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"

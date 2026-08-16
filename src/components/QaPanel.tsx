@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { QaChat } from "@/components/QaChat";
 import { FeynmanChat } from "@/components/FeynmanChat";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { AnnotationRect } from "@/lib/api";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 
 const WIDTH_KEY = "zoompaper.qaWidth";
@@ -18,25 +19,59 @@ function loadWidth(): number {
   return v >= MIN_WIDTH && v <= MAX_WIDTH ? v : DEFAULT_WIDTH;
 }
 
+/** PDF 选中段落（上下文引用条目；rects 为归一化矩形，用于「跳转到原文」精确定位） */
+export interface AskSelection {
+  text: string;
+  pageIdx: number;
+  rects?: AnnotationRect[];
+}
+
+export interface QaPanelHandle {
+  /** 接收 PDF 选中的段落：展开面板并把该段追加到上下文引用区（去重、有上限） */
+  acceptSelection: (text: string, pageIdx: number, rects?: AnnotationRect[]) => void;
+}
+
 interface Props {
   paperId: string;
   /** 引用点击后 PDF 内跳页（0-based） */
   onJumpPage?: (pageIdx: number) => void;
+  /** 引用区「跳转到原文」：跳回 PDF 选中段落所在位置 */
+  onJumpToSelection?: (pageIdx: number, rects?: AnnotationRect[]) => void;
 }
+
+/** 上下文引用条数上限 */
+const MAX_SELECTIONS = 5;
 
 /**
  * 阅读页右侧问答栏：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
  * 可收纳为 40px 竖条（宽度过渡 240ms ease-drawer）。
  * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
  */
-export function QaPanel({ paperId, onJumpPage }: Props) {
+export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
+  { paperId, onJumpPage, onJumpToSelection },
+  ref,
+) {
   const [width, setWidth] = useState(loadWidth);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSED_KEY) === "1",
   );
   const [dragging, setDragging] = useState(false);
+  // PDF 选中的段落列表（上下文引用区，可多条；发送成功后由 QaChat 回调清空）
+  const [selections, setSelections] = useState<AskSelection[]>([]);
   const dragStart = useRef<{ x: number; width: number; max: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    acceptSelection(text: string, pageIdx: number, rects?: AnnotationRect[]) {
+      setCollapsed(false);
+      setSelections((prev) => {
+        // 同页同文本去重；达到上限后忽略
+        if (prev.some((s) => s.text === text && s.pageIdx === pageIdx)) return prev;
+        if (prev.length >= MAX_SELECTIONS) return prev;
+        return [...prev, { text, pageIdx, rects }];
+      });
+    },
+  }));
 
   // 当前允许的最大宽度：行容器宽 − 左列最小宽 − 分隔条宽，且不超过 MAX_WIDTH
   function currentMaxWidth(): number {
@@ -147,7 +182,17 @@ export function QaPanel({ paperId, onJumpPage }: Props) {
               </button>
             </div>
             <TabsContent value="qa" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
-              <QaChat paperId={paperId} onJumpPage={onJumpPage} />
+              <QaChat
+                paperId={paperId}
+                onJumpPage={onJumpPage}
+                onJumpToSelection={onJumpToSelection}
+                selections={selections}
+                maxSelections={MAX_SELECTIONS}
+                onClearSelections={() => setSelections([])}
+                onRemoveSelection={(i) =>
+                  setSelections((prev) => prev.filter((_, idx) => idx !== i))
+                }
+              />
             </TabsContent>
             <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
               <FeynmanChat paperId={paperId} />
@@ -157,4 +202,4 @@ export function QaPanel({ paperId, onJumpPage }: Props) {
       </aside>
     </div>
   );
-}
+});

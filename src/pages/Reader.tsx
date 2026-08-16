@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogPanel } from "@/components/BlogPanel";
 import { TranslatePanel } from "@/components/TranslatePanel";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
-import { QaPanel } from "@/components/QaPanel";
+import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
 import { getPaper, type Paper } from "@/lib/api";
 import { ArrowLeft } from "lucide-react";
 
@@ -21,6 +21,7 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pdfRef = useRef<PdfViewerHandle>(null);
+  const qaRef = useRef<QaPanelHandle>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +88,9 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
                 pdfPath={paper.pdf_path}
                 paperId={paperId}
                 initialPageIdx={initialPageIdx}
+                onAskSelection={(text, pageIdx, rects) =>
+                  qaRef.current?.acceptSelection(text, pageIdx, rects)
+                }
               />
             </TabsContent>
             <TabsContent value="blog" keepMounted className="min-h-0 overflow-y-auto pt-4 pr-4">
@@ -107,8 +111,12 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
           {/* 右列：问答（可拖拽调宽 / 收纳）；未解析时禁用 */}
           {ready ? (
             <QaPanel
+              ref={qaRef}
               paperId={paperId}
               onJumpPage={(idx) => pdfRef.current?.jumpToPage(idx)}
+              onJumpToSelection={(pageIdx, rects) =>
+                pdfRef.current?.jumpToSelection(pageIdx, rects)
+              }
             />
           ) : (
             <div className="ml-2 flex w-10 shrink-0 items-start justify-center rounded-lg border border-dashed py-3 text-muted-foreground">

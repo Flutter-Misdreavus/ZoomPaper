@@ -458,6 +458,7 @@ pub async fn ask_question(
     paper_id: Option<String>,
     conversation_id: Option<String>,
     top_k: Option<usize>,
+    selections: Option<Vec<crate::qa::SelectionInput>>,
 ) -> Result<Answer, String> {
     let top_k = top_k.unwrap_or(5);
     let settings = Settings::load().map_err(|e| e.to_string())?;
@@ -497,11 +498,18 @@ pub async fn ask_question(
         }
     }
 
-    // 检索 + 组装（同步，用完即释放数据库锁）
+    // 检索 + 组装（同步，用完即释放数据库锁）；选中段落（可多条）作为强上下文注入
     let prepared = {
         let conn = db.conn();
-        crate::qa::prepare(&conn, &question, paper_id.as_deref(), &history, top_k)
-            .map_err(|e| e.to_string())?
+        crate::qa::prepare(
+            &conn,
+            &question,
+            paper_id.as_deref(),
+            &history,
+            top_k,
+            selections.as_deref().unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())?
     };
 
     // LLM（await 期间不持有数据库锁）

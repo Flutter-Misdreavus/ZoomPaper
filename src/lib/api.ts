@@ -116,13 +116,20 @@ export const generateBlog = (paperId: string, level: BlogLevel) =>
 
 export const askQuestion = (
   question: string,
-  opts?: { paperId?: string | null; conversationId?: string | null; topK?: number },
+  opts?: {
+    paperId?: string | null;
+    conversationId?: string | null;
+    topK?: number;
+    /** 阅读页选中的段落列表（就地提问的上下文引用，可多条，编号 [1..k] 注入） */
+    selections?: { text: string; pageIdx: number }[] | null;
+  },
 ) =>
   invoke<Answer>("ask_question", {
     question,
     paperId: opts?.paperId ?? null,
     conversationId: opts?.conversationId ?? null,
     topK: opts?.topK,
+    selections: opts?.selections ?? null,
   });
 
 export const listConversations = () =>
