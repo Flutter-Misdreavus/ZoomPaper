@@ -80,21 +80,6 @@ jobs:
         with:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: "ZoomPaper v${{ steps.version.outputs.version }}"
-          releaseBody: |
-            ZoomPaper —— 本地优先的论文阅读与知识管理平台。
-
-            ## 安装
-
-            - macOS（Apple Silicon 与 Intel 通用）：`ZoomPaper_${{ steps.version.outputs.version }}_universal.dmg`
-
-            **首次打开**：应用未经过 Apple 签名公证，请在访达中右键点击应用图标 →「打开」；
-            如提示「无法验证开发者」，点击「仍要打开」；或执行：
-
-            ```sh
-            xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
-            ```
-
-            详细说明见 [README](https://github.com/${{ github.repository }})。
           releaseDraft: true
           # 如需推送 tag 后自动发布（无需手动确认），把 releaseDraft 改为 false
           prerelease: false
