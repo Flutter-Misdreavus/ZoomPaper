@@ -315,3 +315,17 @@
 .textLayer.selecting ~ .zp-links a {
   pointer-events: none;
 }
+
+/* 翻译目录跳转后的标题高亮闪烁 */
+@keyframes zp-heading-flash {
+  0% {
+    box-shadow: 0 0 0 6px var(--ring);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(0 0 0 / 0);
+  }
+}
+.zp-heading-flash {
+  animation: zp-heading-flash 1.2s ease-out;
+  border-radius: 6px;
+}
