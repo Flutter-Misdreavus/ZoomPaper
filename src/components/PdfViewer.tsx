@@ -914,7 +914,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
             </span>
           )}
         </button>
-        {node.items?.length && expanded.has(node) && (
+        {/* 注意：必须用 length > 0 得到布尔值——`0 && x` 会被 React 渲染成文本 "0" */}
+        {node.items?.length > 0 && expanded.has(node) && (
           <div>{renderOutlineNodes(node.items, depth + 1)}</div>
         )}
       </div>
