@@ -82,6 +82,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_paper_folders_folder ON paper_folders(folder_id);
     "#,
+    // v6：conversations 增加 feynman_state 列（费曼闯关状态 JSON：概念计划 / 当前关卡 / 各概念状态）。
+    // 旧费曼会话该列为 NULL，前端据此走「自由聊天」遗留路径，不回归。
+    r#"
+    ALTER TABLE conversations ADD COLUMN feynman_state TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -100,8 +105,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
-    /// 存量库（v4）升级到 v5：papers 数据原样保留，新增 folders / paper_folders。
+    /// 存量库（v4）升级到最新版：papers 数据原样保留，新增 folders / paper_folders / feynman_state。
     #[test]
     fn v4_database_upgrades_to_v5_preserving_papers() {
         let conn = Connection::open_in_memory().unwrap();
@@ -123,7 +129,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 6);
 
         // 论文数据无损
         let title: String = conn
@@ -151,6 +157,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(joined, 1);
+
+        // v6：conversations 已含 feynman_state 列（存量行为 None）
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(conversations)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"feynman_state".to_string()));
+        let legacy_state: Option<String> = conn
+            .query_row(
+                "SELECT feynman_state FROM conversations WHERE id = 'paper-1'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(legacy_state.is_none());
     }
 
     /// 迁移幂等：重复执行不报错。

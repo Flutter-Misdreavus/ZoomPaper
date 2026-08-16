@@ -68,6 +68,10 @@ pub fn run() {
             commands::get_conversation,
             commands::feynman_turn,
             commands::feynman_start,
+            commands::feynman_confirm_plan,
+            commands::feynman_quiz,
+            commands::feynman_judge,
+            commands::feynman_next,
             commands::feynman_review,
             commands::get_feynman_conversation,
         ])

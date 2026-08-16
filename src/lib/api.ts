@@ -95,6 +95,8 @@ export interface Conversation {
   notes?: string | null;
   /** 费曼会话滚动「教学进展」摘要（长对话控 token；qa 会话为 null） */
   summary?: string | null;
+  /** 费曼闯关状态 JSON（概念计划 / 当前关卡 / 各概念状态）；null = 旧版自由聊天会话 */
+  feynman_state?: string | null;
 }
 
 export interface FeynmanMessage {
@@ -102,9 +104,40 @@ export interface FeynmanMessage {
   content: string;
 }
 
+/** 教学计划中的一项（一个概念 + 教学目标） */
+export interface PlanItem {
+  name: string;
+  objective: string;
+}
+
+export type ConceptStatus = "pending" | "teaching" | "passed" | "weak";
+
+export type StageStatus = "planning" | "teaching" | "quiz" | "done";
+
+/** 单个概念的状态记录 */
+export interface ConceptState {
+  name: string;
+  status: ConceptStatus;
+  /** 上次测验未通过时记录的缺口描述 */
+  weak_points: string[];
+  quiz_attempts: number;
+  /** 通过测验的时间戳（unix 秒） */
+  taught_at: number | null;
+}
+
+/** 会话级闯关状态（持久化于 conversations.feynman_state JSON） */
+export interface FeynmanState {
+  plan: PlanItem[];
+  current_index: number;
+  status: StageStatus;
+  concepts: ConceptState[];
+}
+
 export interface FeynmanTurn {
   conversation_id: string;
   reply: string;
+  /** 闯关状态；旧会话为 null */
+  state?: FeynmanState | null;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -185,6 +218,9 @@ export const getConversation = (conversationId: string) =>
 export const feynmanStart = (paperId: string) =>
   invoke<FeynmanTurn>("feynman_start", { paperId });
 
+export const feynmanConfirmPlan = (conversationId: string, plan: PlanItem[]) =>
+  invoke<FeynmanTurn>("feynman_confirm_plan", { conversationId, plan });
+
 export const feynmanTurn = (
   message: string,
   paperId: string,
@@ -195,6 +231,18 @@ export const feynmanTurn = (
     paperId,
     conversationId: conversationId ?? null,
   });
+
+/** 对当前概念出测验题（状态置为 quiz） */
+export const feynmanQuiz = (conversationId: string) =>
+  invoke<FeynmanTurn>("feynman_quiz", { conversationId });
+
+/** 交卷判定：收集出题之后的作答，判定 通过/需补讲 */
+export const feynmanJudge = (conversationId: string) =>
+  invoke<FeynmanTurn>("feynman_judge", { conversationId });
+
+/** 进入下一概念 */
+export const feynmanNext = (conversationId: string) =>
+  invoke<FeynmanTurn>("feynman_next", { conversationId });
 
 export const feynmanReview = (conversationId: string) =>
   invoke<string>("feynman_review", { conversationId });

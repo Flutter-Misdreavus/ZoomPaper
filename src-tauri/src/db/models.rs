@@ -78,4 +78,6 @@ pub struct Conversation {
     pub summary: Option<String>,
     /// 遗留：旧版费曼要点笔记，已弃用（保留惰性列，不再写入）。
     pub notes: Option<String>,
+    /// 费曼闯关状态 JSON（概念计划 / 当前关卡 / 各概念状态）；None = 旧版自由聊天会话。
+    pub feynman_state: Option<String>,
 }
