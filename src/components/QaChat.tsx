@@ -8,6 +8,7 @@ import rehypeRaw from "rehype-raw";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CitationBadge } from "@/components/CitationBadge";
+import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
@@ -407,11 +408,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                     // 默认 stretch：胶囊组件撑满气泡宽度，展开面板不溢出（items-start 会按内容收缩）
                     <div className="mb-2 flex flex-col gap-1.5">
                       {m.role === "assistant" && i === messages.length - 1 && thinkingText && (
-                        <ThinkingPanel
-                          text={thinkingText}
-                          streaming={false}
-                          durationMs={m.timing?.model_ms}
-                        />
+                        <ThinkingPanel text={thinkingText} streaming={false} />
                       )}
                       {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
                     </div>
@@ -481,6 +478,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                 <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
+                  <LiveClock />
                 </div>
               </div>
             )}

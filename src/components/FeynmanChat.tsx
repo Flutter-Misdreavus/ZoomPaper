@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { MarkdownView } from "@/components/MarkdownView";
+import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
@@ -890,11 +891,7 @@ export function FeynmanChat({ paperId }: Props) {
                       {m.role === "assistant" &&
                         i === activeMessages.length - 1 &&
                         thinking && (
-                          <ThinkingPanel
-                            text={thinking}
-                            streaming={false}
-                            durationMs={m.timing?.model_ms}
-                          />
+                          <ThinkingPanel text={thinking} streaming={false} />
                         )}
                       {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
                     </div>
@@ -929,6 +926,7 @@ export function FeynmanChat({ paperId }: Props) {
                 <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   学生正在研读论文并思考…
+                  <LiveClock />
                 </div>
               </div>
             )}
