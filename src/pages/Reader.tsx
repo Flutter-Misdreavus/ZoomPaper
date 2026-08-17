@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogPanel } from "@/components/BlogPanel";
 import { TranslatePanel } from "@/components/TranslatePanel";
+import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
 import { getPaper, type Paper } from "@/lib/api";
@@ -81,6 +82,13 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
               >
                 AI 翻译
               </TabsTrigger>
+              <TabsTrigger
+                value="feynman"
+                disabled={!ready}
+                title={ready ? undefined : "解析完成后可用"}
+              >
+                费曼学习法
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="pdf" keepMounted className="flex min-h-0 flex-col">
               <PdfViewer
@@ -105,6 +113,9 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
             </TabsContent>
             <TabsContent value="translate" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
               {ready && <TranslatePanel paperId={paperId} />}
+            </TabsContent>
+            <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
+              {ready && <FeynmanChat paperId={paperId} />}
             </TabsContent>
           </Tabs>
 

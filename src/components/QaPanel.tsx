@@ -1,7 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { QaChat } from "@/components/QaChat";
-import { FeynmanChat } from "@/components/FeynmanChat";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AnnotationRect } from "@/lib/api";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 
@@ -46,6 +44,7 @@ const MAX_SELECTIONS = 5;
  * 阅读页右侧问答栏：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
  * 可收纳为 40px 竖条（宽度过渡 240ms ease-drawer）。
  * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
+ * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答。
  */
 export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   { paperId, onJumpPage, onJumpToSelection },
@@ -164,40 +163,30 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
         </button>
 
         {/* 展开态：display:none 保持挂载，不丢会话状态 */}
-        <div
-          className={`min-h-0 flex-1 flex-col ${collapsed ? "hidden" : "flex"}`}
-        >
-          <Tabs defaultValue="qa" className="flex min-h-0 flex-1 flex-col gap-0">
-            <div className="flex items-center justify-between border-b px-2 py-1.5">
-              <TabsList>
-                <TabsTrigger value="qa">普通问答</TabsTrigger>
-                <TabsTrigger value="feynman">费曼学习法</TabsTrigger>
-              </TabsList>
-              <button
-                onClick={() => toggleCollapsed(true)}
-                title="收起对话"
-                className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <PanelRightClose className="h-4 w-4" />
-              </button>
-            </div>
-            <TabsContent value="qa" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
-              <QaChat
-                paperId={paperId}
-                onJumpPage={onJumpPage}
-                onJumpToSelection={onJumpToSelection}
-                selections={selections}
-                maxSelections={MAX_SELECTIONS}
-                onClearSelections={() => setSelections([])}
-                onRemoveSelection={(i) =>
-                  setSelections((prev) => prev.filter((_, idx) => idx !== i))
-                }
-              />
-            </TabsContent>
-            <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col p-3">
-              <FeynmanChat paperId={paperId} />
-            </TabsContent>
-          </Tabs>
+        <div className={`min-h-0 flex-1 flex-col ${collapsed ? "hidden" : "flex"}`}>
+          <div className="flex items-center justify-between border-b px-2 py-1.5">
+            <span className="px-1 text-xs font-medium text-muted-foreground">问答</span>
+            <button
+              onClick={() => toggleCollapsed(true)}
+              title="收起对话"
+              className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col p-3">
+            <QaChat
+              paperId={paperId}
+              onJumpPage={onJumpPage}
+              onJumpToSelection={onJumpToSelection}
+              selections={selections}
+              maxSelections={MAX_SELECTIONS}
+              onClearSelections={() => setSelections([])}
+              onRemoveSelection={(i) =>
+                setSelections((prev) => prev.filter((_, idx) => idx !== i))
+              }
+            />
+          </div>
         </div>
       </aside>
     </div>
