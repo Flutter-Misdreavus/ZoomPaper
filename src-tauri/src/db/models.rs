@@ -80,4 +80,6 @@ pub struct Conversation {
     pub notes: Option<String>,
     /// 费曼闯关状态 JSON（概念计划 / 当前关卡 / 各概念状态）；None = 旧版自由聊天会话。
     pub feynman_state: Option<String>,
+    /// 费曼「概念级独立会话」标记：NULL = 主行（或 qa / 旧版单会话）；N = 概念 N 的会话行。
+    pub concept_index: Option<i64>,
 }

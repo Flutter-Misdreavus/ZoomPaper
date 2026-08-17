@@ -856,7 +856,7 @@ pub async fn ask_question(
 #[tauri::command]
 pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String> {
     let conn = db.conn();
-    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state \
+    let sql = "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state, concept_index \
                FROM conversations WHERE type = 'qa' ORDER BY updated_at DESC";
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -872,6 +872,7 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
                 notes: r.get(7)?,
                 summary: r.get(8)?,
                 feynman_state: r.get(9)?,
+                concept_index: r.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -886,7 +887,7 @@ pub fn get_conversation(
 ) -> Result<Conversation, String> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state \
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state, concept_index \
          FROM conversations WHERE id = ?1",
         [&conversation_id],
         |r| {
@@ -901,13 +902,20 @@ pub fn get_conversation(
                 notes: r.get(7)?,
                 summary: r.get(8)?,
                 feynman_state: r.get(9)?,
+                concept_index: r.get(10)?,
             })
         },
     )
     .map_err(|e| e.to_string())
 }
 
-// ---------- 费曼学习法（闯关式教学流） ----------
+// ---------- 费曼学习法（概念级独立会话 + 摘要链） ----------
+//
+// 机制：每篇论文一条「主行」（type='feynman' 且 concept_index IS NULL，存 feynman_state
+// 进度元数据），每个概念一条「概念行」（concept_index = N，消息/概念内滚动摘要各自独立）。
+// 概念讲完（测验通过）时生成「概念完成摘要」存入 feynman_state.concepts[i].summary；
+// 进入新概念时把之前所有概念的完成摘要（摘要链）注入 system 作为背景知识。
+// 旧版单会话（concepts 均无 session_id）视为 legacy：只读 + 提示重开。
 
 /// 解析会话的闯关状态 JSON；NULL / 空串视为旧版自由聊天会话（返回 None）。
 fn parse_state_json(raw: Option<String>) -> Result<Option<FeynmanState>, String> {
@@ -920,54 +928,106 @@ fn parse_state_json(raw: Option<String>) -> Result<Option<FeynmanState>, String>
     }
 }
 
-/// 读会话的闯关状态；会话不存在或解析失败返回 Err。
-fn load_feynman_state(
-    conn: &rusqlite::Connection,
-    conv_id: &str,
-) -> Result<Option<FeynmanState>, String> {
-    let raw: Option<String> = conn
+/// 旧版单会话状态检测：plan 非空且所有概念均无 session_id → 旧机制（只读，提示重开）。
+fn is_legacy_state(state: &FeynmanState) -> bool {
+    !state.plan.is_empty() && state.concepts.iter().all(|c| c.session_id.is_none())
+}
+
+/// 读某篇论文的主行（type='feynman' 且 concept_index IS NULL）：返回 (主行 id, 状态)。
+fn load_main(db: &Db, paper_id: &str) -> Result<(String, Option<FeynmanState>), String> {
+    let conn = db.conn();
+    let row = conn
         .query_row(
-            "SELECT feynman_state FROM conversations WHERE id = ?1",
-            [conv_id],
-            |r| r.get(0),
+            "SELECT id, feynman_state FROM conversations \
+             WHERE paper_id = ?1 AND type = 'feynman' AND concept_index IS NULL \
+             ORDER BY updated_at DESC LIMIT 1",
+            [paper_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    parse_state_json(raw)
+    match row {
+        Some((id, raw)) => Ok((id, parse_state_json(raw)?)),
+        None => Err("未找到费曼学习主会话".to_string()),
+    }
 }
 
-/// 写回会话的闯关状态。
+/// 写回主行状态。
 fn save_feynman_state(
     conn: &rusqlite::Connection,
-    conv_id: &str,
+    main_id: &str,
     state: &FeynmanState,
 ) -> Result<(), String> {
     let raw = serde_json::to_string(state).map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE conversations SET feynman_state = ?2 WHERE id = ?1",
-        params![conv_id, raw],
+        params![main_id, raw],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// 生成概念计划：调 LLM 解析概念地图 JSON；失败重试一次，仍失败回退最小计划。
-async fn generate_plan(llm: &Llm, toc: &str, full_paper: &str) -> Vec<PlanItem> {
-    let messages = crate::feynman::build_plan_messages(toc, full_paper);
-    for _ in 0..2 {
-        match llm.chat(&messages).await {
-            Ok(raw) => {
-                if let Some(plan) = crate::feynman::parse_plan(&raw) {
-                    return plan;
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-    vec![PlanItem {
-        name: "论文核心内容".to_string(),
-        objective: "能用自己的话概括这篇论文解决了什么问题、用了什么方法、得出什么结论。".to_string(),
-    }]
+/// 读概念会话行：返回 (paper_id, concept_index, messages, 概念内滚动摘要)。
+fn load_concept_session(
+    conn: &rusqlite::Connection,
+    conv_id: &str,
+) -> Result<(String, usize, Vec<FeynmanMessage>, Option<String>), String> {
+    let (paper_id, concept_index, messages_json, summary): (
+        Option<String>,
+        Option<i64>,
+        String,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT paper_id, concept_index, messages, summary FROM conversations WHERE id = ?1",
+            [conv_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| format!("会话不存在: {e}"))?;
+    let paper_id = paper_id.ok_or_else(|| "会话缺少论文".to_string())?;
+    let concept_index = concept_index
+        .filter(|i| *i >= 0)
+        .ok_or_else(|| "该会话不是概念会话".to_string())?;
+    let history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
+    Ok((paper_id, concept_index as usize, history, summary))
+}
+
+/// 写回概念会话行（messages + 概念内滚动摘要；summary 传 None 时保留原值）。
+fn save_concept_session(
+    conn: &rusqlite::Connection,
+    conv_id: &str,
+    history: &[FeynmanMessage],
+    concept_summary: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
+    let messages_json = serde_json::to_string(history).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET messages = ?2, summary = COALESCE(?3, summary), updated_at = ?4 \
+         WHERE id = ?1",
+        params![conv_id, messages_json, concept_summary, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 创建概念会话行并返回其 id。
+fn create_concept_session(
+    db: &Db,
+    paper_id: &str,
+    concept_index: usize,
+    title: &str,
+    now: i64,
+) -> Result<String, String> {
+    let conv_id = Uuid::new_v4().to_string();
+    let conn = db.conn();
+    conn.execute(
+        "INSERT INTO conversations \
+         (id, paper_id, type, title, messages, created_at, updated_at, concept_index) \
+         VALUES (?1, ?2, 'feynman', ?3, '[]', ?4, ?4, ?5)",
+        params![&conv_id, paper_id, title, now, concept_index as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conv_id)
 }
 
 /// 检索相关段落 → 升级为章节全文 + 章节地图（纯 DB，无 LLM）。
@@ -993,14 +1053,70 @@ fn retrieve_context(
     Ok((toc, context))
 }
 
-/// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段），并新建会话持久化
-/// （含闯关状态）。不生成开场白消息（计划由前端卡片展示、确认后学生再提问）；
-/// 返回空 reply + 新会话 id + 状态。
+/// 生成概念计划：调 LLM 解析概念地图 JSON；失败重试一次，仍失败回退最小计划。
+async fn generate_plan(llm: &Llm, toc: &str, full_paper: &str) -> Vec<PlanItem> {
+    let messages = crate::feynman::build_plan_messages(toc, full_paper);
+    for _ in 0..2 {
+        match llm.chat(&messages).await {
+            Ok(raw) => {
+                if let Some(plan) = crate::feynman::parse_plan(&raw) {
+                    return plan;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    vec![PlanItem {
+        name: "论文核心内容".to_string(),
+        objective: "能用自己的话概括这篇论文解决了什么问题、用了什么方法、得出什么结论。".to_string(),
+    }]
+}
+
+/// 生成当前概念的引导提问并写入其概念会话行（摘要链注入 system）。
+async fn ask_concept_opening(
+    db: &Db,
+    llm: &Llm,
+    paper_id: &str,
+    concept_session_id: &str,
+    concept: &PlanItem,
+    summary_chain: &str,
+    now: i64,
+) -> Result<String, String> {
+    let query = format!("{} {}", concept.name, concept.objective);
+    let (toc, context) = {
+        let conn = db.conn();
+        retrieve_context(&conn, paper_id, &query)?
+    };
+    let reply = crate::feynman::turn(
+        &llm,
+        &crate::feynman::build_concept_opening_messages(
+            &toc,
+            &context,
+            &[],
+            &concept.name,
+            &concept.objective,
+            summary_chain,
+        ),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    {
+        let conn = db.conn();
+        let history = vec![FeynmanMessage {
+            role: Role::Assistant,
+            content: reply.clone(),
+        }];
+        save_concept_session(&conn, concept_session_id, &history, None, now)?;
+    }
+    Ok(reply)
+}
+
+/// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段），创建**主行**并持久化。
+/// 不生成任何聊天消息；确认计划后才会创建第一个概念会话。返回主行 id + 状态。
 #[tauri::command]
 pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
-
     let now = chrono::Utc::now().timestamp();
 
     // 锁内：读论文 md 路径
@@ -1013,23 +1129,20 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         )
         .map_err(|e| e.to_string())?
     };
-
-    // 无锁：首轮通读全文（一次性，作为计划生成的上下文）
+    // 无锁：通读全文（计划生成上下文）
     let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
     let full_paper = crate::feynman::build_full_paper(&markdown);
-
     // 锁内：读章节地图（TOC）
     let toc = {
         let conn = db.conn();
         let sections = crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
         crate::feynman::build_toc(&sections)
     };
-
-    // 无锁：生成概念计划（await 期间不持有数据库锁）
+    // 无锁：生成概念计划
     let plan = generate_plan(&llm, &toc, &full_paper).await;
 
-    // 锁内：新建会话（含闯关状态）；历史为空（无开场白，计划卡片直接展示）
-    let conv_id = Uuid::new_v4().to_string();
+    // 锁内：创建主行（planning 阶段）
+    let main_id = Uuid::new_v4().to_string();
     let state = FeynmanState::new(plan);
     let state_json = serde_json::to_string(&state).map_err(|e| e.to_string())?;
     {
@@ -1038,82 +1151,21 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
             "INSERT INTO conversations \
              (id, paper_id, type, title, messages, created_at, updated_at, feynman_state) \
              VALUES (?1, ?2, 'feynman', '费曼学习', '[]', ?3, ?3, ?4)",
-            params![&conv_id, &paper_id, now, &state_json],
+            params![&main_id, &paper_id, now, &state_json],
         )
         .map_err(|e| e.to_string())?;
     }
 
     Ok(FeynmanTurn {
-        conversation_id: conv_id,
+        conversation_id: main_id,
         reply: String::new(),
         state: Some(state),
+        concept_session_id: None,
     })
 }
 
-/// 为当前概念生成「引导提问」：检索该概念相关章节 → LLM 以学生口吻提出一个引导问题 →
-/// 追加 assistant 消息并写回状态与历史。确认计划后从第一个概念、以及每次进入下一概念时调用。
-async fn ask_concept_opening(
-    db: &Db,
-    llm: &Llm,
-    conv_id: &str,
-    state: &FeynmanState,
-    history: &mut Vec<FeynmanMessage>,
-    now: i64,
-) -> Result<String, String> {
-    let concept = state
-        .current_concept()
-        .cloned()
-        .ok_or_else(|| "教学计划为空".to_string())?;
-    let paper_id: String = {
-        let conn = db.conn();
-        conn.query_row(
-            "SELECT paper_id FROM conversations WHERE id = ?1",
-            [conv_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .ok_or_else(|| "会话缺少论文".to_string())?
-    };
-    let query = format!("{} {}", concept.name, concept.objective);
-    let (toc, context) = {
-        let conn = db.conn();
-        retrieve_context(&conn, &paper_id, &query)?
-    };
-    let (_, window) = crate::feynman::split_window(history, crate::feynman::WINDOW_MAX_MSGS);
-    let reply = crate::feynman::turn(
-        &llm,
-        &crate::feynman::build_concept_opening_messages(
-            &toc,
-            &context,
-            &window,
-            &concept.name,
-            &concept.objective,
-        ),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    {
-        let conn = db.conn();
-        history.push(FeynmanMessage {
-            role: Role::Assistant,
-            content: reply.clone(),
-        });
-        let messages_json = serde_json::to_string(history).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
-            params![conv_id, messages_json, now],
-        )
-        .map_err(|e| e.to_string())?;
-        save_feynman_state(&conn, conv_id, state)?;
-    }
-    Ok(reply)
-}
-
-/// 确认/编辑教学计划：归一化计划并写入状态，进入教学阶段（首个概念置为 teaching），
-/// 然后学生针对第一个概念提出引导问题，邀请老师开始讲解。
-/// 旧版自由聊天会话也会被初始化为闯关模式。
+/// 确认/编辑教学计划：更新主行状态为 teaching，创建**概念 0 的独立会话行**，
+/// 学生针对第一个概念提出引导问题（写入概念 0 行）。
 #[tauri::command]
 pub async fn feynman_confirm_plan(
     db: State<'_, Db>,
@@ -1130,41 +1182,52 @@ pub async fn feynman_confirm_plan(
     }
     let mut state = FeynmanState::new(normalized);
     state.status = StageStatus::Teaching;
-    if let Some(first) = state.concepts.first_mut() {
-        first.status = ConceptStatus::Teaching;
-    }
+    state.concepts[0].status = ConceptStatus::Teaching;
 
-    // 锁内：读历史（无锁阶段再生成提问，避免持锁 await）
-    let history: Vec<FeynmanMessage> = {
+    // 锁内：校验 conversation_id 为主行，取 paper_id
+    let paper_id: String = {
         let conn = db.conn();
-        let messages_json: String = conn
-            .query_row(
-                "SELECT messages FROM conversations WHERE id = ?1",
-                [&conversation_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("会话不存在: {e}"))?;
-        serde_json::from_str(&messages_json).map_err(|e| e.to_string())?
+        conn.query_row(
+            "SELECT paper_id FROM conversations \
+             WHERE id = ?1 AND type = 'feynman' AND concept_index IS NULL",
+            [&conversation_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .ok_or_else(|| "会话不是费曼主会话".to_string())?
     };
 
-    let mut history = history;
+    // 创建概念 0 会话行，session_id 记入状态
+    let concept_0_id = create_concept_session(&db, &paper_id, 0, "概念 1", now)?;
+    state.concepts[0].session_id = Some(concept_0_id.clone());
+    {
+        let conn = db.conn();
+        save_feynman_state(&conn, &conversation_id, &state)?;
+    }
+
+    // 生成概念 0 引导提问（无之前概念，摘要链为空）
+    let concept = state
+        .current_concept()
+        .cloned()
+        .ok_or_else(|| "教学计划为空".to_string())?;
     let reply =
-        ask_concept_opening(&db, &llm, &conversation_id, &state, &mut history, now).await?;
+        ask_concept_opening(&db, &llm, &paper_id, &concept_0_id, &concept, "", now).await?;
 
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
+        concept_session_id: Some(concept_0_id),
     })
 }
 
-/// 一轮费曼对话（闯关模式）：
-/// - quiz 阶段：只追加老师作答，不调用 LLM（交卷由 `feynman_judge` 统一判定）；
-/// - planning 阶段：收到讲解即自动确认 AI 计划，进入首个概念教学；
-/// - 当前概念已通过而老师直接发消息：自动进入下一概念；
-/// - teaching 阶段：检索相关章节全文 + 章节地图 + 历史滚动窗口摘要 + LLM 学生式回应。
-/// 旧会话（无 feynman_state）走遗留自由聊天管线（不含上述状态逻辑）。
-/// `conversation_id` 为 `Some` 时续接多轮；否则新建会话并自动生成计划进入闯关模式。
+/// 一轮费曼对话（概念级会话）：
+/// - `conversation_id` 为概念会话行 id；`None` 时（用户直接输入开场）自动建主行 + 概念 0 行；
+/// - quiz 阶段：只追加作答，不调用 LLM（交卷由 `feynman_judge` 判定）；
+/// - 回看已通过概念继续对话：该概念状态回到 teaching（重新进行中）；
+/// - teaching 阶段：检索该概念相关章节 + 之前概念完成摘要链 + 概念内滚动窗口 + LLM 学生回应。
 #[tauri::command]
 pub async fn feynman_turn(
     db: State<'_, Db>,
@@ -1174,163 +1237,139 @@ pub async fn feynman_turn(
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
-
     let now = chrono::Utc::now().timestamp();
-    let conv_id: String;
-    let mut history: Vec<FeynmanMessage>;
-    let summary: Option<String>;
-    let mut state: Option<FeynmanState>;
-    let md_path: String;
 
-    // 取/建会话，读历史 + 已有「教学进展」摘要 + 闯关状态 + 论文 md 路径
-    {
+    let (conv_id, mut history, concept_summary, idx, mut state);
+    let mut full_paper: Option<String> = None;
+
+    match conversation_id {
+        Some(id) => {
+            let (pid, cidx, hist, csum) = {
+                let conn = db.conn();
+                load_concept_session(&conn, &id)?
+            };
+            let (_main_id, st) = load_main(&db, &pid)?;
+            let st = st.ok_or_else(|| "费曼学习进度缺失".to_string())?;
+            if is_legacy_state(&st) {
+                return Err("该会话来自旧版本，仅可查看，请点「重新开始」使用新的概念会话机制".to_string());
+            }
+            if cidx >= st.plan.len() {
+                return Err("概念索引越界".to_string());
+            }
+            conv_id = id;
+            history = hist;
+            concept_summary = csum;
+            idx = cidx;
+            state = st;
+        }
+        None => {
+            // 直接输入开场：创建主行（自动确认 AI 计划）+ 概念 0 行
+            let md_path: String = {
+                let conn = db.conn();
+                conn.query_row(
+                    "SELECT md_path FROM papers WHERE id = ?1",
+                    [&paper_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?
+            };
+            let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+            let fp = crate::feynman::build_full_paper(&markdown);
+            let toc = {
+                let conn = db.conn();
+                let sections =
+                    crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
+                crate::feynman::build_toc(&sections)
+            };
+            let plan = generate_plan(&llm, &toc, &fp).await;
+            let main_id = Uuid::new_v4().to_string();
+            let mut st = FeynmanState::new(plan);
+            st.status = StageStatus::Teaching;
+            st.concepts[0].status = ConceptStatus::Teaching;
+            let c0 = create_concept_session(&db, &paper_id, 0, "概念 1", now)?;
+            st.concepts[0].session_id = Some(c0.clone());
+            {
+                let conn = db.conn();
+                let state_json = serde_json::to_string(&st).map_err(|e| e.to_string())?;
+                conn.execute(
+                    "INSERT INTO conversations \
+                     (id, paper_id, type, title, messages, created_at, updated_at, feynman_state) \
+                     VALUES (?1, ?2, 'feynman', '费曼学习', '[]', ?3, ?3, ?4)",
+                    params![&main_id, &paper_id, now, &state_json],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            conv_id = c0;
+            history = vec![];
+            concept_summary = None;
+            idx = 0;
+            state = st;
+            full_paper = Some(fp);
+        }
+    }
+
+    // 概念状态机：quiz 只追加作答；回看已通过概念 → 重新进行中
+    if state.concepts[idx].status == ConceptStatus::Quiz {
+        history.push(FeynmanMessage {
+            role: Role::User,
+            content: message.clone(),
+        });
         let conn = db.conn();
-        md_path = conn
-            .query_row(
+        save_concept_session(&conn, &conv_id, &history, None, now)?;
+        return Ok(FeynmanTurn {
+            conversation_id: conv_id,
+            reply: String::new(),
+            state: Some(state),
+            concept_session_id: None,
+        });
+    }
+    if state.concepts[idx].status == ConceptStatus::Passed {
+        state.concepts[idx].status = ConceptStatus::Teaching;
+    }
+
+    // 首轮（概念行历史为空）通读全文放入 system
+    if history.is_empty() && full_paper.is_none() {
+        let md_path: String = {
+            let conn = db.conn();
+            conn.query_row(
                 "SELECT md_path FROM papers WHERE id = ?1",
                 [&paper_id],
                 |r| r.get(0),
             )
-            .map_err(|e| e.to_string())?;
-        match conversation_id.as_deref() {
-            Some(id) => {
-                let (messages_json, existing_summary, state_raw): (String, Option<String>, Option<String>) =
-                    conn.query_row(
-                        "SELECT messages, summary, feynman_state FROM conversations WHERE id = ?1",
-                        [id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .map_err(|e| format!("会话不存在: {e}"))?;
-                history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
-                summary = existing_summary;
-                state = parse_state_json(state_raw)?;
-                conv_id = id.to_string();
-            }
-            None => {
-                conv_id = Uuid::new_v4().to_string();
-                let title = crate::qa::truncate(&message, QA_TITLE_CHARS);
-                conn.execute(
-                    "INSERT INTO conversations \
-                     (id, paper_id, type, title, messages, created_at, updated_at) \
-                     VALUES (?1, ?2, 'feynman', ?3, '[]', ?4, ?4)",
-                    params![&conv_id, &paper_id, &title, now],
-                )
-                .map_err(|e| e.to_string())?;
-                history = vec![];
-                summary = None;
-                state = None;
-            }
-        }
-    }
-
-    // 新会话（无 id，用户直接输入开场）：生成概念计划并自动确认，进入闯关模式
-    let mut full_paper: Option<String> = None;
-    if conversation_id.is_none() {
-        let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
-        let fp = crate::feynman::build_full_paper(&markdown);
-        let toc = {
-            let conn = db.conn();
-            let sections =
-                crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
-            crate::feynman::build_toc(&sections)
+            .map_err(|e| e.to_string())?
         };
-        let plan = generate_plan(&llm, &toc, &fp).await;
-        let mut st = FeynmanState::new(plan);
-        st.status = StageStatus::Teaching;
-        if let Some(first) = st.concepts.first_mut() {
-            first.status = ConceptStatus::Teaching;
-        }
-        {
-            let conn = db.conn();
-            save_feynman_state(&conn, &conv_id, &st)?;
-        }
-        state = Some(st);
-        full_paper = Some(fp);
-    }
-
-    // 闯关状态机：quiz 只追加作答；planning 自动确认；已通过概念直接发消息 → 自动下一关
-    if let Some(st) = state.as_mut() {
-        if st.status == StageStatus::Quiz {
-            history.push(FeynmanMessage {
-                role: Role::User,
-                content: message.clone(),
-            });
-            let conn = db.conn();
-            let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
-            conn.execute(
-                "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
-                params![&conv_id, messages_json, now],
-            )
-            .map_err(|e| e.to_string())?;
-            save_feynman_state(&conn, &conv_id, st)?;
-            return Ok(FeynmanTurn {
-                conversation_id: conv_id,
-                reply: String::new(),
-                state: Some(st.clone()),
-            });
-        }
-        if st.status == StageStatus::Planning {
-            st.status = StageStatus::Teaching;
-            if let Some(first) = st.concepts.first_mut() {
-                first.status = ConceptStatus::Teaching;
-            }
-        }
-        if st.status == StageStatus::Teaching {
-            let cur_passed = st
-                .current_concept_state()
-                .map(|c| c.status == ConceptStatus::Passed)
-                .unwrap_or(false);
-            if cur_passed {
-                if st.current_index + 1 >= st.plan.len() {
-                    st.status = StageStatus::Done;
-                } else {
-                    st.current_index += 1;
-                    if let Some(cs) = st.concepts.get_mut(st.current_index) {
-                        cs.status = ConceptStatus::Teaching;
-                    }
-                }
-            }
-        }
-    }
-
-    // 无锁：首轮（新会话 / 历史为空）通读全文，放入 system；已有会话不带全文
-    if history.is_empty() && full_paper.is_none() {
         let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
         full_paper = Some(crate::feynman::build_full_paper(&markdown));
     }
 
-    // 无锁：检索上下文（闯关模式锚定当前概念；遗留模式用消息本身）
-    let query = match state.as_ref() {
-        Some(st) => {
-            let concept = st.current_concept().map(|c| c.name.as_str()).unwrap_or("");
-            let objective = st.current_concept().map(|c| c.objective.as_str()).unwrap_or("");
-            format!("{concept} {objective} {message}")
-        }
-        None => message.clone(),
-    };
+    // 无锁：检索上下文（锚定当前概念）+ 之前概念完成摘要链
+    let concept = state
+        .plan
+        .get(idx)
+        .cloned()
+        .ok_or_else(|| "教学计划为空".to_string())?;
+    let query = format!("{} {} {}", concept.name, concept.objective, message);
     let (toc, context) = {
         let conn = db.conn();
         retrieve_context(&conn, &paper_id, &query)?
     };
+    let summary_chain = crate::feynman::build_summary_chain(&state, idx);
 
-    // 无锁：历史滑出窗口则在线压缩「教学进展」摘要（窗口溢出时一次，非每轮）
+    // 无锁：概念内滚动摘要（窗口溢出时在线压缩一次）
     let (overflow, window) =
         crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
     let new_summary: Option<String> = if overflow.is_empty() {
-        summary
+        concept_summary
     } else {
         Some(
-            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+            crate::feynman::roll_summary(&llm, concept_summary.as_deref(), &overflow)
                 .await
                 .map_err(|e| e.to_string())?,
         )
     };
 
-    // 无锁：组装并调用 LLM（await 期间不持有数据库锁）
-    let stage_note = match state.as_ref() {
-        Some(st) => crate::feynman::build_stage_note(st),
-        None => String::new(),
-    };
+    // 无锁：组装并调用 LLM
+    let stage_note = crate::feynman::build_stage_note(&state, idx);
     let reply = crate::feynman::turn(
         &llm,
         &crate::feynman::build_turn_messages(
@@ -1341,12 +1380,13 @@ pub async fn feynman_turn(
             &window,
             &message,
             &stage_note,
+            &summary_chain,
         ),
     )
     .await
     .map_err(|e| e.to_string())?;
 
-    // 锁内：追加 user + assistant 两条消息并写回（含滚动摘要与可能更新的状态）
+    // 锁内：持久化概念行（追加消息 + 滚动摘要）与主行状态（回看可能已从 passed→teaching）
     {
         let conn = db.conn();
         history.push(FeynmanMessage {
@@ -1357,25 +1397,20 @@ pub async fn feynman_turn(
             role: Role::Assistant,
             content: reply.clone(),
         });
-        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE conversations SET messages = ?2, summary = ?3, updated_at = ?4 WHERE id = ?1",
-            params![&conv_id, messages_json, new_summary, now],
-        )
-        .map_err(|e| e.to_string())?;
-        if let Some(st) = state.as_ref() {
-            save_feynman_state(&conn, &conv_id, st)?;
-        }
+        save_concept_session(&conn, &conv_id, &history, new_summary.as_deref(), now)?;
+        let (main_id, _) = load_main(&db, &paper_id)?;
+        save_feynman_state(&conn, &main_id, &state)?;
     }
 
     Ok(FeynmanTurn {
         conversation_id: conv_id,
         reply,
-        state,
+        state: Some(state),
+        concept_session_id: None,
     })
 }
 
-/// 对当前概念出测验题：检索该概念相关章节 → LLM 出题 → 追加学生消息，状态置为 quiz。
+/// 对当前概念出测验题：检索该概念相关章节 → LLM 出题 → 追加到概念行，状态置为 quiz。
 #[tauri::command]
 pub async fn feynman_quiz(
     db: State<'_, Db>,
@@ -1385,66 +1420,41 @@ pub async fn feynman_quiz(
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
-    let (mut history, summary, state): (Vec<FeynmanMessage>, Option<String>, Option<FeynmanState>) = {
+    let (paper_id, idx, mut history, concept_summary) = {
         let conn = db.conn();
-        let (messages_json, existing_summary, state_raw): (String, Option<String>, Option<String>) =
-            conn.query_row(
-                "SELECT messages, summary, feynman_state FROM conversations WHERE id = ?1",
-                [&conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .map_err(|e| format!("会话不存在: {e}"))?;
-        (
-            serde_json::from_str(&messages_json).map_err(|e| e.to_string())?,
-            existing_summary,
-            parse_state_json(state_raw)?,
-        )
+        load_concept_session(&conn, &conversation_id)?
     };
-    let mut state = state.ok_or_else(|| "当前会话不是闯关模式".to_string())?;
-    match state.status {
-        StageStatus::Teaching => {}
-        StageStatus::Quiz => return Err("测验已在进行中，请先作答并交卷".to_string()),
-        StageStatus::Planning => return Err("请先确认教学计划".to_string()),
-        StageStatus::Done => return Err("全部概念已讲完，无需再测验".to_string()),
+    let (main_id, state) = load_main(&db, &paper_id)?;
+    let mut state = state.ok_or_else(|| "费曼学习进度缺失".to_string())?;
+    if is_legacy_state(&state) {
+        return Err("该会话来自旧版本，仅可查看，请点「重新开始」使用新的概念会话机制".to_string());
     }
-    let concept = state
-        .current_concept()
-        .cloned()
-        .ok_or_else(|| "教学计划为空".to_string())?;
-    let attempts = state
-        .current_concept_state()
-        .map(|c| c.quiz_attempts)
-        .unwrap_or(0);
+    if idx >= state.plan.len() {
+        return Err("概念索引越界".to_string());
+    }
+    match state.concepts[idx].status {
+        ConceptStatus::Teaching | ConceptStatus::Weak => {}
+        ConceptStatus::Quiz => return Err("测验已在进行中，请先作答并交卷".to_string()),
+        ConceptStatus::Passed => return Err("该概念已通过测验".to_string()),
+        _ => return Err("当前状态不允许测验".to_string()),
+    }
+    let concept = state.plan[idx].clone();
+    let attempts = state.concepts[idx].quiz_attempts;
 
-    // 锁内：取论文 id
-    let paper_id: String = {
-        let conn = db.conn();
-        conn.query_row(
-            "SELECT paper_id FROM conversations WHERE id = ?1",
-            [&conversation_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .ok_or_else(|| "会话缺少论文".to_string())?
-    };
-
-    // 无锁：检索当前概念相关章节
+    // 无锁：检索 + 摘要链 + 滚动摘要 + 出题
     let query = format!("{} {}", concept.name, concept.objective);
     let (toc, context) = {
         let conn = db.conn();
         retrieve_context(&conn, &paper_id, &query)?
     };
-
-    // 无锁：滚动摘要 + 出题
+    let summary_chain = crate::feynman::build_summary_chain(&state, idx);
     let (overflow, window) =
         crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
     let new_summary: Option<String> = if overflow.is_empty() {
-        summary
+        concept_summary
     } else {
         Some(
-            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+            crate::feynman::roll_summary(&llm, concept_summary.as_deref(), &overflow)
                 .await
                 .map_err(|e| e.to_string())?,
         )
@@ -1459,38 +1469,36 @@ pub async fn feynman_quiz(
             &concept.name,
             &concept.objective,
             attempts,
+            &summary_chain,
         ),
     )
     .await
     .map_err(|e| e.to_string())?;
 
-    // 锁内：追加学生出题消息 + 状态置为 quiz
-    state.status = StageStatus::Quiz;
+    // 锁内：追加出题消息 + 状态置 quiz
+    state.concepts[idx].status = ConceptStatus::Quiz;
     {
         let conn = db.conn();
         history.push(FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
         });
-        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE conversations SET messages = ?2, summary = ?3, updated_at = ?4 WHERE id = ?1",
-            params![&conversation_id, messages_json, new_summary, now],
-        )
-        .map_err(|e| e.to_string())?;
-        save_feynman_state(&conn, &conversation_id, &state)?;
+        save_concept_session(&conn, &conversation_id, &history, new_summary.as_deref(), now)?;
+        save_feynman_state(&conn, &main_id, &state)?;
     }
 
+    let cid = conversation_id.clone();
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
+        concept_session_id: Some(cid),
     })
 }
 
-/// 交卷判定：收集「出题消息之后」的用户作答 → LLM 判定 通过/需补讲 → 更新状态并追加判定消息。
-/// 通过且为最后一个概念 → done；通过非末位 → 保持 teaching（前端可点「下一概念」）；
-/// 需补讲 → 记录缺口与次数，回到 teaching 补讲（测验次数 ≥1 次后出题会自动降难度）。
+/// 交卷判定：收集「出题消息之后」的作答 → LLM 判定 通过/需补讲 → 更新状态。
+/// 通过时**生成该概念的完成摘要**（存入 feynman_state.concepts[i].summary，供后续概念引用）；
+/// 需补讲则记录缺口与次数，回到 teaching 补讲。
 #[tauri::command]
 pub async fn feynman_judge(
     db: State<'_, Db>,
@@ -1500,23 +1508,19 @@ pub async fn feynman_judge(
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
-    let (mut history, summary, state): (Vec<FeynmanMessage>, Option<String>, Option<FeynmanState>) = {
+    let (paper_id, idx, mut history, concept_summary) = {
         let conn = db.conn();
-        let (messages_json, existing_summary, state_raw): (String, Option<String>, Option<String>) =
-            conn.query_row(
-                "SELECT messages, summary, feynman_state FROM conversations WHERE id = ?1",
-                [&conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .map_err(|e| format!("会话不存在: {e}"))?;
-        (
-            serde_json::from_str(&messages_json).map_err(|e| e.to_string())?,
-            existing_summary,
-            parse_state_json(state_raw)?,
-        )
+        load_concept_session(&conn, &conversation_id)?
     };
-    let mut state = state.ok_or_else(|| "当前会话不是闯关模式".to_string())?;
-    if state.status != StageStatus::Quiz {
+    let (main_id, state) = load_main(&db, &paper_id)?;
+    let mut state = state.ok_or_else(|| "费曼学习进度缺失".to_string())?;
+    if is_legacy_state(&state) {
+        return Err("该会话来自旧版本，仅可查看，请点「重新开始」使用新的概念会话机制".to_string());
+    }
+    if idx >= state.plan.len() {
+        return Err("概念索引越界".to_string());
+    }
+    if state.concepts[idx].status != ConceptStatus::Quiz {
         return Err("当前没有待判定的测验，请先点「测验我」".to_string());
     }
 
@@ -1530,36 +1534,20 @@ pub async fn feynman_judge(
         return Err("还没有作答内容，请先在对话中回答测验题".to_string());
     }
 
-    let concept = state
-        .current_concept()
-        .cloned()
-        .ok_or_else(|| "教学计划为空".to_string())?;
-    let paper_id: String = {
-        let conn = db.conn();
-        conn.query_row(
-            "SELECT paper_id FROM conversations WHERE id = ?1",
-            [&conversation_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .ok_or_else(|| "会话缺少论文".to_string())?
-    };
-
-    // 无锁：检索 + 滚动摘要 + 判定
+    let concept = state.plan[idx].clone();
     let query = format!("{} {}", concept.name, concept.objective);
     let (toc, context) = {
         let conn = db.conn();
         retrieve_context(&conn, &paper_id, &query)?
     };
+    let summary_chain = crate::feynman::build_summary_chain(&state, idx);
     let (overflow, window) =
         crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
     let new_summary: Option<String> = if overflow.is_empty() {
-        summary
+        concept_summary
     } else {
         Some(
-            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+            crate::feynman::roll_summary(&llm, concept_summary.as_deref(), &overflow)
                 .await
                 .map_err(|e| e.to_string())?,
         )
@@ -1573,19 +1561,41 @@ pub async fn feynman_judge(
             &window,
             &concept.name,
             &concept.objective,
+            &summary_chain,
         ),
     )
     .await
     .map_err(|e| e.to_string())?;
 
     let passed = crate::feynman::parse_judge_verdict(&reply);
-    let is_last = state.current_index + 1 >= state.plan.len();
-    if let Some(cs) = state.concepts.get_mut(state.current_index) {
+    let is_last = idx + 1 >= state.plan.len();
+
+    // 通过 → 生成该概念的完成摘要（学生视角，供后续概念引用）
+    let mut concept_summary_out: Option<String> = None;
+    if passed {
+        let summary_reply = crate::feynman::turn(
+            &llm,
+            &crate::feynman::build_concept_summary_messages(
+                &toc,
+                &context,
+                &window,
+                &concept.name,
+            ),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        concept_summary_out = Some(summary_reply);
+    }
+
+    // 更新概念状态
+    {
+        let cs = &mut state.concepts[idx];
         cs.quiz_attempts += 1;
         if passed {
             cs.status = ConceptStatus::Passed;
             cs.taught_at = Some(now);
             cs.weak_points.clear();
+            cs.summary = concept_summary_out;
         } else {
             cs.status = ConceptStatus::Weak;
             let note: String = reply.chars().take(200).collect();
@@ -1598,32 +1608,28 @@ pub async fn feynman_judge(
         StageStatus::Teaching
     };
 
-    // 锁内：追加判定消息 + 写回状态
+    // 锁内：追加判定消息 + 写回主行状态
     {
         let conn = db.conn();
         history.push(FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
         });
-        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE conversations SET messages = ?2, summary = ?3, updated_at = ?4 WHERE id = ?1",
-            params![&conversation_id, messages_json, new_summary, now],
-        )
-        .map_err(|e| e.to_string())?;
-        save_feynman_state(&conn, &conversation_id, &state)?;
+        save_concept_session(&conn, &conversation_id, &history, new_summary.as_deref(), now)?;
+        save_feynman_state(&conn, &main_id, &state)?;
     }
 
+    let cid = conversation_id.clone();
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
+        concept_session_id: Some(cid),
     })
 }
 
-/// 进入下一概念：校验当前概念已通过，推进 current_index 并标记下一个为 teaching，
-/// 然后学生针对新概念提出引导问题，邀请老师开始讲解。
-/// 最后一个概念通过后由 `feynman_judge` 直接置为 done（此命令的 Done 分支为防御）。
+/// 进入下一概念：校验当前概念已通过 → 创建**下一个概念的独立会话行** → 学生针对新概念
+/// 提出引导问题（摘要链注入之前所有概念的完成摘要）。
 #[tauri::command]
 pub async fn feynman_next(
     db: State<'_, Db>,
@@ -1633,62 +1639,64 @@ pub async fn feynman_next(
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
-    let mut state = load_feynman_state(&db.conn(), &conversation_id)?
-        .ok_or_else(|| "当前会话不是闯关模式".to_string())?;
-    if state.status == StageStatus::Done {
-        return Err("全部概念已讲完".to_string());
+    let (paper_id, idx, _, _) = {
+        let conn = db.conn();
+        load_concept_session(&conn, &conversation_id)?
+    };
+    let (main_id, state) = load_main(&db, &paper_id)?;
+    let mut state = state.ok_or_else(|| "费曼学习进度缺失".to_string())?;
+    if is_legacy_state(&state) {
+        return Err("该会话来自旧版本，仅可查看，请点「重新开始」使用新的概念会话机制".to_string());
     }
-    let cur_passed = state
-        .current_concept_state()
-        .map(|c| c.status == ConceptStatus::Passed)
-        .unwrap_or(false);
-    if !cur_passed {
+    if idx >= state.plan.len() {
+        return Err("概念索引越界".to_string());
+    }
+    if state.concepts[idx].status != ConceptStatus::Passed {
         return Err("当前概念尚未通过测验".to_string());
     }
-    if state.current_index + 1 >= state.plan.len() {
+    if idx + 1 >= state.plan.len() {
         state.status = StageStatus::Done;
         {
             let conn = db.conn();
-            save_feynman_state(&conn, &conversation_id, &state)?;
+            save_feynman_state(&conn, &main_id, &state)?;
         }
         return Ok(FeynmanTurn {
             conversation_id,
             reply: String::new(),
             state: Some(state),
+            concept_session_id: None,
         });
     }
-    state.current_index += 1;
-    if let Some(cs) = state.concepts.get_mut(state.current_index) {
-        cs.status = ConceptStatus::Teaching;
+
+    // 创建下一个概念的会话行
+    let next_idx = idx + 1;
+    let next_id =
+        create_concept_session(&db, &paper_id, next_idx, &format!("概念 {}", next_idx + 1), now)?;
+    state.current_index = next_idx;
+    state.concepts[next_idx].status = ConceptStatus::Teaching;
+    state.concepts[next_idx].session_id = Some(next_id.clone());
+    state.status = StageStatus::Teaching;
+    {
+        let conn = db.conn();
+        save_feynman_state(&conn, &main_id, &state)?;
     }
 
-    // 锁内：读历史（无锁阶段再生成提问，避免持锁 await）
-    let history: Vec<FeynmanMessage> = {
-        let conn = db.conn();
-        let messages_json: String = conn
-            .query_row(
-                "SELECT messages FROM conversations WHERE id = ?1",
-                [&conversation_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("会话不存在: {e}"))?;
-        serde_json::from_str(&messages_json).map_err(|e| e.to_string())?
-    };
-
-    let mut history = history;
+    // 引导提问（摘要链含刚完成概念的完成摘要）
+    let concept = state.plan[next_idx].clone();
+    let summary_chain = crate::feynman::build_summary_chain(&state, next_idx);
     let reply =
-        ask_concept_opening(&db, &llm, &conversation_id, &state, &mut history, now).await?;
+        ask_concept_opening(&db, &llm, &paper_id, &next_id, &concept, &summary_chain, now).await?;
 
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
+        concept_session_id: Some(next_id),
     })
 }
 
-/// 生成教学复盘：基于该会话历史（滚动摘要 + 最近窗口）评估讲解质量（不写回 messages）。
-/// 长会话下复盘输入同样有上界；若摘要尚未覆盖滑出历史，先在线压缩一次再复盘。
-/// 闯关会话会附带「当前关卡」状态块（概念与教学目标）供按概念点评。
+/// 生成教学复盘：新机制基于「全部概念的完成摘要链」给出整体评估；
+/// 旧版（legacy）回退为基于单会话历史与滚动摘要的复盘。
 #[tauri::command]
 pub async fn feynman_review(
     db: State<'_, Db>,
@@ -1697,45 +1705,60 @@ pub async fn feynman_review(
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
 
-    let (history, summary, state): (Vec<FeynmanMessage>, Option<String>, Option<FeynmanState>) = {
+    let state = {
         let conn = db.conn();
-        let (messages_json, summary, state_raw): (String, Option<String>, Option<String>) = conn
+        let raw: Option<String> = conn
             .query_row(
-                "SELECT messages, summary, feynman_state FROM conversations WHERE id = ?1",
+                "SELECT feynman_state FROM conversations WHERE id = ?1",
                 [&conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| r.get(0),
             )
-            .map_err(|e| format!("会话不存在: {e}"))?;
-        (
-            serde_json::from_str(&messages_json).map_err(|e| e.to_string())?,
-            summary,
-            parse_state_json(state_raw)?,
-        )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        parse_state_json(raw)?
     };
 
-    let (overflow, window) =
-        crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
-    // 有滑出历史则把当前 overflow 并入摘要，保证复盘覆盖全量进展（在线一次）
-    let summary = if overflow.is_empty() {
-        summary
-    } else {
-        Some(
-            crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+    match state {
+        Some(st) if !is_legacy_state(&st) => {
+            // 新机制：全部概念完成摘要链
+            let chain = crate::feynman::build_summary_chain(&st, st.plan.len());
+            crate::feynman::review(&llm, Some(&chain), "", &[])
                 .await
-                .map_err(|e| e.to_string())?,
-        )
-    };
-
-    let state_note = match state.as_ref() {
-        Some(st) => crate::feynman::build_stage_note(st),
-        None => String::new(),
-    };
-    crate::feynman::review(&llm, summary.as_deref(), &state_note, &window)
-        .await
-        .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())
+        }
+        _ => {
+            // 旧版：单会话历史 + 滚动摘要
+            let (history, summary): (Vec<FeynmanMessage>, Option<String>) = {
+                let conn = db.conn();
+                let (messages_json, summary): (String, Option<String>) = conn
+                    .query_row(
+                        "SELECT messages, summary FROM conversations WHERE id = ?1",
+                        [&conversation_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|e| format!("会话不存在: {e}"))?;
+                (serde_json::from_str(&messages_json).map_err(|e| e.to_string())?, summary)
+            };
+            let (overflow, window) =
+                crate::feynman::split_window(&history, crate::feynman::WINDOW_MAX_MSGS);
+            let summary = if overflow.is_empty() {
+                summary
+            } else {
+                Some(
+                    crate::feynman::roll_summary(&llm, summary.as_deref(), &overflow)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+            };
+            crate::feynman::review(&llm, summary.as_deref(), "", &window)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
-/// 取某篇论文最近的费曼会话（供前端恢复进度；无则返回 None）。
+/// 取某篇论文最近的费曼**主行**（含闯关状态与各概念会话 id；无则返回 None）。
+/// 旧版单会话行（concept_index IS NULL 且 feynman_state 为旧结构）也会返回，由前端提示重开。
 #[tauri::command]
 pub fn get_feynman_conversation(
     db: State<'_, Db>,
@@ -1743,8 +1766,8 @@ pub fn get_feynman_conversation(
 ) -> Result<Option<Conversation>, String> {
     let conn = db.conn();
     conn.query_row(
-        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state \
-         FROM conversations WHERE paper_id = ?1 AND type = 'feynman' \
+        "SELECT id, paper_id, type, title, messages, created_at, updated_at, notes, summary, feynman_state, concept_index \
+         FROM conversations WHERE paper_id = ?1 AND type = 'feynman' AND concept_index IS NULL \
          ORDER BY updated_at DESC LIMIT 1",
         [&paper_id],
         |r| {
@@ -1759,13 +1782,13 @@ pub fn get_feynman_conversation(
                 notes: r.get(7)?,
                 summary: r.get(8)?,
                 feynman_state: r.get(9)?,
+                concept_index: r.get(10)?,
             })
         },
     )
     .optional()
     .map_err(|e| e.to_string())
 }
-
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------
 
 fn extract_metadata(md: &str) -> (String, Option<String>, Option<String>) {

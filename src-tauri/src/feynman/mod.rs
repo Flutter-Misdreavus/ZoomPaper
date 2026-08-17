@@ -69,6 +69,9 @@ const JUDGE_PROMPT: &str = "学生（你）针对概念「{concept}」出了一�
 /// 压缩「教学进展」摘要的 system prompt：把旧摘要与新滑出窗口的消息合并更新。
 const SUMMARY_PROMPT: &str = "你正在整理一段费曼学习法教学对话的「进展摘要」。用户是老师，AI 是学生。\n\n请把对话压缩成一份 Markdown 摘要（3-5 条要点），记录：已经讲了哪些概念、学生当前的疑问、老师讲解中值得延续或待补充的地方。若消息中提供了已有摘要，请把它与新增对话合并更新，不要丢失关键信息。\n\n要求：直接输出摘要正文，控制在 350 字以内，不要寒暄。";
 
+/// 概念完成摘要指令（system）：概念测验通过后，学生把这段教学对话压缩成供后续概念参考的摘要。
+const CONCEPT_SUMMARY_PROMPT: &str = "你是费曼学习法的教学记录员。学生（你）刚刚完成了概念「{concept}」的学习并通过了测验。请把这段教学对话压缩成一份概念摘要（200 字以内），记录：\n1. 这个概念的核心要点（老师讲解的关键内容，用你能复述的方式）；\n2. 老师用过的类比或直觉（后续概念可以引用）；\n3. 需要记住的薄弱点（如果补讲过）。\n\n这份摘要会作为你对这个概念的「已有知识」传给后续所有概念的学习，请用第一人称学生口吻写（如「我理解了……」「老师用……比喻讲」）。直接输出摘要正文，不要标题。";
+
 /// 会话中的一条消息（持久化到 conversations.messages 的 JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeynmanMessage {
@@ -77,11 +80,14 @@ pub struct FeynmanMessage {
 }
 
 /// `feynman_*` 的返回：学生回应 + 所属会话 id + 闯关状态（旧会话为 None）。
+/// `concept_session_id`：概念级会话机制下，新建/激活的概念会话行 id（教学轮为 None）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeynmanTurn {
     pub conversation_id: String,
     pub reply: String,
     pub state: Option<FeynmanState>,
+    #[serde(default)]
+    pub concept_session_id: Option<String>,
 }
 
 /// 教学计划中的一项（一个概念 + 教学目标）。
@@ -99,6 +105,8 @@ pub enum ConceptStatus {
     #[default]
     Pending,
     Teaching,
+    /// 学生已出题，老师正在作答（概念级子状态）
+    Quiz,
     Passed,
     Weak,
 }
@@ -133,6 +141,12 @@ pub struct ConceptState {
     /// 通过测验的时间戳（unix 秒），未通过为 None
     #[serde(default)]
     pub taught_at: Option<i64>,
+    /// 该概念独立会话行的 conversation id（概念级会话机制；旧结构为 None）
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// 概念完成摘要（测验通过后生成，供后续概念参考；未通过为 None）
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 /// 会话级闯关状态（持久化于 conversations.feynman_state 的 JSON）。
@@ -162,6 +176,8 @@ impl FeynmanState {
                 weak_points: Vec::new(),
                 quiz_attempts: 0,
                 taught_at: None,
+                session_id: None,
+                summary: None,
             })
             .collect();
         FeynmanState {
@@ -177,10 +193,6 @@ impl FeynmanState {
         self.plan.get(self.current_index)
     }
 
-    /// 当前概念的状态记录；越界返回 None。
-    pub fn current_concept_state(&self) -> Option<&ConceptState> {
-        self.concepts.get(self.current_index)
-    }
 }
 
 /// 组装章节地图：`【论文章节】\n- {name}`，节名截断 ≤60 字符、至多 `TOC_MAX_SECTIONS` 条。
@@ -377,6 +389,7 @@ pub fn build_concept_opening_messages(
     window: &[FeynmanMessage],
     concept: &str,
     objective: &str,
+    summary_chain: &str,
 ) -> Vec<ChatMessage> {
     let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
     if !context.trim().is_empty() {
@@ -388,6 +401,10 @@ pub fn build_concept_opening_messages(
     ));
     system.push_str("\n\n");
     system.push_str(&CONCEPT_OPENING_PROMPT.replace("{concept}", concept).replace("{objective}", objective));
+    if !summary_chain.trim().is_empty() {
+        system.push_str("\n\n");
+        system.push_str(summary_chain);
+    }
     let mut messages = vec![ChatMessage {
         role: Role::System,
         content: system,
@@ -421,10 +438,63 @@ fn push_history(messages: &mut Vec<ChatMessage>, history: &[FeynmanMessage]) {
     }
 }
 
-/// 组装「当前关卡」说明块：阶段 + 当前概念 + 教学目标（+ 上次测验缺口），注入 system。
-pub fn build_stage_note(state: &FeynmanState) -> String {
+/// 摘要链长度上限（字符），防御性截断。
+pub const SUMMARY_CHAIN_MAX_CHARS: usize = 3000;
+
+/// 拼接 `concepts[0..upto]` 的概念完成摘要为「之前概念摘要」块（跳过 None/空）。
+/// 供进入新概念时注入 system，作为学生对已学概念的「已有知识」（仅背景，不参与测验）。
+pub fn build_summary_chain(state: &FeynmanState, upto: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (i, c) in state.concepts.iter().take(upto).enumerate() {
+        if let Some(s) = &c.summary {
+            if !s.trim().is_empty() {
+                let name = state.plan.get(i).map(|p| p.name.as_str()).unwrap_or(c.name.as_str());
+                parts.push(format!("概念 {}「{name}」：{s}", i + 1));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    let mut chain = format!("【之前概念摘要】\n{}", parts.join("\n"));
+    if chain.chars().count() > SUMMARY_CHAIN_MAX_CHARS {
+        chain = chain.chars().take(SUMMARY_CHAIN_MAX_CHARS).collect();
+        chain.push_str("\n……（摘要过长，已截断）");
+    }
+    chain
+}
+
+/// 组装「生成概念完成摘要」消息：system（学生人格 + 章节地图 + 相关章节 + 当前关卡 +
+/// 摘要指令）+ 窗口历史。测验通过后调用，输出该概念的完成摘要。
+pub fn build_concept_summary_messages(
+    toc: &str,
+    context: &str,
+    window: &[FeynmanMessage],
+    concept: &str,
+) -> Vec<ChatMessage> {
+    let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
+    if !context.trim().is_empty() {
+        system.push_str("\n\n");
+        system.push_str(context);
+    }
+    system.push_str(&format!(
+        "\n\n【当前关卡】\n- 概念：{concept}\n- 阶段：生成概念完成摘要\n\n"
+    ));
+    system.push_str(&CONCEPT_SUMMARY_PROMPT.replace("{concept}", concept));
+    let mut messages = vec![ChatMessage {
+        role: Role::System,
+        content: system,
+    }];
+    push_history(&mut messages, window);
+    messages
+}
+
+/// 组装「当前关卡」说明块（按概念索引）：阶段 + 该概念 + 教学目标（+ 上次测验缺口），注入 system。
+/// 概念级会话机制下激活的概念可能不是主线 `current_index`，故按 `idx` 定位。
+pub fn build_stage_note(state: &FeynmanState, idx: usize) -> String {
     let cur_passed = state
-        .current_concept_state()
+        .concepts
+        .get(idx)
         .map(|c| c.status == ConceptStatus::Passed)
         .unwrap_or(false);
     let stage_label = match state.status {
@@ -435,13 +505,13 @@ pub fn build_stage_note(state: &FeynmanState) -> String {
         StageStatus::Done => "全部概念已讲完（老师可补充讲解或生成复盘）",
     };
     let mut note = format!("【当前关卡】\n- 阶段：{stage_label}");
-    if let Some(concept) = state.current_concept() {
+    if let Some(concept) = state.plan.get(idx) {
         note.push_str(&format!("\n- 概念：{}", concept.name));
         if !concept.objective.is_empty() {
             note.push_str(&format!("\n- 教学目标：{}", concept.objective));
         }
     }
-    if let Some(cs) = state.current_concept_state() {
+    if let Some(cs) = state.concepts.get(idx) {
         if cs.status == ConceptStatus::Weak && !cs.weak_points.is_empty() {
             note.push_str("\n- 上次测验缺口：");
             note.push_str(&cs.weak_points.join("；"));
@@ -461,6 +531,7 @@ pub fn build_turn_messages(
     window: &[FeynmanMessage],
     user_msg: &str,
     stage_note: &str,
+    summary_chain: &str,
 ) -> Vec<ChatMessage> {
     let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
     if let Some(fp) = full_paper {
@@ -478,6 +549,10 @@ pub fn build_turn_messages(
     if !stage_note.trim().is_empty() {
         system.push_str("\n\n");
         system.push_str(stage_note);
+    }
+    if !summary_chain.trim().is_empty() {
+        system.push_str("\n\n");
+        system.push_str(summary_chain);
     }
     let mut messages = vec![ChatMessage {
         role: Role::System,
@@ -515,6 +590,7 @@ pub fn build_quiz_messages(
     concept: &str,
     objective: &str,
     attempts: u32,
+    summary_chain: &str,
 ) -> Vec<ChatMessage> {
     let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
     if !context.trim().is_empty() {
@@ -538,6 +614,10 @@ pub fn build_quiz_messages(
         ));
     }
     system.push_str(&quiz);
+    if !summary_chain.trim().is_empty() {
+        system.push_str("\n\n");
+        system.push_str(summary_chain);
+    }
     let mut messages = vec![ChatMessage {
         role: Role::System,
         content: system,
@@ -555,6 +635,7 @@ pub fn build_judge_messages(
     window: &[FeynmanMessage],
     concept: &str,
     objective: &str,
+    summary_chain: &str,
 ) -> Vec<ChatMessage> {
     let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
     if !context.trim().is_empty() {
@@ -571,6 +652,10 @@ pub fn build_judge_messages(
         "\n\n【当前关卡】\n- 概念：{concept}\n- 教学目标：{objective}\n- 阶段：判定测验结果\n\n"
     ));
     system.push_str(&JUDGE_PROMPT.replace("{concept}", concept).replace("{objective}", objective));
+    if !summary_chain.trim().is_empty() {
+        system.push_str("\n\n");
+        system.push_str(summary_chain);
+    }
     let mut messages = vec![ChatMessage {
         role: Role::System,
         content: system,
@@ -791,7 +876,7 @@ mod tests {
             name: "自注意力".into(),
             objective: "解释 QKV".into(),
         }]);
-        let note = build_stage_note(&state);
+        let note = build_stage_note(&state, 0);
         assert!(note.contains("制定教学计划"));
         assert!(note.contains("自注意力"));
         assert!(note.contains("解释 QKV"));
@@ -800,7 +885,7 @@ mod tests {
         state.status = StageStatus::Teaching;
         state.concepts[0].status = ConceptStatus::Weak;
         state.concepts[0].weak_points = vec!["Q 的定义含糊".into()];
-        let note = build_stage_note(&state);
+        let note = build_stage_note(&state, 0);
         assert!(note.contains("讲解当前概念"));
         assert!(note.contains("Q 的定义含糊"));
     }
@@ -826,6 +911,7 @@ mod tests {
             &window,
             "推理接口",
             "能说出三种中间状态传递方式的代价",
+            "",
         );
         assert_eq!(msgs.len(), 3); // [system, 占位user, assistant开场白]
         assert_eq!(msgs[0].role, Role::System);
@@ -839,9 +925,11 @@ mod tests {
         assert_eq!(msgs[2].content, "开场白");
 
         // 空窗口 → 直接 [system, 提问指令作为唯一 user 消息由模型响应]
-        let msgs = build_concept_opening_messages("", "", &[], "X", "目标");
+        let msgs = build_concept_opening_messages("", "", &[], "X", "目标", "【之前概念摘要】\n概念 1：……");
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].content.contains("X"));
+        assert!(msgs[0].content.contains("之前概念摘要"));
+        assert!(msgs[0].content.contains("概念 1：……"));
     }
 
     #[test]
@@ -858,6 +946,7 @@ mod tests {
             &window,
             "注意力就是…",
             "【当前关卡】\n- 概念：注意力",
+            "【之前概念摘要】\n概念 1：……",
         );
         assert_eq!(msgs[0].role, Role::System);
         assert!(msgs[0].content.contains("本科生"));
@@ -867,6 +956,7 @@ mod tests {
         assert!(msgs[0].content.contains("讲了注意力机制"));
         assert!(msgs[0].content.contains("当前关卡"));
         assert!(msgs[0].content.contains("注意力"));
+        assert!(msgs[0].content.contains("之前概念摘要")); // 摘要链注入
         // 已删除要点笔记，system 不应再包含笔记注入
         assert!(!msgs[0].content.contains("要点笔记"));
         assert_eq!(msgs[1].role, Role::User);
@@ -875,22 +965,23 @@ mod tests {
         assert!(msgs[3].content.contains("【论文相关章节】"));
         assert!(msgs[3].content.contains("注意力就是…"));
 
-        // 非首轮（full_paper=None）+ 空 stage_note → system 不含全文块与关卡块
-        let msgs = build_turn_messages("【论文章节】\n- Method", None, None, "", &[], "继续", "");
+        // 非首轮（full_paper=None）+ 空 stage_note + 空摘要链 → system 不含全文块与关卡块
+        let msgs = build_turn_messages("【论文章节】\n- Method", None, None, "", &[], "继续", "", "");
         assert!(!msgs[0].content.contains("论文全文"));
         assert!(!msgs[0].content.contains("当前关卡"));
+        assert!(!msgs[0].content.contains("之前概念摘要"));
     }
 
     #[test]
     fn build_turn_messages_without_context_omits_block() {
-        let msgs = build_turn_messages("", None, None, "", &[], "直接讲解", "");
+        let msgs = build_turn_messages("", None, None, "", &[], "直接讲解", "", "");
         assert_eq!(msgs[1].content, "直接讲解");
     }
 
     #[test]
     fn build_turn_messages_prepends_user_when_window_starts_with_assistant() {
         let window = vec![msg(Role::Assistant, "开场白")];
-        let msgs = build_turn_messages("", None, None, "", &window, "我来教你", "");
+        let msgs = build_turn_messages("", None, None, "", &window, "我来教你", "", "");
         // [system, 占位user, assistant开场, user讲解]
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].role, Role::User);
@@ -907,7 +998,7 @@ mod tests {
             msg(Role::Assistant, "测验题 1. ..."),
             msg(Role::User, "作答"),
         ];
-        let msgs = build_turn_messages("", None, None, "", &window, "继续讲", "");
+        let msgs = build_turn_messages("", None, None, "", &window, "继续讲", "", "");
         // [system, 占位user, assistant(合并两条), user(作答+继续讲合并)]
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[0].role, Role::System);
@@ -935,6 +1026,7 @@ mod tests {
             "注意力机制",
             "解释 QKV",
             0,
+            "",
         );
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].role, Role::System);
@@ -948,7 +1040,7 @@ mod tests {
         assert_eq!(msgs[2].content, "那 K 呢？");
 
         // 有失败记录 → 提示降难度
-        let msgs = build_quiz_messages("", None, "", &[], "X", "目标", 2);
+        let msgs = build_quiz_messages("", None, "", &[], "X", "目标", 2, "");
         assert_eq!(msgs.len(), 1);
         assert!(msgs[0].content.contains("第 3 次测验"));
         assert!(msgs[0].content.contains("降低难度"));
@@ -967,6 +1059,7 @@ mod tests {
             &window,
             "注意力机制",
             "解释 QKV",
+            "【之前概念摘要】\n概念 1：……",
         );
         assert_eq!(msgs.len(), 4);
         assert!(msgs[0].content.contains("判定测验结果"));
@@ -1008,5 +1101,70 @@ mod tests {
         assert_eq!(msgs[1].role, Role::User);
         assert_eq!(msgs[1].content, "开始");
         assert_eq!(msgs[2].role, Role::Assistant);
+    }
+
+    #[test]
+    fn build_summary_chain_skips_empty_and_caps() {
+        let mut state = FeynmanState::new(vec![
+            PlanItem { name: "A".into(), objective: String::new() },
+            PlanItem { name: "B".into(), objective: String::new() },
+            PlanItem { name: "C".into(), objective: String::new() },
+        ]);
+        // 全部无摘要 → 空
+        assert_eq!(build_summary_chain(&state, 3), "");
+
+        // 只有 0、2 有摘要，upto=2 只取 0
+        state.concepts[0].summary = Some("用词典比喻 J-space".into());
+        state.concepts[2].summary = Some("第三概念摘要".into());
+        let chain = build_summary_chain(&state, 2);
+        assert!(chain.starts_with("【之前概念摘要】"));
+        assert!(chain.contains("概念 1「A」：用词典比喻 J-space"));
+        assert!(!chain.contains("第三概念摘要")); // upto=2 不含索引 2
+
+        let chain = build_summary_chain(&state, 3);
+        assert!(chain.contains("概念 3「C」：第三概念摘要"));
+
+        // 超长截断
+        let mut big = FeynmanState::new(vec![PlanItem { name: "X".into(), objective: String::new() }]);
+        big.concepts[0].summary = Some("长".repeat(SUMMARY_CHAIN_MAX_CHARS + 100));
+        let chain = build_summary_chain(&big, 1);
+        assert!(chain.contains("已截断"));
+        assert!(chain.chars().count() <= SUMMARY_CHAIN_MAX_CHARS + 20);
+    }
+
+    #[test]
+    fn build_concept_summary_messages_has_instruction_and_history() {
+        let window = vec![
+            msg(Role::User, "Q 是查询向量"),
+            msg(Role::Assistant, "我理解了！"),
+        ];
+        let msgs = build_concept_summary_messages("【论文章节】\n- Method", "【论文相关章节】\n### Method\n…", &window, "注意力机制");
+        assert_eq!(msgs[0].role, Role::System);
+        assert!(msgs[0].content.contains("生成概念完成摘要"));
+        assert!(msgs[0].content.contains("注意力机制"));
+        assert!(msgs[0].content.contains("200 字以内"));
+        assert!(msgs[0].content.contains("第一人称"));
+        assert_eq!(msgs[1].content, "Q 是查询向量");
+        assert_eq!(msgs[2].content, "我理解了！");
+    }
+
+    #[test]
+    fn concept_state_serializes_session_and_summary_with_defaults() {
+        // 新结构往返
+        let state = FeynmanState::new(vec![PlanItem { name: "A".into(), objective: "o".into() }]);
+        let mut s2 = state.clone();
+        s2.concepts[0].session_id = Some("conv-0".into());
+        s2.concepts[0].summary = Some("摘要".into());
+        let json = serde_json::to_string(&s2).unwrap();
+        let back: FeynmanState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.concepts[0].session_id.as_deref(), Some("conv-0"));
+        assert_eq!(back.concepts[0].summary.as_deref(), Some("摘要"));
+
+        // 旧结构（无 session_id/summary 字段）解析为 None（legacy 兼容）
+        let legacy_json = r#"{"plan":[{"name":"A","objective":"o"}],"current_index":0,"status":"teaching","concepts":[{"name":"A","status":"passed","weak_points":[],"quiz_attempts":1,"taught_at":1700000000}]}"#;
+        let legacy: FeynmanState = serde_json::from_str(legacy_json).unwrap();
+        assert!(legacy.concepts[0].session_id.is_none());
+        assert!(legacy.concepts[0].summary.is_none());
+        assert_eq!(legacy.concepts[0].status, ConceptStatus::Passed);
     }
 }

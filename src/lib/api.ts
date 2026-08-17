@@ -97,6 +97,8 @@ export interface Conversation {
   summary?: string | null;
   /** 费曼闯关状态 JSON（概念计划 / 当前关卡 / 各概念状态）；null = 旧版自由聊天会话 */
   feynman_state?: string | null;
+  /** 费曼「概念级独立会话」标记：null = 主行（或 qa / 旧版单会话）；N = 概念 N 的会话行 */
+  concept_index?: number | null;
 }
 
 export interface FeynmanMessage {
@@ -110,7 +112,7 @@ export interface PlanItem {
   objective: string;
 }
 
-export type ConceptStatus = "pending" | "teaching" | "passed" | "weak";
+export type ConceptStatus = "pending" | "teaching" | "quiz" | "passed" | "weak";
 
 export type StageStatus = "planning" | "teaching" | "quiz" | "done";
 
@@ -123,6 +125,10 @@ export interface ConceptState {
   quiz_attempts: number;
   /** 通过测验的时间戳（unix 秒） */
   taught_at: number | null;
+  /** 该概念独立会话行的 conversation id（概念级会话机制；旧结构为 null） */
+  session_id?: string | null;
+  /** 概念完成摘要（测验通过后生成，供后续概念参考；未通过为 null） */
+  summary?: string | null;
 }
 
 /** 会话级闯关状态（持久化于 conversations.feynman_state JSON） */
@@ -138,6 +144,8 @@ export interface FeynmanTurn {
   reply: string;
   /** 闯关状态；旧会话为 null */
   state?: FeynmanState | null;
+  /** 概念级会话机制下，新建/激活的概念会话行 id（教学轮为 null） */
+  concept_session_id?: string | null;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");

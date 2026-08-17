@@ -87,6 +87,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE conversations ADD COLUMN feynman_state TEXT;
     "#,
+    // v7：费曼「概念级独立会话」：concept_index 标记该行属于哪个概念的会话。
+    // type='feynman' 且 concept_index IS NULL = 主行（存 feynman_state 进度元数据）；
+    // concept_index = N = 概念 N 的独立会话行（消息/滚动摘要各自独立）。
+    // 其他类型（qa）与旧版单会话费曼行该列为 NULL。
+    r#"
+    ALTER TABLE conversations ADD COLUMN concept_index INTEGER;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -129,7 +136,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 6);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
 
         // 论文数据无损
         let title: String = conn
@@ -167,6 +174,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(cols.contains(&"feynman_state".to_string()));
+        assert!(cols.contains(&"concept_index".to_string())); // v7
         let legacy_state: Option<String> = conn
             .query_row(
                 "SELECT feynman_state FROM conversations WHERE id = 'paper-1'",
