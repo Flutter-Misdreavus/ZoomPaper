@@ -185,7 +185,8 @@ export function SettingsPage() {
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              复用上方 DeepSeek / Anthropic API Key，无需新增密钥；未配置对应 Key 时自动禁用。
+              复用上方 DeepSeek / Anthropic API Key，无需新增密钥；默认「自动」——
+              填了任一 Key 即生效，可在对话页用「联网」开关随时开启或关闭。
             </p>
           </div>
           <div className="grid gap-1.5">

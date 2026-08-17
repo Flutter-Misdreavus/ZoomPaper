@@ -207,6 +207,16 @@ export interface FeynmanTurn {
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
+
+/** 判断联网搜索是否已配置可用：provider 非 none 且对应 API Key 非空（auto 时任一 Key） */
+export function isWebSearchConfigured(s: Settings): boolean {
+  const p = (s.web_search_provider ?? "").toLowerCase();
+  if (!p || p === "none") return false;
+  if (p === "deepseek") return !!s.api_keys.deepseek;
+  if (p === "anthropic") return !!s.api_keys.anthropic;
+  if (p === "auto") return !!(s.api_keys.deepseek || s.api_keys.anthropic);
+  return false;
+}
 export const generateBlog = (paperId: string) =>
   invoke<string>("generate_blog", { paperId });
 export const updateSettings = (newSettings: Settings) =>
@@ -267,6 +277,8 @@ export const askQuestion = (
     selections?: { text: string; pageIdx: number }[] | null;
     /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
     mode?: "quick" | "agent";
+    /** 联网搜索开关（缺省开） */
+    webSearch?: boolean;
     /** 实时事件流（思考/正文/工具状态） */
     onEvent?: Channel<AgentEvent>;
   },
@@ -278,6 +290,7 @@ export const askQuestion = (
     topK: opts?.topK,
     selections: opts?.selections ?? null,
     mode: opts?.mode ?? "agent",
+    webSearch: opts?.webSearch ?? true,
     // 后端 Channel 参数必填（null 会导致参数反序列化失败），缺省时创建空通道
     onEvent: opts?.onEvent ?? new Channel<AgentEvent>(),
   });
@@ -286,11 +299,13 @@ export const askQuestion = (
 export const askQuestionReply = (
   conversationId: string,
   reply: string,
+  webSearch?: boolean,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<Answer>("ask_question_reply", {
     conversationId,
     reply,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -306,11 +321,13 @@ export const feynmanStart = (paperId: string) =>
 export const feynmanConfirmPlan = (
   conversationId: string,
   plan: PlanItem[],
+  webSearch?: boolean,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_confirm_plan", {
     conversationId,
     plan,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -318,33 +335,50 @@ export const feynmanTurn = (
   message: string,
   paperId: string,
   conversationId?: string | null,
+  webSearch?: boolean,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_turn", {
     message,
     paperId,
     conversationId: conversationId ?? null,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
 /** 对当前概念出测验题（状态置为 quiz） */
-export const feynmanQuiz = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+export const feynmanQuiz = (
+  conversationId: string,
+  webSearch?: boolean,
+  onEvent?: Channel<AgentEvent>,
+) =>
   invoke<FeynmanTurn>("feynman_quiz", {
     conversationId,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
 /** 交卷判定：收集出题之后的作答，判定 通过/需补讲 */
-export const feynmanJudge = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+export const feynmanJudge = (
+  conversationId: string,
+  webSearch?: boolean,
+  onEvent?: Channel<AgentEvent>,
+) =>
   invoke<FeynmanTurn>("feynman_judge", {
     conversationId,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
 /** 进入下一概念 */
-export const feynmanNext = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+export const feynmanNext = (
+  conversationId: string,
+  webSearch?: boolean,
+  onEvent?: Channel<AgentEvent>,
+) =>
   invoke<FeynmanTurn>("feynman_next", {
     conversationId,
+    webSearch: webSearch ?? true,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 

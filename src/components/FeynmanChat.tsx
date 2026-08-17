@@ -9,6 +9,7 @@ import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
+import { WebToggle } from "@/components/WebToggle";
 import {
   feynmanConfirmPlan,
   feynmanJudge,
@@ -24,6 +25,8 @@ import {
   type FeynmanMessage,
   type FeynmanState,
   type PlanItem,
+  getSettings,
+  isWebSearchConfigured,
 } from "@/lib/api";
 import {
   ArrowRight,
@@ -103,6 +106,16 @@ export function FeynmanChat({ paperId }: Props) {
   const [liveThinking, setLiveThinking] = useState("");
   const [liveText, setLiveText] = useState("");
   const [liveTrace, setLiveTrace] = useState<LiveToolStep[]>([]);
+  /** 联网搜索开关（默认开；未配置 provider 时显示「未配置」提示） */
+  const [webOn, setWebOn] = useState(true);
+  const [webConfigured, setWebConfigured] = useState(true);
+
+  // 挂载时读取联网搜索配置状态
+  useEffect(() => {
+    getSettings()
+      .then((s) => setWebConfigured(isWebSearchConfigured(s)))
+      .catch(() => {});
+  }, []);
   const [loadingConcept, setLoadingConcept] = useState(false);
   // 旧版单会话（只读）
   const [legacy, setLegacy] = useState(false);
@@ -276,7 +289,7 @@ export function FeynmanChat({ paperId }: Props) {
       resetLive();
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanConfirmPlan(mainConvId, plan, ch);
+      const turn = await feynmanConfirmPlan(mainConvId, plan, webOn, ch);
       setLiveText("");
       setFs(turn.state ?? null);
       // 创建了概念 0 会话行：初始化其消息（学生引导提问）
@@ -355,7 +368,7 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanTurn(content, paperId, activeSessionId, ch);
+      const turn = await feynmanTurn(content, paperId, activeSessionId, webOn, ch);
       if (turn.reply) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -390,7 +403,7 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanQuiz(activeSessionId, ch);
+      const turn = await feynmanQuiz(activeSessionId, webOn, ch);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -420,7 +433,7 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanJudge(activeSessionId, ch);
+      const turn = await feynmanJudge(activeSessionId, webOn, ch);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -448,7 +461,7 @@ export function FeynmanChat({ paperId }: Props) {
       resetLive();
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanNext(activeSessionId, ch);
+      const turn = await feynmanNext(activeSessionId, webOn, ch);
       setLiveText("");
       setFs(turn.state ?? null);
       // 新概念会话行创建：切换到新 Tab 并初始化其消息（学生引导提问）
@@ -953,6 +966,14 @@ export function FeynmanChat({ paperId }: Props) {
       )}
 
       {/* 输入区：测验/交卷按钮 + 发送（legacy 只读禁用） */}
+      <div className="mb-1.5">
+        <WebToggle
+          on={webOn}
+          onChange={setWebOn}
+          configured={webConfigured}
+          disabled={legacy || !activeSessionId}
+        />
+      </div>
       <div className="flex items-end gap-2">
         <Textarea
           value={input}

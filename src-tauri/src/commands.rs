@@ -1021,6 +1021,17 @@ async fn update_memory(
     Ok(entries)
 }
 
+/// 按对话级「联网」开关生成本次运行生效的 settings：`web_on == false` 时把
+/// provider 置为 "none"（web 工具不注册、提示词无 web 段；不改动用户设置）。
+fn effective_settings(settings: &Settings, web_on: bool) -> Settings {
+    if web_on {
+        return settings.clone();
+    }
+    let mut s = settings.clone();
+    s.web_search_provider = "none".to_string();
+    s
+}
+
 /// 一轮问答（agent 深度研究 / quick 快速），并持久化到 conversations。
 /// `mode`：`"quick" | "agent"`，缺省 `"agent"`。agent 失败时自动回退 quick；
 /// agent 模式下模型可调用 ask_user 澄清：返回 `Answer.pending`，由
@@ -1034,11 +1045,14 @@ pub async fn ask_question(
     top_k: Option<usize>,
     selections: Option<Vec<crate::qa::SelectionInput>>,
     mode: Option<String>,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<Answer, String> {
     let mode = mode.unwrap_or_else(|| "agent".to_string());
     let top_k = top_k.unwrap_or(5);
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    // 对话级联网开关（缺省开）
+    let run_settings = effective_settings(&settings, web_search.unwrap_or(true));
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
 
     // 取/建会话与历史
@@ -1113,7 +1127,7 @@ pub async fn ask_question(
     match crate::agent::run_agent(
         &llm,
         &db,
-        &settings,
+        &run_settings,
         &question,
         paper_id.as_deref(),
         &history,
@@ -1252,6 +1266,7 @@ pub async fn ask_question_reply(
     db: State<'_, Db>,
     conversation_id: String,
     reply: String,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<Answer, String> {
     let reply = reply.trim().to_string();
@@ -1259,6 +1274,7 @@ pub async fn ask_question_reply(
         return Err("回答不能为空".into());
     }
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let run_settings = effective_settings(&settings, web_search.unwrap_or(true));
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -1297,7 +1313,7 @@ pub async fn ask_question_reply(
     let mut batcher = EventBatcher::new(&on_event);
     let mut sink = |evt: crate::agent::AgentEvent| batcher.push(evt);
 
-    match crate::agent::resume_agent(&llm, &db, &settings, state, &reply, &mut sink).await {
+    match crate::agent::resume_agent(&llm, &db, &run_settings, state, &reply, &mut sink).await {
         Ok(crate::agent::RunResult::Done {
             answer,
             citations,
@@ -1602,7 +1618,10 @@ fn feynman_tool_guide(web_enabled: bool) -> String {
          list_papers 列出论文库、read_annotations 参考用户的阅读标注、read_translation 参考中文译文。",
     );
     if web_enabled {
-        g.push_str("必要时可用 web_search 联网查证、web_fetch 抓取网页。");
+        g.push_str(
+            "当涉及论文之外的信息（该方向的最新进展、与其他工作的对比、背景资料、事实核验等）时，\
+             应当使用 web_search 查证后再回答；本地资料无法回答的问题也必须尝试联网搜索。",
+        );
     }
     g.push_str(
         "工具返回的 [n] 编号仅用于定位来源，回答中请自然提及（如「论文第 X 页提到」），不要输出 [n] 编号。\
@@ -1628,6 +1647,7 @@ async fn feynman_agent_turn(
     settings: &Settings,
     paper_id: &str,
     messages: Vec<crate::ai::llm::ChatMessage>,
+    web_on: bool,
     on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<
     (
@@ -1638,10 +1658,11 @@ async fn feynman_agent_turn(
     ),
     String,
 > {
-    let web_enabled = settings.web_search_available().is_some();
+    let run_settings = effective_settings(settings, web_on);
+    let web_enabled = run_settings.web_search_available().is_some();
     let mut agent_msgs = crate::agent::plain_messages(messages);
     append_to_system(&mut agent_msgs, &feynman_tool_guide(web_enabled));
-    let tools = crate::agent::tools::build_feynman_tools(settings);
+    let tools = crate::agent::tools::build_feynman_tools(&run_settings);
     // 实时转发（思考/正文批处理防抖）+ 收集思考文本
     let mut batcher = EventBatcher::new(on_event);
     let mut thinking = String::new();
@@ -1655,7 +1676,7 @@ async fn feynman_agent_turn(
     match crate::agent::run_agent_loop(
         llm,
         db,
-        settings,
+        &run_settings,
         agent_msgs,
         Some(paper_id),
         &[],
@@ -1690,6 +1711,7 @@ async fn ask_concept_opening(
     concept: &PlanItem,
     summary_chain: &str,
     now: i64,
+    web_on: bool,
     on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<
     (String, String, Vec<crate::agent::ToolStep>, crate::agent::Timing),
@@ -1713,6 +1735,7 @@ async fn ask_concept_opening(
             &concept.objective,
             summary_chain,
         ),
+        web_on,
         on_event,
     )
     .await?;
@@ -1796,9 +1819,11 @@ pub async fn feynman_confirm_plan(
     db: State<'_, Db>,
     conversation_id: String,
     plan: Vec<PlanItem>,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -1847,6 +1872,7 @@ pub async fn feynman_confirm_plan(
         &concept,
         "",
         now,
+        web_on,
         &on_event,
     )
     .await?;
@@ -1877,9 +1903,11 @@ pub async fn feynman_turn(
     paper_id: String,
     message: String,
     conversation_id: Option<String>,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -2034,6 +2062,7 @@ pub async fn feynman_turn(
             &stage_note,
             &summary_chain,
         ),
+        web_on,
         &on_event,
     )
     .await?;
@@ -2082,9 +2111,11 @@ pub async fn feynman_turn(
 pub async fn feynman_quiz(
     db: State<'_, Db>,
     conversation_id: String,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -2142,6 +2173,7 @@ pub async fn feynman_quiz(
             attempts,
             &summary_chain,
         ),
+        web_on,
         &on_event,
     )
     .await?;
@@ -2187,9 +2219,11 @@ pub async fn feynman_quiz(
 pub async fn feynman_judge(
     db: State<'_, Db>,
     conversation_id: String,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -2251,6 +2285,7 @@ pub async fn feynman_judge(
             &concept.objective,
             &summary_chain,
         ),
+        web_on,
         &on_event,
     )
     .await?;
@@ -2331,9 +2366,11 @@ pub async fn feynman_judge(
 pub async fn feynman_next(
     db: State<'_, Db>,
     conversation_id: String,
+    web_search: Option<bool>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
+    let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
 
@@ -2394,6 +2431,7 @@ pub async fn feynman_next(
         &concept,
         &summary_chain,
         now,
+        web_on,
         &on_event,
     )
     .await?;
@@ -2778,6 +2816,23 @@ mod tests {
         assert_eq!(back.title, "Attention Is All You Need");
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn effective_settings_turns_off_web_provider() {
+        let mut s = Settings::default();
+        s.api_keys.deepseek = "sk-test".into();
+        s.web_search_provider = "auto".into();
+        // 开 → 原样
+        let on = effective_settings(&s, true);
+        assert_eq!(on.web_search_provider, "auto");
+        assert!(on.web_search_available().is_some());
+        // 关 → provider 置 none，工具不可注册
+        let off = effective_settings(&s, false);
+        assert_eq!(off.web_search_provider, "none");
+        assert!(off.web_search_available().is_none());
+        // 不改动原设置
+        assert_eq!(s.web_search_provider, "auto");
     }
 
     /// 回归：agent_state / agent_memory 列为 NULL（新会话）时必须读为空，不得报

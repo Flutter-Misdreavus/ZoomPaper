@@ -57,7 +57,7 @@ impl Default for Settings {
             embedding_model: "bge-small-en-v1.5".to_string(),
             llm_provider: "openai".to_string(),
             llm_model: "gpt-4o-mini".to_string(),
-            web_search_provider: "none".to_string(),
+            web_search_provider: "auto".to_string(),
             web_search_model: None,
         }
     }
@@ -103,6 +103,7 @@ impl Settings {
     }
 
     /// 解析联网搜索 provider：返回 `(provider, model)`；不可用时返回 None。
+    /// 前端「未配置」提示由 getSettings 的字段自行判断（provider 非 none 且对应 Key 非空）。
     ///
     /// - `deepseek` → 需 `api_keys.deepseek` 非空，模型默认 `deepseek-v4-flash`（DSH 默认值）；
     /// - `anthropic` → 需 `api_keys.anthropic` 非空，模型默认当前 `llm_model`（若 provider 是
@@ -143,5 +144,35 @@ impl Settings {
                 .map(|(p, _, m)| (p.to_string(), m)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_web_provider_is_auto_and_keys_gate_availability() {
+        let mut s = Settings::default();
+        assert_eq!(s.web_search_provider, "auto");
+        // 无 Key → 不可用
+        assert!(s.web_search_available().is_none());
+        // 任一 Key → 可用（auto 优先 deepseek）
+        s.api_keys.deepseek = "sk-test".into();
+        let (provider, _model) = s.web_search_available().unwrap();
+        assert_eq!(provider, "deepseek");
+        // 只有 anthropic Key 时选 anthropic
+        let mut s2 = Settings::default();
+        s2.api_keys.anthropic = "sk-ant-test".into();
+        let (provider2, _m2) = s2.web_search_available().unwrap();
+        assert_eq!(provider2, "anthropic");
+    }
+
+    #[test]
+    fn old_settings_json_without_provider_uses_default_auto() {
+        let raw = r#"{"api_keys": {"mineru": "", "openai": "", "anthropic": "", "gemini": "", "deepseek": "k"}, "llm_provider": "openai", "llm_model": "gpt-4o-mini", "embedding_model": "bge-small-en-v1.5"}"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.web_search_provider, "auto");
+        assert!(s.web_search_available().is_some());
     }
 }

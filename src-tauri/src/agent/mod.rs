@@ -471,7 +471,7 @@ fn build_system_prompt(web_enabled: bool, selections: usize, memory: &[memory::M
          工作流程建议：\n\
          1. 先用 get_outline / get_paper_meta 了解论文结构与背景；\n\
          2. 再用 search_papers / read_section 精读与问题相关的章节；\n\
-         3. 综合所有资料后给出有依据的回答。\n\n\
+         3. 需要外部信息时联网搜索，然后综合所有资料给出有依据的回答。\n\n\
          澄清说明：如果问题有歧义、或需要用户选择研究方向，且现有信息不足以继续时，\
          可调用 ask_user 向用户澄清（每轮最多一次）；优先基于已有信息回答，不要频繁打断。\n\n\
          引用规则：\n\
@@ -481,9 +481,10 @@ fn build_system_prompt(web_enabled: bool, selections: usize, memory: &[memory::M
     );
     if web_enabled {
         p.push_str(
-            "\n\n联网搜索：需要外部背景、最新进展或对比资料时，可使用 web_search 发现资料\
-             （返回来源列表与摘录），对具体来源可用 web_fetch 获取全文；回答时以 markdown 链接\
-             形式引用来源。搜索无结果或报错时，换个说法重试一次，或基于本地知识回答并如实说明。",
+            "\n\n联网搜索：当问题涉及论文之外的信息——该方向的最新进展、与其他工作的对比、\
+             背景资料、事实核验、作者/机构信息等——应当使用 web_search 查证后再回答；\
+             本地资料无法回答的问题也必须尝试联网搜索。对具体来源可用 web_fetch 获取全文，\
+             回答时以 markdown 链接形式引用来源。搜索无结果或报错时，换个说法重试一次。",
         );
     }
     if selections > 0 {
@@ -708,6 +709,8 @@ mod tests {
     fn system_prompt_web_section_follows_enablement() {
         let with_web = build_system_prompt(true, 0, &[]);
         assert!(with_web.contains("web_search"));
+        // 指令式触发规则
+        assert!(with_web.contains("应当使用 web_search"));
         let without = build_system_prompt(false, 0, &[]);
         assert!(!without.contains("web_search"));
         assert!(without.contains("引用规则"));

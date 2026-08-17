@@ -19,10 +19,13 @@ import {
   normalizeLatex,
   resolveImgSrc,
 } from "@/lib/markdown";
+import { WebToggle } from "@/components/WebToggle";
 import {
   askQuestion,
   askQuestionReply,
   getConversation,
+  getSettings,
+  isWebSearchConfigured,
   type AgentEvent,
   type AnnotationRect,
   type Citation,
@@ -105,6 +108,16 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const [error, setError] = useState<string | null>(null);
   /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
   const [mode, setMode] = useState<"quick" | "agent">("agent");
+  /** 联网搜索开关（默认开；未配置 provider 时显示「未配置」提示） */
+  const [webOn, setWebOn] = useState(true);
+  const [webConfigured, setWebConfigured] = useState(true);
+
+  // 挂载时读取联网搜索配置状态
+  useEffect(() => {
+    getSettings()
+      .then((s) => setWebConfigured(isWebSearchConfigured(s)))
+      .catch(() => {});
+  }, []);
   /** AI 澄清请求（ask_user）：非空时输入框改为作答澄清问题 */
   const [pending, setPending] = useState<PendingAsk | null>(null);
   /** 实时流式状态：思考文本 / 回答正文增量 / 工具轨迹（含 running 态） */
@@ -283,7 +296,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const ans = await askQuestionReply(convId, reply, ch);
+      const ans = await askQuestionReply(convId, reply, webOn, ch);
       if (ans.pending) {
         // 防御：理论上每轮最多澄清一次，不会再次中断
         setPending(ans.pending);
@@ -333,6 +346,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         conversationId: convId,
         selections: sentSelections,
         mode,
+        webSearch: webOn,
         onEvent: ch,
       });
       if (ans.pending) {
@@ -606,11 +620,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             深度
           </button>
         </div>
-        {mode === "agent" && !pending && (
-          <span className="text-[11px] text-muted-foreground">
-            会调用工具研读论文与联网检索，回答更深入
-          </span>
-        )}
+        <WebToggle on={webOn} onChange={setWebOn} configured={webConfigured} disabled={!!pending} />
         {pending && (
           <span className="text-[11px] text-muted-foreground">等待你回答 AI 的澄清问题</span>
         )}
