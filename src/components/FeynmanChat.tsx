@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import { Reorder } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { MarkdownView } from "@/components/MarkdownView";
+import { ThinkingPanel } from "@/components/ThinkingPanel";
+import { TimingLine } from "@/components/TimingLine";
+import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import {
   feynmanConfirmPlan,
   feynmanJudge,
@@ -15,6 +19,7 @@ import {
   getConversation,
   getFeynmanConversation,
   type ConceptStatus,
+  type AgentEvent,
   type FeynmanMessage,
   type FeynmanState,
   type PlanItem,
@@ -91,6 +96,12 @@ export function FeynmanChat({ paperId }: Props) {
   // 激活概念索引 + 各概念会话消息缓存
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [conceptMessages, setConceptMessages] = useState<Record<number, FeynmanMessage[]>>({});
+  /** 每概念最近一轮的学生思考内容（仅实时展示，不持久化） */
+  const [turnThinking, setTurnThinking] = useState<Record<number, string>>({});
+  /** 实时流式状态：思考 / 回答增量 / 工具轨迹（生成中） */
+  const [liveThinking, setLiveThinking] = useState("");
+  const [liveText, setLiveText] = useState("");
+  const [liveTrace, setLiveTrace] = useState<LiveToolStep[]>([]);
   const [loadingConcept, setLoadingConcept] = useState(false);
   // 旧版单会话（只读）
   const [legacy, setLegacy] = useState(false);
@@ -183,7 +194,7 @@ export function FeynmanChat({ paperId }: Props) {
   // 新消息 / 状态变化滚动到底部
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [conceptMessages, activeIndex, sending, review, starting, judging, quizzing, fs, legacyMessages]);
+  }, [conceptMessages, activeIndex, sending, review, starting, judging, quizzing, nexting, planning, liveText, liveThinking, fs, legacyMessages]);
 
   // 派生状态
   const isPlanning = fs?.status === "planning" && !legacy;
@@ -191,6 +202,8 @@ export function FeynmanChat({ paperId }: Props) {
   const activeCs = fs && activeIdx !== null ? fs.concepts[activeIdx] : undefined;
   const activeMessages =
     legacy ? legacyMessages : activeIdx !== null ? (conceptMessages[activeIdx] ?? []) : [];
+  /** 当前概念最近一轮的学生思考内容（渲染思考胶囊用） */
+  const thinking = activeIdx !== null ? (turnThinking[activeIdx] ?? "") : "";
   const isQuiz = activeCs?.status === "quiz";
   const currentPassed = activeCs?.status === "passed";
   const currentWeak = activeCs?.status === "weak";
@@ -259,21 +272,70 @@ export function FeynmanChat({ paperId }: Props) {
     setError(null);
     try {
       const plan: PlanItem[] = planDraft.map(({ id: _id, ...rest }) => rest);
-      const turn = await feynmanConfirmPlan(mainConvId, plan);
+      resetLive();
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const turn = await feynmanConfirmPlan(mainConvId, plan, ch);
+      setLiveText("");
       setFs(turn.state ?? null);
       // 创建了概念 0 会话行：初始化其消息（学生引导提问）
       if (turn.concept_session_id) {
         setActiveIndex(0);
         setConceptMessages((prev) => ({
           ...prev,
-          0: turn.reply ? [{ role: "assistant", content: turn.reply }] : [],
+          0: turn.reply
+            ? [{ role: "assistant", content: turn.reply, trace: turn.trace, timing: turn.timing }]
+            : [],
         }));
+        setTurnThinking((prev) => ({ ...prev, 0: turn.thinking ?? "" }));
       }
     } catch (e) {
       setError(String(e));
     } finally {
       setPlanning(false);
     }
+  }
+
+  /** 实时事件分发：思考/正文增量、工具开始/完成 */
+  function onAgentEvent(evt: AgentEvent) {
+    switch (evt.type) {
+      case "thinking":
+        setLiveThinking((t) => t + evt.text);
+        break;
+      case "content":
+        setLiveText((t) => t + evt.text);
+        break;
+      case "tool_start":
+        setLiveTrace((prev) => [
+          ...prev,
+          { name: evt.name, args: evt.args, summary: "", running: true, elapsed_ms: 0 },
+        ]);
+        break;
+      case "tool_end": {
+        setLiveTrace((prev) => {
+          const idx = [...prev].reverse().findIndex((s) => s.name === evt.name && s.running);
+          if (idx === -1) return prev;
+          const real = prev.length - 1 - idx;
+          const next = [...prev];
+          next[real] = {
+            ...next[real],
+            running: false,
+            summary: evt.summary,
+            error: evt.error ?? undefined,
+            elapsed_ms: evt.elapsed_ms,
+          };
+          return next;
+        });
+        break;
+      }
+    }
+  }
+
+  /** 新一轮：重置实时流式状态 */
+  function resetLive() {
+    setLiveThinking("");
+    setLiveText("");
+    setLiveTrace([]);
   }
 
   async function handleSend() {
@@ -284,18 +346,31 @@ export function FeynmanChat({ paperId }: Props) {
     setSending(true);
     setError(null);
     setReview(null);
+    resetLive();
     setConceptMessages((prev) => ({
       ...prev,
       [idx]: [...(prev[idx] ?? []), { role: "user", content }],
     }));
     try {
-      const turn = await feynmanTurn(content, paperId, activeSessionId);
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const turn = await feynmanTurn(content, paperId, activeSessionId, ch);
       if (turn.reply) {
         setConceptMessages((prev) => ({
           ...prev,
-          [idx]: [...(prev[idx] ?? []), { role: "assistant", content: turn.reply }],
+          [idx]: [
+            ...(prev[idx] ?? []),
+            {
+              role: "assistant",
+              content: turn.reply,
+              trace: turn.trace,
+              timing: turn.timing,
+            },
+          ],
         }));
       }
+      setTurnThinking((prev) => ({ ...prev, [idx]: turn.thinking ?? "" }));
+      setLiveText("");
       setFs(turn.state ?? null);
     } catch (e) {
       setError(String(e));
@@ -310,13 +385,21 @@ export function FeynmanChat({ paperId }: Props) {
     setQuizzing(true);
     setError(null);
     setReview(null);
+    resetLive();
     try {
-      const turn = await feynmanQuiz(activeSessionId);
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const turn = await feynmanQuiz(activeSessionId, ch);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
-          [idx]: [...(prev[idx] ?? []), { role: "assistant", content: turn.reply }],
+          [idx]: [
+            ...(prev[idx] ?? []),
+            { role: "assistant", content: turn.reply, trace: turn.trace, timing: turn.timing },
+          ],
         }));
+        setTurnThinking((prev) => ({ ...prev, [idx]: turn.thinking ?? "" }));
+        setLiveText("");
       }
       setFs(turn.state ?? null);
     } catch (e) {
@@ -332,14 +415,21 @@ export function FeynmanChat({ paperId }: Props) {
     setJudging(true);
     setError(null);
     setReview(null);
+    resetLive();
     try {
-      const turn = await feynmanJudge(activeSessionId);
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const turn = await feynmanJudge(activeSessionId, ch);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
-          [idx]: [...(prev[idx] ?? []), { role: "assistant", content: turn.reply }],
+          [idx]: [
+            ...(prev[idx] ?? []),
+            { role: "assistant", content: turn.reply, trace: turn.trace, timing: turn.timing },
+          ],
         }));
       }
+      setLiveText("");
       setFs(turn.state ?? null);
     } catch (e) {
       setError(String(e));
@@ -354,7 +444,11 @@ export function FeynmanChat({ paperId }: Props) {
     setError(null);
     setReview(null);
     try {
-      const turn = await feynmanNext(activeSessionId);
+      resetLive();
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const turn = await feynmanNext(activeSessionId, ch);
+      setLiveText("");
       setFs(turn.state ?? null);
       // 新概念会话行创建：切换到新 Tab 并初始化其消息（学生引导提问）
       if (turn.state && turn.concept_session_id) {
@@ -362,8 +456,11 @@ export function FeynmanChat({ paperId }: Props) {
         setActiveIndex(nextIdx);
         setConceptMessages((prev) => ({
           ...prev,
-          [nextIdx]: turn.reply ? [{ role: "assistant", content: turn.reply }] : [],
+          [nextIdx]: turn.reply
+            ? [{ role: "assistant", content: turn.reply, trace: turn.trace, timing: turn.timing }]
+            : [],
         }));
+        setTurnThinking((prev) => ({ ...prev, [nextIdx]: turn.thinking ?? "" }));
       }
     } catch (e) {
       setError(String(e));
@@ -784,19 +881,58 @@ export function FeynmanChat({ paperId }: Props) {
             ) : (
               <div key={i} className="flex justify-start">
                 <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
+                  {(m.role === "assistant" &&
+                    i === activeMessages.length - 1 &&
+                    thinking) ||
+                  (m.trace && m.trace.length > 0) ? (
+                    <div className="mb-2 flex flex-col gap-1.5">
+                      {m.role === "assistant" &&
+                        i === activeMessages.length - 1 &&
+                        thinking && (
+                          <ThinkingPanel
+                            text={thinking}
+                            streaming={false}
+                            durationMs={m.timing?.model_ms}
+                          />
+                        )}
+                      {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
+                    </div>
+                  ) : null}
                   <MarkdownView markdown={m.content} className="prose-sm" />
+                  <TimingLine timing={m.timing} />
                 </div>
               </div>
             ),
           )
         )}
-        {sending && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              思考中…
-            </div>
-          </div>
+        {/* 实时生成区：思考胶囊（默认收纳）+ 工具卡片 + 流式回答；无实时内容时显示加载提示 */}
+        {(sending || quizzing || judging || nexting || planning) && (
+          <>
+            {liveThinking && <ThinkingPanel text={liveThinking} streaming />}
+            {liveTrace.length > 0 && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  <ToolTrace trace={liveTrace} />
+                </div>
+              </div>
+            )}
+            {liveText && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm">
+                  {liveText}
+                </div>
+              </div>
+            )}
+            {!liveThinking && liveTrace.length === 0 && !liveText && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  学生正在研读论文并思考…
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         {review && (

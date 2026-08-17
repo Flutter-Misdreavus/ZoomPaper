@@ -196,6 +196,25 @@ pub fn build_tools(
     tools
 }
 
+/// 费曼学习场景的工具集：本地研读 + 联网（按启用状态），
+/// **不含** `ask_user`（费曼是老师↔学生对话流，不允许澄清打断）与 `read_selection`（无选中段落）。
+pub fn build_feynman_tools(settings: &Settings) -> Vec<ToolKind> {
+    let mut tools = vec![
+        ToolKind::SearchPapers,
+        ToolKind::ReadSection,
+        ToolKind::GetOutline,
+        ToolKind::GetPaperMeta,
+        ToolKind::ListPapers,
+        ToolKind::ReadAnnotations,
+        ToolKind::ReadTranslation,
+    ];
+    if settings.web_search_available().is_some() {
+        tools.push(ToolKind::WebSearch);
+        tools.push(ToolKind::WebFetch);
+    }
+    tools
+}
+
 /// 执行一个工具（顺序执行；`offset` 为当前全局引用编号起点，工具内部编号顺延）。
 ///
 /// 注意：`AskUser` 由循环层（agent::drive_loop）拦截处理，不经过本函数。
@@ -984,6 +1003,23 @@ mod tests {
         }];
         let tools = build_tools(&s, Some("p1"), &sel);
         assert!(tools.contains(&ToolKind::ReadSelection));
+    }
+
+    #[test]
+    fn feynman_tools_exclude_ask_user_and_read_selection() {
+        let mut s = Settings::default();
+        s.web_search_provider = "none".into();
+        let tools = build_feynman_tools(&s);
+        assert!(tools.contains(&ToolKind::ReadSection));
+        assert!(!tools.contains(&ToolKind::AskUser)); // 费曼不允许澄清打断
+        assert!(!tools.contains(&ToolKind::ReadSelection)); // 无选中段落
+        assert!(!tools.contains(&ToolKind::WebSearch));
+        // 启用联网后包含 web 工具
+        s.web_search_provider = "auto".into();
+        s.api_keys.deepseek = "sk-test".into();
+        let tools2 = build_feynman_tools(&s);
+        assert!(tools2.contains(&ToolKind::WebSearch));
+        assert!(tools2.contains(&ToolKind::WebFetch));
     }
 
     #[test]

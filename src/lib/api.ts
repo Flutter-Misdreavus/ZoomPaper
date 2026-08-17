@@ -152,6 +152,10 @@ export interface Conversation {
 export interface FeynmanMessage {
   role: "user" | "assistant";
   content: string;
+  /** 学生研读论文的工具调用轨迹（仅 assistant 消息携带；旧数据为 null） */
+  trace?: ToolStep[] | null;
+  /** 学生研读耗时（仅 assistant 消息携带；旧数据为 null） */
+  timing?: Timing | null;
 }
 
 /** 教学计划中的一项（一个概念 + 教学目标） */
@@ -194,6 +198,12 @@ export interface FeynmanTurn {
   state?: FeynmanState | null;
   /** 概念级会话机制下，新建/激活的概念会话行 id（教学轮为 null） */
   concept_session_id?: string | null;
+  /** 本轮学生思考内容（非流式返回；仅实时展示，不持久化） */
+  thinking?: string | null;
+  /** 本轮工具调用轨迹（与消息持久化的 trace 一致） */
+  trace?: ToolStep[];
+  /** 本轮研读耗时 */
+  timing?: Timing;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -293,31 +303,50 @@ export const getConversation = (conversationId: string) =>
 export const feynmanStart = (paperId: string) =>
   invoke<FeynmanTurn>("feynman_start", { paperId });
 
-export const feynmanConfirmPlan = (conversationId: string, plan: PlanItem[]) =>
-  invoke<FeynmanTurn>("feynman_confirm_plan", { conversationId, plan });
+export const feynmanConfirmPlan = (
+  conversationId: string,
+  plan: PlanItem[],
+  onEvent?: Channel<AgentEvent>,
+) =>
+  invoke<FeynmanTurn>("feynman_confirm_plan", {
+    conversationId,
+    plan,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
+  });
 
 export const feynmanTurn = (
   message: string,
   paperId: string,
   conversationId?: string | null,
+  onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_turn", {
     message,
     paperId,
     conversationId: conversationId ?? null,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
 /** 对当前概念出测验题（状态置为 quiz） */
-export const feynmanQuiz = (conversationId: string) =>
-  invoke<FeynmanTurn>("feynman_quiz", { conversationId });
+export const feynmanQuiz = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+  invoke<FeynmanTurn>("feynman_quiz", {
+    conversationId,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
+  });
 
 /** 交卷判定：收集出题之后的作答，判定 通过/需补讲 */
-export const feynmanJudge = (conversationId: string) =>
-  invoke<FeynmanTurn>("feynman_judge", { conversationId });
+export const feynmanJudge = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+  invoke<FeynmanTurn>("feynman_judge", {
+    conversationId,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
+  });
 
 /** 进入下一概念 */
-export const feynmanNext = (conversationId: string) =>
-  invoke<FeynmanTurn>("feynman_next", { conversationId });
+export const feynmanNext = (conversationId: string, onEvent?: Channel<AgentEvent>) =>
+  invoke<FeynmanTurn>("feynman_next", {
+    conversationId,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
+  });
 
 export const feynmanReview = (conversationId: string) =>
   invoke<string>("feynman_review", { conversationId });

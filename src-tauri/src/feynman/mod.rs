@@ -77,6 +77,12 @@ const CONCEPT_SUMMARY_PROMPT: &str = "你是费曼学习法的教学记录员。
 pub struct FeynmanMessage {
     pub role: Role,
     pub content: String,
+    /// 学生研读论文的工具调用轨迹（仅 assistant 消息携带；旧数据为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<Vec<crate::agent::ToolStep>>,
+    /// 学生研读耗时（仅 assistant 消息携带；旧数据为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<crate::agent::Timing>,
 }
 
 /// `feynman_*` 的返回：学生回应 + 所属会话 id + 闯关状态（旧会话为 None）。
@@ -88,6 +94,15 @@ pub struct FeynmanTurn {
     pub state: Option<FeynmanState>,
     #[serde(default)]
     pub concept_session_id: Option<String>,
+    /// 本轮学生思考内容（非流式返回；仅实时展示，不持久化）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// 本轮工具调用轨迹（与消息持久化的 trace 一致）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<crate::agent::ToolStep>,
+    /// 本轮研读耗时
+    #[serde(default)]
+    pub timing: crate::agent::Timing,
 }
 
 /// 教学计划中的一项（一个概念 + 教学目标）。
@@ -725,6 +740,8 @@ mod tests {
         FeynmanMessage {
             role,
             content: content.to_string(),
+            trace: None,
+            timing: None,
         }
     }
 

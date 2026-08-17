@@ -118,7 +118,8 @@ pub trait LlmChat {
     ) -> Result<ChatResponse>;
 
     /// 流式版：`on_event` 收到思考/正文增量，返回完整 [`ChatResponse`]。
-    /// 默认实现 = 非流式调用后整体发一个 Content 事件（供测试假实现与失败回退）。
+    /// 默认实现 = 非流式调用后整体发一次 Thinking（若有 reasoning）与 Content
+    /// （供测试假实现、失败回退、以及费曼等非流式场景复用）。
     async fn stream_chat_with_tools(
         &self,
         messages: &[AgentMsg],
@@ -126,6 +127,11 @@ pub trait LlmChat {
         on_event: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ChatResponse> {
         let resp = self.chat_with_tools(messages, tools).await?;
+        if let Some(r) = &resp.reasoning {
+            if !r.is_empty() {
+                on_event(StreamEvent::Thinking(r.clone()));
+            }
+        }
         if let Some(c) = &resp.content {
             if !c.is_empty() {
                 on_event(StreamEvent::Content(c.clone()));

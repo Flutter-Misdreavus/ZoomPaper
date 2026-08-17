@@ -135,7 +135,6 @@ pub async fn run_agent<L: LlmChat>(
     memory: &[memory::MemoryEntry],
     sink: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<RunResult> {
-    let http = reqwest::Client::new();
     let tools = tools::build_tools(settings, paper_id, selections);
     let web_enabled = tools.iter().any(|t| matches!(t, tools::ToolKind::WebSearch));
 
@@ -155,6 +154,24 @@ pub async fn run_agent<L: LlmChat>(
         content: question.to_string(),
     }));
 
+    run_agent_loop(llm, db, settings, messages, paper_id, selections, tools, sink).await
+}
+
+/// 通用循环入口：给定完整消息列表（system + 历史 + user）与工具集，运行 agent 循环。
+///
+/// 供费曼等非 RAG 场景复用（调用方自行组装消息与工具集）；行为与 [`run_agent`] 一致：
+/// 流式思考/正文经 `sink` 转发、工具执行发 ToolStart/ToolEnd、耗时累计返回。
+pub async fn run_agent_loop<L: LlmChat>(
+    llm: &L,
+    db: &Db,
+    settings: &Settings,
+    messages: Vec<AgentMsg>,
+    paper_id: Option<&str>,
+    selections: &[SelectionInput],
+    tools: Vec<tools::ToolKind>,
+    sink: &mut (dyn FnMut(AgentEvent) + Send),
+) -> Result<RunResult> {
+    let http = reqwest::Client::new();
     let schemas = tool_schemas(&tools);
     let ctx = tools::ToolCtx {
         db,
@@ -163,15 +180,21 @@ pub async fn run_agent<L: LlmChat>(
         paper_id,
         selections,
     };
+    let mut messages = messages;
     let mut citations: Vec<Citation> = Vec::new();
     let mut trace: Vec<ToolStep> = Vec::new();
     let mut model_ms: u64 = 0;
     let mut tool_ms: u64 = 0;
     drive_loop(
-        llm, &ctx, &tools, &mut messages, &schemas, 0, &mut citations, &mut trace, false,
-        question, sink, &mut model_ms, &mut tool_ms,
+        llm, &ctx, &tools, &mut messages, &schemas, 0, &mut citations, &mut trace, false, "",
+        sink, &mut model_ms, &mut tool_ms,
     )
     .await
+}
+
+/// 把纯文本消息列表转为 agent 消息（费曼等非工具消息场景复用）。
+pub fn plain_messages(messages: Vec<ChatMessage>) -> Vec<AgentMsg> {
+    messages.into_iter().map(AgentMsg::Plain).collect()
 }
 
 /// 从澄清断点续跑：把用户回答回喂为 ask_user 的结果，继续循环。
@@ -911,18 +934,18 @@ mod tests {
             RunResult::NeedInput { .. } => panic!("不应请求澄清"),
         };
         assert_eq!(answer, "最终回答 [1]");
-        // 事件顺序：Content(先看一下) → ToolStart → ToolEnd → Content(最终回答)
-        // （默认流式实现不产生 Thinking 事件，因为非流式响应不带 reasoning 分流）
+        // 事件顺序：Thinking(推理) → Content(先看一下) → ToolStart → ToolEnd → Content(最终回答)
+        // （默认流式实现把非流式响应的 reasoning 作为 Thinking 事件补发）
         let kinds: Vec<&str> = events.iter().map(|e| evt_kind(e)).collect();
         assert_eq!(
             kinds,
-            vec!["content", "tool_start", "tool_end", "content"]
+            vec!["thinking", "content", "tool_start", "tool_end", "content"]
         );
-        // 工具结束事件带耗时字段
-        if let AgentEvent::ToolEnd { elapsed_ms, .. } = &events[2] {
+        // 工具结束事件带耗时字段（索引 3 = thinking/content/tool_start 之后）
+        if let AgentEvent::ToolEnd { elapsed_ms, .. } = &events[3] {
             let _ = elapsed_ms;
         } else {
-            panic!("第 3 个事件应为 ToolEnd");
+            panic!("第 4 个事件应为 ToolEnd");
         }
     }
 

@@ -1594,24 +1594,118 @@ async fn generate_plan(llm: &Llm, toc: &str, full_paper: &str) -> Vec<PlanItem> 
     }]
 }
 
+/// 费曼工具指引（追加进 system；联网工具按启用状态提及；费曼无 ask_user/read_selection）。
+fn feynman_tool_guide(web_enabled: bool) -> String {
+    let mut g = String::from(
+        "\n\n【可用工具】你可以调用工具研读论文：read_section 精读与当前话题相关的章节、\
+         search_papers 语义检索、get_outline 查看章节目录、get_paper_meta 查看论文元数据、\
+         list_papers 列出论文库、read_annotations 参考用户的阅读标注、read_translation 参考中文译文。",
+    );
+    if web_enabled {
+        g.push_str("必要时可用 web_search 联网查证、web_fetch 抓取网页。");
+    }
+    g.push_str(
+        "工具返回的 [n] 编号仅用于定位来源，回答中请自然提及（如「论文第 X 页提到」），不要输出 [n] 编号。\
+         仅当需要核实论文细节或查阅资料时调用工具，不要为调用而调用。",
+    );
+    g
+}
+
+/// 把文本追加到消息列表首条 system 消息（若无 system 则忽略）。
+fn append_to_system(messages: &mut [crate::ai::llm::AgentMsg], text: &str) {
+    if let Some(crate::ai::llm::AgentMsg::Plain(cm)) = messages.first_mut() {
+        if cm.role == Role::System {
+            cm.content.push_str(text);
+        }
+    }
+}
+
+/// 费曼阶段的 agent 研读调用：费曼消息 → 工具消息（system 追加工具指引）→ 运行循环。
+/// 返回 (回复, 思考文本, 工具轨迹, 耗时)。费曼场景不注册 ask_user，循环不会澄清中断。
+async fn feynman_agent_turn(
+    llm: &Llm,
+    db: &Db,
+    settings: &Settings,
+    paper_id: &str,
+    messages: Vec<crate::ai::llm::ChatMessage>,
+    on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
+) -> Result<
+    (
+        String,
+        String,
+        Vec<crate::agent::ToolStep>,
+        crate::agent::Timing,
+    ),
+    String,
+> {
+    let web_enabled = settings.web_search_available().is_some();
+    let mut agent_msgs = crate::agent::plain_messages(messages);
+    append_to_system(&mut agent_msgs, &feynman_tool_guide(web_enabled));
+    let tools = crate::agent::tools::build_feynman_tools(settings);
+    // 实时转发（思考/正文批处理防抖）+ 收集思考文本
+    let mut batcher = EventBatcher::new(on_event);
+    let mut thinking = String::new();
+    let mut sink = |evt: crate::agent::AgentEvent| {
+        match &evt {
+            crate::agent::AgentEvent::Thinking { text } => thinking.push_str(text),
+            _ => {}
+        }
+        batcher.push(evt);
+    };
+    match crate::agent::run_agent_loop(
+        llm,
+        db,
+        settings,
+        agent_msgs,
+        Some(paper_id),
+        &[],
+        tools,
+        &mut sink,
+    )
+    .await
+    {
+        Ok(crate::agent::RunResult::Done {
+            answer,
+            trace,
+            timing,
+            ..
+        }) => {
+            batcher.flush();
+            Ok((answer, thinking, trace, timing))
+        }
+        Ok(crate::agent::RunResult::NeedInput { question, .. }) => {
+            Err(format!("费曼场景不应触发澄清（{question}）"))
+        }
+        Err(e) => Err(format!("学生研读失败: {e}")),
+    }
+}
+
 /// 生成当前概念的引导提问并写入其概念会话行（摘要链注入 system）。
 async fn ask_concept_opening(
     db: &Db,
     llm: &Llm,
+    settings: &Settings,
     paper_id: &str,
     concept_session_id: &str,
     concept: &PlanItem,
     summary_chain: &str,
     now: i64,
-) -> Result<String, String> {
+    on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
+) -> Result<
+    (String, String, Vec<crate::agent::ToolStep>, crate::agent::Timing),
+    String,
+> {
     let query = format!("{} {}", concept.name, concept.objective);
     let (toc, context) = {
         let conn = db.conn();
         retrieve_context(&conn, paper_id, &query)?
     };
-    let reply = crate::feynman::turn(
-        &llm,
-        &crate::feynman::build_concept_opening_messages(
+    let (reply, thinking, trace, timing) = feynman_agent_turn(
+        llm,
+        db,
+        settings,
+        paper_id,
+        crate::feynman::build_concept_opening_messages(
             &toc,
             &context,
             &[],
@@ -1619,18 +1713,24 @@ async fn ask_concept_opening(
             &concept.objective,
             summary_chain,
         ),
+        on_event,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
     {
         let conn = db.conn();
         let history = vec![FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
+            trace: if trace.is_empty() {
+                None
+            } else {
+                Some(trace.clone())
+            },
+            timing: Some(timing),
         }];
         save_concept_session(&conn, concept_session_id, &history, None, now)?;
     }
-    Ok(reply)
+    Ok((reply, thinking, trace, timing))
 }
 
 /// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段），创建**主行**并持久化。
@@ -1683,6 +1783,9 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         reply: String::new(),
         state: Some(state),
         concept_session_id: None,
+        thinking: None,
+        trace: vec![],
+        timing: crate::agent::Timing::default(),
     })
 }
 
@@ -1693,6 +1796,7 @@ pub async fn feynman_confirm_plan(
     db: State<'_, Db>,
     conversation_id: String,
     plan: Vec<PlanItem>,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
@@ -1734,14 +1838,31 @@ pub async fn feynman_confirm_plan(
         .current_concept()
         .cloned()
         .ok_or_else(|| "教学计划为空".to_string())?;
-    let reply =
-        ask_concept_opening(&db, &llm, &paper_id, &concept_0_id, &concept, "", now).await?;
+    let (reply, thinking, trace, timing) = ask_concept_opening(
+        &db,
+        &llm,
+        &settings,
+        &paper_id,
+        &concept_0_id,
+        &concept,
+        "",
+        now,
+        &on_event,
+    )
+    .await?;
 
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
         concept_session_id: Some(concept_0_id),
+        thinking: if thinking.trim().is_empty() {
+            None
+        } else {
+            Some(thinking)
+        },
+        trace,
+        timing,
     })
 }
 
@@ -1756,6 +1877,7 @@ pub async fn feynman_turn(
     paper_id: String,
     message: String,
     conversation_id: Option<String>,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
@@ -1835,6 +1957,8 @@ pub async fn feynman_turn(
         history.push(FeynmanMessage {
             role: Role::User,
             content: message.clone(),
+            trace: None,
+            timing: None,
         });
         let conn = db.conn();
         save_concept_session(&conn, &conv_id, &history, None, now)?;
@@ -1843,6 +1967,9 @@ pub async fn feynman_turn(
             reply: String::new(),
             state: Some(state),
             concept_session_id: None,
+            thinking: None,
+            trace: vec![],
+            timing: crate::agent::Timing::default(),
         });
     }
     if state.concepts[idx].status == ConceptStatus::Passed {
@@ -1890,11 +2017,14 @@ pub async fn feynman_turn(
         )
     };
 
-    // 无锁：组装并调用 LLM
+    // 无锁：组装并调用 LLM（学生可用工具研读论文）
     let stage_note = crate::feynman::build_stage_note(&state, idx);
-    let reply = crate::feynman::turn(
+    let (reply, thinking, trace, timing) = feynman_agent_turn(
         &llm,
-        &crate::feynman::build_turn_messages(
+        &db,
+        &settings,
+        &paper_id,
+        crate::feynman::build_turn_messages(
             &toc,
             full_paper.as_deref(),
             new_summary.as_deref(),
@@ -1904,20 +2034,28 @@ pub async fn feynman_turn(
             &stage_note,
             &summary_chain,
         ),
+        &on_event,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
-    // 锁内：持久化概念行（追加消息 + 滚动摘要）与主行状态（回看可能已从 passed→teaching）
+    // 锁内：持久化概念行（追加消息 + 滚动摘要 + 轨迹 + 耗时）与主行状态
     {
         let conn = db.conn();
         history.push(FeynmanMessage {
             role: Role::User,
             content: message.clone(),
+            trace: None,
+            timing: None,
         });
         history.push(FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
+            trace: if trace.is_empty() {
+                None
+            } else {
+                Some(trace.clone())
+            },
+            timing: Some(timing),
         });
         save_concept_session(&conn, &conv_id, &history, new_summary.as_deref(), now)?;
         let (main_id, _) = load_main(&db, &paper_id)?;
@@ -1929,6 +2067,13 @@ pub async fn feynman_turn(
         reply,
         state: Some(state),
         concept_session_id: None,
+        thinking: if thinking.trim().is_empty() {
+            None
+        } else {
+            Some(thinking)
+        },
+        trace,
+        timing,
     })
 }
 
@@ -1937,6 +2082,7 @@ pub async fn feynman_turn(
 pub async fn feynman_quiz(
     db: State<'_, Db>,
     conversation_id: String,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
@@ -1981,9 +2127,12 @@ pub async fn feynman_quiz(
                 .map_err(|e| e.to_string())?,
         )
     };
-    let reply = crate::feynman::turn(
+    let (reply, thinking, trace, timing) = feynman_agent_turn(
         &llm,
-        &crate::feynman::build_quiz_messages(
+        &db,
+        &settings,
+        &paper_id,
+        crate::feynman::build_quiz_messages(
             &toc,
             new_summary.as_deref(),
             &context,
@@ -1993,9 +2142,9 @@ pub async fn feynman_quiz(
             attempts,
             &summary_chain,
         ),
+        &on_event,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
     // 锁内：追加出题消息 + 状态置 quiz
     state.concepts[idx].status = ConceptStatus::Quiz;
@@ -2004,6 +2153,12 @@ pub async fn feynman_quiz(
         history.push(FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
+            trace: if trace.is_empty() {
+                None
+            } else {
+                Some(trace.clone())
+            },
+            timing: Some(timing),
         });
         save_concept_session(&conn, &conversation_id, &history, new_summary.as_deref(), now)?;
         save_feynman_state(&conn, &main_id, &state)?;
@@ -2015,6 +2170,13 @@ pub async fn feynman_quiz(
         reply,
         state: Some(state),
         concept_session_id: Some(cid),
+        thinking: if thinking.trim().is_empty() {
+            None
+        } else {
+            Some(thinking)
+        },
+        trace,
+        timing,
     })
 }
 
@@ -2025,6 +2187,7 @@ pub async fn feynman_quiz(
 pub async fn feynman_judge(
     db: State<'_, Db>,
     conversation_id: String,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
@@ -2074,9 +2237,12 @@ pub async fn feynman_judge(
                 .map_err(|e| e.to_string())?,
         )
     };
-    let reply = crate::feynman::turn(
+    let (reply, _thinking, trace, timing) = feynman_agent_turn(
         &llm,
-        &crate::feynman::build_judge_messages(
+        &db,
+        &settings,
+        &paper_id,
+        crate::feynman::build_judge_messages(
             &toc,
             new_summary.as_deref(),
             &context,
@@ -2085,9 +2251,9 @@ pub async fn feynman_judge(
             &concept.objective,
             &summary_chain,
         ),
+        &on_event,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
     let passed = crate::feynman::parse_judge_verdict(&reply);
     let is_last = idx + 1 >= state.plan.len();
@@ -2136,6 +2302,12 @@ pub async fn feynman_judge(
         history.push(FeynmanMessage {
             role: Role::Assistant,
             content: reply.clone(),
+            trace: if trace.is_empty() {
+                None
+            } else {
+                Some(trace.clone())
+            },
+            timing: Some(timing),
         });
         save_concept_session(&conn, &conversation_id, &history, new_summary.as_deref(), now)?;
         save_feynman_state(&conn, &main_id, &state)?;
@@ -2147,6 +2319,9 @@ pub async fn feynman_judge(
         reply,
         state: Some(state),
         concept_session_id: Some(cid),
+        thinking: None, // 判定结论不展示思考链
+        trace,
+        timing,
     })
 }
 
@@ -2156,6 +2331,7 @@ pub async fn feynman_judge(
 pub async fn feynman_next(
     db: State<'_, Db>,
     conversation_id: String,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
@@ -2187,6 +2363,9 @@ pub async fn feynman_next(
             reply: String::new(),
             state: Some(state),
             concept_session_id: None,
+            thinking: None,
+            trace: vec![],
+            timing: crate::agent::Timing::default(),
         });
     }
 
@@ -2206,14 +2385,31 @@ pub async fn feynman_next(
     // 引导提问（摘要链含刚完成概念的完成摘要）
     let concept = state.plan[next_idx].clone();
     let summary_chain = crate::feynman::build_summary_chain(&state, next_idx);
-    let reply =
-        ask_concept_opening(&db, &llm, &paper_id, &next_id, &concept, &summary_chain, now).await?;
+    let (reply, thinking, trace, timing) = ask_concept_opening(
+        &db,
+        &llm,
+        &settings,
+        &paper_id,
+        &next_id,
+        &concept,
+        &summary_chain,
+        now,
+        &on_event,
+    )
+    .await?;
 
     Ok(FeynmanTurn {
         conversation_id,
         reply,
         state: Some(state),
         concept_session_id: Some(next_id),
+        thinking: if thinking.trim().is_empty() {
+            None
+        } else {
+            Some(thinking)
+        },
+        trace,
+        timing,
     })
 }
 
