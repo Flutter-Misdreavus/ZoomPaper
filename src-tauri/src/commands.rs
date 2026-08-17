@@ -993,8 +993,9 @@ fn retrieve_context(
     Ok((toc, context))
 }
 
-/// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段）→ 学生开场白介绍路线，
-/// 并新建会话持久化（含闯关状态）。无需用户输入；返回开场白 + 新会话 id + 状态。
+/// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段），并新建会话持久化
+/// （含闯关状态）。不生成开场白消息（计划由前端卡片展示、确认后学生再提问）；
+/// 返回空 reply + 新会话 id + 状态。
 #[tauri::command]
 pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
@@ -1013,7 +1014,7 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         .map_err(|e| e.to_string())?
     };
 
-    // 无锁：首轮通读全文（一次性，作为计划与开场白上下文）
+    // 无锁：首轮通读全文（一次性，作为计划生成的上下文）
     let markdown = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
     let full_paper = crate::feynman::build_full_paper(&markdown);
 
@@ -1024,36 +1025,27 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         crate::feynman::build_toc(&sections)
     };
 
-    // 无锁：生成概念计划 + 学生开场白（await 期间不持有数据库锁）
+    // 无锁：生成概念计划（await 期间不持有数据库锁）
     let plan = generate_plan(&llm, &toc, &full_paper).await;
-    let opening = llm
-        .chat(&crate::feynman::build_plan_opening_messages(&toc, &full_paper, &plan))
-        .await
-        .map_err(|e| e.to_string())?;
 
-    // 锁内：新建会话（含闯关状态）并写入开场白消息
+    // 锁内：新建会话（含闯关状态）；历史为空（无开场白，计划卡片直接展示）
     let conv_id = Uuid::new_v4().to_string();
     let state = FeynmanState::new(plan);
-    let history = vec![FeynmanMessage {
-        role: Role::Assistant,
-        content: opening.clone(),
-    }];
-    let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
     let state_json = serde_json::to_string(&state).map_err(|e| e.to_string())?;
     {
         let conn = db.conn();
         conn.execute(
             "INSERT INTO conversations \
              (id, paper_id, type, title, messages, created_at, updated_at, feynman_state) \
-             VALUES (?1, ?2, 'feynman', '费曼学习', ?3, ?4, ?4, ?5)",
-            params![&conv_id, &paper_id, &messages_json, now, &state_json],
+             VALUES (?1, ?2, 'feynman', '费曼学习', '[]', ?3, ?3, ?4)",
+            params![&conv_id, &paper_id, now, &state_json],
         )
         .map_err(|e| e.to_string())?;
     }
 
     Ok(FeynmanTurn {
         conversation_id: conv_id,
-        reply: opening,
+        reply: String::new(),
         state: Some(state),
     })
 }

@@ -56,11 +56,6 @@ const REVIEW_PROMPT: &str = "你是费曼学习法的复盘教练。下面是一
 /// 概念计划生成指令（system）：基于已通读的论文全文提炼 5-8 个核心概念的教学路线。
 const PLAN_PROMPT: &str = "你是一名学习教练，正在为「费曼学习法」制定教学计划。用户将扮演老师，向一名本科生（你）讲解这篇论文的核心概念。请从论文中提炼 5-8 个最核心的概念，作为逐关教学的路线。\n\n要求：\n- 概念必须是论文实际讨论的内容，不得编造。\n- 粒度适中：一个概念应能在 3-5 轮对话内讲清楚；过细的机制细节应并入所属概念。\n- 按「先基础后进阶」排序（先讲背景与动机，再讲核心机制，最后讲结论与局限）。\n- 每个概念配一句「教学目标」（objective）：说清讲到什么程度算讲明白，例如「能用直觉解释 Q/K/V 的含义与注意力权重的计算」。\n\n只输出一个 JSON 数组，不要任何其他文字、注释或 Markdown 代码块：\n[{\"name\":\"概念名\",\"objective\":\"教学目标\"}]";
 
-/// 开场指令（user）：学生基于已通读的论文全文 + 已生成的教学计划开场。概念清单只在内部
-/// 知晓（由前端计划卡片展示给老师确认），开场不列举、不展开任何概念内容；确认后由
-/// 「概念引导提问」从第一个概念开始逐关学习。
-const PLAN_OPENING_PROMPT: &str = "你已经通读了这篇论文的全文，并为它制定了如下的教学计划（JSON）：\n{plan}\n\n请以学生的口吻开场：先自然地说说你读完后最想弄懂什么，然后告诉老师你已经把这篇论文整理成了一份概念教学计划，请他在界面上查看并确认（可以增删或调整顺序），确认后你们就从第一个概念开始逐关学习。\n\n要求：\n- 不要逐个列举计划里的概念，也不要讲解任何概念的具体内容（那要等老师确认计划、开始第一关之后，你会针对第一个概念提问）；\n- 开场只提一个请求（请老师确认计划），不要抛出一堆问题；\n- 语气自然、口语化，直接输出开场白。";
-
 /// 概念引导提问指令（system）：进入一个新概念时，学生针对当前概念提出一个具体的引导问题，
 /// 邀请老师开始讲解（而不是等老师先开口）。
 const CONCEPT_OPENING_PROMPT: &str = "现在开始学习概念「{concept}」，教学目标：「{objective}」。请以学生的口吻，针对这个概念向老师提出一个具体的引导性问题，邀请他开始讲解。\n\n要求：\n- 只问一个问题，不要追加第二问；\n- 问题要具体、有抓手，能引出这个概念的核心（可结合论文相关章节的内容给出切入点），不要泛泛地问「你能讲讲这个概念吗」；\n- 语气像好奇的学生，自然口语化；\n- 不要替老师讲解，也不要给答案或提示。";
@@ -371,31 +366,6 @@ pub fn parse_plan(raw: &str) -> Option<Vec<PlanItem>> {
     } else {
         Some(normalized)
     }
-}
-
-/// 组装「开场」消息：system（学生人格 + 章节地图 + 论文全文）+ 开场指令（附计划 JSON）。
-pub fn build_plan_opening_messages(
-    toc: &str,
-    full_paper: &str,
-    plan: &[PlanItem],
-) -> Vec<ChatMessage> {
-    let mut system = format!("{FEYNMAN_SYSTEM_PROMPT}\n\n{toc}");
-    if !full_paper.trim().is_empty() {
-        system.push_str("\n\n");
-        system.push_str(full_paper);
-    }
-    let plan_json = serde_json::to_string(plan).unwrap_or_default();
-    let opening = PLAN_OPENING_PROMPT.replace("{plan}", &plan_json);
-    vec![
-        ChatMessage {
-            role: Role::System,
-            content: system,
-        },
-        ChatMessage {
-            role: Role::User,
-            content: opening,
-        },
-    ]
 }
 
 /// 组装「概念引导提问」消息：system（学生人格 + 章节地图 + 相关章节 + 当前关卡 +
@@ -845,27 +815,6 @@ mod tests {
         assert!(msgs[0].content.contains("论文章节"));
         assert!(msgs[0].content.contains("论文全文"));
         assert_eq!(msgs[1].role, Role::User);
-    }
-
-    #[test]
-    fn build_plan_opening_messages_includes_plan_but_asks_for_confirmation_only() {
-        let plan = vec![
-            PlanItem { name: "注意力机制".into(), objective: "目标".into() },
-            PlanItem { name: "多头注意力".into(), objective: String::new() },
-        ];
-        let msgs = build_plan_opening_messages("【论文章节】\n- Method", "【论文全文】\n正文…", &plan);
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, Role::System);
-        assert!(msgs[0].content.contains("本科生"));
-        assert_eq!(msgs[1].role, Role::User);
-        // 计划 JSON 仍注入（AI 内部知晓清单），但开场不展开概念内容
-        assert!(msgs[1].content.contains("注意力机制"));
-        assert!(msgs[1].content.contains("多头注意力"));
-        assert!(!msgs[1].content.contains("「注意力机制」")); // 不再点名首概念（确认后才提问）
-        // 开场只邀请确认计划，不逐个列举、不讲解概念内容
-        assert!(msgs[1].content.contains("确认"));
-        assert!(msgs[1].content.contains("不要逐个列举"));
-        assert!(msgs[1].content.contains("不要讲解任何概念的具体内容"));
     }
 
     #[test]

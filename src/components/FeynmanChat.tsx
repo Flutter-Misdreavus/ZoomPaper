@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Reorder } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -18,13 +19,15 @@ import {
   type PlanItem,
 } from "@/lib/api";
 import {
-  ArrowDown,
-  ArrowUp,
+  ArrowRight,
+  Check,
   CheckCircle2,
   Circle,
   ClipboardList,
   GraduationCap,
+  GripVertical,
   Loader2,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -32,10 +35,26 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  X,
 } from "lucide-react";
 
 interface Props {
   paperId: string;
+}
+
+/** 计划草稿条目：在 PlanItem 之上附加本地唯一 id（仅草稿层使用，确认时剥离） */
+interface PlanDraftItem {
+  id: string;
+  name: string;
+  objective: string;
+}
+
+/** 为计划条目生成本地唯一 id */
+function draftId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 /** 概念状态 → 小图标 */
@@ -72,10 +91,14 @@ export function FeynmanChat({ paperId }: Props) {
   const [nexting, setNexting] = useState(false);
   const [review, setReview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // 计划编辑草稿（planning 阶段）
-  const [planDraft, setPlanDraft] = useState<PlanItem[]>([]);
+  // 计划编辑草稿（planning 阶段）：可增删、拖动排序、内联编辑
+  const [planDraft, setPlanDraft] = useState<PlanDraftItem[]>([]);
   const [newName, setNewName] = useState("");
   const [newObjective, setNewObjective] = useState("");
+  // 内联编辑状态：正在编辑的条目 id 与草稿值
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editObjective, setEditObjective] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // 恢复该论文最近的费曼会话（含闯关状态）
@@ -106,9 +129,11 @@ export function FeynmanChat({ paperId }: Props) {
     };
   }, [paperId]);
 
-  // planning 阶段：计划变化时同步可编辑草稿
+  // planning 阶段：计划变化时同步可编辑草稿（附本地 id）
   useEffect(() => {
-    if (fs?.status === "planning") setPlanDraft(fs.plan);
+    if (fs?.status === "planning") {
+      setPlanDraft(fs.plan.map((p) => ({ id: draftId(), name: p.name, objective: p.objective })));
+    }
   }, [fs]);
 
   // 新消息 / 状态变化滚动到底部
@@ -142,7 +167,12 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const turn = await feynmanStart(paperId);
       setConvId(turn.conversation_id);
-      setMessages([{ role: "assistant", content: turn.reply }]);
+      // 不生成开场白：仅展示概念计划卡片，确认后学生再提问
+      if (turn.reply) {
+        setMessages([{ role: "assistant", content: turn.reply }]);
+      } else {
+        setMessages([]);
+      }
       setFs(turn.state ?? null);
     } catch (e) {
       setError(String(e));
@@ -179,7 +209,9 @@ export function FeynmanChat({ paperId }: Props) {
     setPlanning(true);
     setError(null);
     try {
-      const turn = await feynmanConfirmPlan(convId, planDraft);
+      // 剥离本地 id，只提交 {name, objective}（后端契约不变）
+      const plan: PlanItem[] = planDraft.map(({ id: _id, ...rest }) => rest);
+      const turn = await feynmanConfirmPlan(convId, plan);
       // 学生针对第一个概念提出引导问题
       if (turn.reply) {
         setMessages((prev) => [...prev, { role: "assistant", content: turn.reply }]);
@@ -265,31 +297,50 @@ export function FeynmanChat({ paperId }: Props) {
     setMessages([]);
     setFs(null);
     setPlanDraft([]);
+    setEditingId(null);
     setReview(null);
     setError(null);
   }
 
-  // ---- 计划编辑 ----
+  // ---- 计划编辑（增删 / 拖动排序 / 内联编辑） ----
   function addPlanItem() {
     const name = newName.trim();
     if (!name) return;
-    setPlanDraft((prev) => [...prev, { name, objective: newObjective.trim() }]);
+    setPlanDraft((prev) => [
+      ...prev,
+      { id: draftId(), name, objective: newObjective.trim() },
+    ]);
     setNewName("");
     setNewObjective("");
   }
 
   function removePlanItem(i: number) {
+    const target = planDraft[i];
+    if (target && editingId === target.id) setEditingId(null);
     setPlanDraft((prev) => prev.filter((_, idx) => idx !== i));
   }
 
-  function movePlanItem(i: number, dir: -1 | 1) {
-    setPlanDraft((prev) => {
-      const j = i + dir;
-      if (j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
+  /** 进入内联编辑：记录被编辑条目 id 与当前值 */
+  function startEdit(item: PlanDraftItem) {
+    setEditingId(item.id);
+    setEditName(item.name);
+    setEditObjective(item.objective);
+  }
+
+  /** 保存内联编辑：名称非空才允许，更新草稿后退出编辑 */
+  function saveEdit() {
+    const name = editName.trim();
+    if (!name || !editingId) return;
+    setPlanDraft((prev) =>
+      prev.map((item) =>
+        item.id === editingId ? { ...item, name, objective: editObjective.trim() } : item,
+      ),
+    );
+    setEditingId(null);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
   }
 
   return (
@@ -375,7 +426,7 @@ export function FeynmanChat({ paperId }: Props) {
                 {nexting ? (
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : (
-                  <ArrowDown className="h-3 w-3" />
+                  <ArrowRight className="h-3 w-3" />
                 )}
                 下一概念
               </Button>
@@ -411,7 +462,7 @@ export function FeynmanChat({ paperId }: Props) {
             <GraduationCap className="h-4 w-4 text-primary" />
             教学计划
             <span className="ml-auto text-xs font-normal text-muted-foreground">
-              可增删、调整顺序
+              可增删、拖动排序、点铅笔编辑
             </span>
           </div>
           {planDraft.length === 0 ? (
@@ -419,47 +470,112 @@ export function FeynmanChat({ paperId }: Props) {
               计划为空，请添加至少一个概念。
             </p>
           ) : (
-            <ol className="flex flex-col gap-0.5">
-              {planDraft.map((item, i) => (
-                <li
-                  key={i}
-                  className="group flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-accent"
-                >
-                  <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                    {i + 1}.
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">{item.name}</p>
-                    {item.objective && (
-                      <p className="truncate text-xs text-muted-foreground">{item.objective}</p>
+            <Reorder.Group
+              axis="y"
+              values={planDraft}
+              onReorder={setPlanDraft}
+              className="flex max-h-48 flex-col gap-0.5 overflow-y-auto pr-0.5"
+            >
+              {planDraft.map((item, i) => {
+                const editing = editingId === item.id;
+                return (
+                  <Reorder.Item
+                    key={item.id}
+                    value={item}
+                    drag={editing ? false : true}
+                    whileDrag={{ scale: 1.02, boxShadow: "0 4px 12px rgba(0,0,0,0.12)" }}
+                    className={`group flex items-center gap-1.5 rounded-md px-1.5 py-1 ${
+                      editing
+                        ? "bg-accent/60"
+                        : "cursor-grab active:cursor-grabbing hover:bg-accent"
+                    }`}
+                  >
+                    {editing ? (
+                      <>
+                        <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30" />
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          <Input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            placeholder="概念名"
+                            autoFocus
+                            className="h-7 text-sm"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                                e.preventDefault();
+                                saveEdit();
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelEdit();
+                              }
+                            }}
+                          />
+                          <Input
+                            value={editObjective}
+                            onChange={(e) => setEditObjective(e.target.value)}
+                            placeholder="教学目标（可选）"
+                            className="h-7 text-sm"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                                e.preventDefault();
+                                saveEdit();
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelEdit();
+                              }
+                            }}
+                          />
+                        </div>
+                        <button
+                          onClick={saveEdit}
+                          disabled={!editName.trim()}
+                          title="保存"
+                          className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          title="取消"
+                          className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing" />
+                        <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                          {i + 1}.
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm">{item.name}</p>
+                          {item.objective && (
+                            <p className="truncate text-xs text-muted-foreground">
+                              {item.objective}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => startEdit(item)}
+                          title="编辑"
+                          className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => removePlanItem(i)}
+                          title="删除"
+                          className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </>
                     )}
-                  </div>
-                  <button
-                    onClick={() => movePlanItem(i, -1)}
-                    disabled={i === 0}
-                    title="上移"
-                    className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
-                  >
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    onClick={() => movePlanItem(i, 1)}
-                    disabled={i === planDraft.length - 1}
-                    title="下移"
-                    className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
-                  >
-                    <ArrowDown className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    onClick={() => removePlanItem(i)}
-                    title="删除"
-                    className="pressable rounded p-1 text-muted-foreground transition-colors hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ol>
+                  </Reorder.Item>
+                );
+              })}
+            </Reorder.Group>
           )}
           <div className="mt-2 flex items-center gap-1.5">
             <Input
@@ -525,20 +641,22 @@ export function FeynmanChat({ paperId }: Props) {
             <p className="text-sm">正在通读论文、制定教学计划…</p>
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center text-muted-foreground">
-            <GraduationCap className="h-10 w-10" />
-            <p className="max-w-md text-sm">
-              用费曼学习法把这篇论文讲明白：AI 先生成一份概念教学计划，你逐个概念讲解，学生追问并用测验检验你是否真的讲透了。也可以直接输入开始讲解。
-            </p>
-            <Button
-              onClick={() => void handleStart()}
-              disabled={starting}
-              className="pressable gap-2"
-            >
-              <Play className="h-4 w-4" />
-              AI 制定教学计划
-            </Button>
-          </div>
+          fs ? null : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center text-muted-foreground">
+              <GraduationCap className="h-10 w-10" />
+              <p className="max-w-md text-sm">
+                用费曼学习法把这篇论文讲明白：AI 先生成一份概念教学计划，你逐个概念讲解，学生追问并用测验检验你是否真的讲透了。
+              </p>
+              <Button
+                onClick={() => void handleStart()}
+                disabled={starting}
+                className="pressable gap-2"
+              >
+                <Play className="h-4 w-4" />
+                AI 制定教学计划
+              </Button>
+            </div>
+          )
         ) : (
           messages.map((m, i) =>
             m.role === "user" ? (
