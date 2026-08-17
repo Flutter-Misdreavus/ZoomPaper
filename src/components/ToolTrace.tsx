@@ -31,11 +31,11 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
   const running = trace.some((t) => t.running);
 
   return (
-    <div className="mt-2">
+    <div className="flex flex-col items-start">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="pressable inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+        className="pressable inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       >
         {open ? (
           <ChevronDown className="h-3 w-3" />
@@ -48,7 +48,7 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
         {errors > 0 && <span className="text-destructive">· {errors} 个失败</span>}
       </button>
       {open && (
-        <div className="mt-1.5 flex flex-col gap-1 rounded-lg border bg-background/50 p-2">
+        <div className="mt-1.5 flex w-full flex-col gap-1 rounded-lg border bg-background/50 p-2">
           {trace.map((step, i) =>
             step.name === "quick_fallback" ? (
               // 回退提示：非工具调用，渲染为中性信息行
@@ -78,7 +78,7 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
                     <span className="shrink-0 text-destructive">失败</span>
                   ) : (
                     step.summary && (
-                      <span className="shrink-0 text-muted-foreground">
+                      <span className="min-w-0 truncate text-muted-foreground">
                         {step.summary}
                         {step.elapsed_ms != null && step.elapsed_ms > 0
                           ? ` · ${fmtMs(step.elapsed_ms)}`
@@ -88,7 +88,9 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
                   )}
                 </div>
                 {step.error && (
-                  <p className="mt-0.5 line-clamp-2 text-destructive/90">{step.error}</p>
+                  <p className="mt-0.5 line-clamp-2 break-words text-destructive/90">
+                    {step.error}
+                  </p>
                 )}
               </div>
             ),

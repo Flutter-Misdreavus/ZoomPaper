@@ -415,13 +415,29 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             ) : (
               <div key={i} className="flex justify-start">
                 <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳，网页版风格） */}
+                  {(m.role === "assistant" &&
+                    i === messages.length - 1 &&
+                    thinkingText) ||
+                  (m.trace && m.trace.length > 0) ? (
+                    // 默认 stretch：胶囊组件撑满气泡宽度，展开面板不溢出（items-start 会按内容收缩）
+                    <div className="mb-2 flex flex-col gap-1.5">
+                      {m.role === "assistant" && i === messages.length - 1 && thinkingText && (
+                        <ThinkingPanel
+                          text={thinkingText}
+                          streaming={false}
+                          durationMs={m.timing?.model_ms}
+                        />
+                      )}
+                      {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
+                    </div>
+                  ) : null}
                   <AssistantBody
                     content={m.content}
                     citations={m.citations}
                     onOpenPaper={onOpenPaper}
                     onJumpPage={onJumpPage}
                   />
-                  <ToolTrace trace={m.trace} />
                   <TimingLine timing={m.timing} />
                 </div>
               </div>
@@ -452,11 +468,13 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                   也可以直接在下方输入框作答后发送
                 </p>
               )}
-              <ToolTrace trace={liveTrace} />
+              <div className="mt-2">
+                <ToolTrace trace={liveTrace} />
+              </div>
             </div>
           </div>
         )}
-        {/* 实时生成区：思考面板 + 工具轨迹 + 流式回答 */}
+        {/* 实时生成区：思考胶囊（默认收纳）+ 工具轨迹 + 流式回答 */}
         {sending && (
           <>
             {thinkingText && <ThinkingPanel text={thinkingText} streaming />}
@@ -483,14 +501,6 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
               </div>
             )}
           </>
-        )}
-        {/* 完成后保留本次思考过程（折叠，可展开回顾；不持久化） */}
-        {!sending && thinkingText && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
-              <ThinkingPanel text={thinkingText} streaming={false} />
-            </div>
-          </div>
         )}
       </div>
 
