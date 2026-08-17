@@ -69,6 +69,10 @@ flowchart LR
 ### 知识库问答（RAG）
 
 跨论文提问，回答带 `[n]` 引用标记，点击直达原文位置；阅读时选中段落可**就地提问**。
+**快速 / 深度双模式**：快速 = 单轮检索回答；深度 = AI 自主调用工具多角度研读论文
+（语义检索、章节精读、目录、元数据、你的标注与译文），并可**联网搜索**（复用
+DeepSeek / Anthropic Key 的原生搜索，无需额外密钥）补齐背景与最新进展，回答更深入，
+工具调用轨迹可折叠查看。
 
 ### 费曼学习法
 
@@ -222,9 +226,10 @@ embedding 模型，首次使用自动下载。
 └── src-tauri/              # 后端（Rust）
     ├── src/
     │   ├── commands.rs     # Tauri 命令层（论文 / 检索 / 问答 / 费曼 / 整理）
+    │   ├── agent/          # 深度研究 agent：工具注册表 + 循环驱动 + 联网搜索
     │   ├── db/             # SQLite 迁移与数据模型
     │   ├── rag/            # 分块、向量索引、检索
-    │   ├── ai/             # LLM 多 Provider、Embedding、MinerU
+    │   ├── ai/             # LLM 多 Provider（含工具调用）、Embedding、MinerU
     │   └── fs/             # 论文目录与文件管理
     └── capabilities/       # 权限声明
 ```

@@ -6,7 +6,7 @@ use crate::db::models::{Conversation, Folder, Paper, SearchHit};
 use crate::feynman::{
     ConceptStatus, FeynmanMessage, FeynmanState, FeynmanTurn, PlanItem, StageStatus,
 };
-use crate::qa::{Answer, QaMessage};
+use crate::qa::{Answer, Citation, QaMessage};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::{params, OptionalExtension};
@@ -756,8 +756,63 @@ fn save_annotations_inner(db: &Db, paper_id: &str, data: &str) -> Result<(), Str
 
 const QA_TITLE_CHARS: usize = 40;
 
-/// 一轮 RAG 问答：检索 + LLM 带引用回答，并持久化到 conversations。
-/// `conversation_id` 为 `Some` 时续接多轮；`paper_id` 为 `Some` 时限定单篇检索。
+/// 取/建会话并返回 (会话 id, 历史)。
+fn load_or_create_conv(
+    db: &Db,
+    question: &str,
+    paper_id: Option<&str>,
+    conversation_id: Option<String>,
+    now: i64,
+) -> Result<(String, Vec<QaMessage>), String> {
+    let conn = db.conn();
+    match conversation_id {
+        Some(id) => {
+            let messages_json: String = conn
+                .query_row(
+                    "SELECT messages FROM conversations WHERE id = ?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("会话不存在: {e}"))?;
+            let history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
+            Ok((id, history))
+        }
+        None => {
+            let conv_id = Uuid::new_v4().to_string();
+            let title = crate::qa::truncate(question, QA_TITLE_CHARS);
+            conn.execute(
+                "INSERT INTO conversations \
+                 (id, paper_id, type, title, messages, created_at, updated_at) \
+                 VALUES (?1, ?2, 'qa', ?3, '[]', ?4, ?4)",
+                params![&conv_id, paper_id, &title, now],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((conv_id, vec![]))
+        }
+    }
+}
+
+/// 快速问答（现有单轮 RAG 路径）。
+async fn quick_answer(
+    db: &Db,
+    llm: &Llm,
+    question: &str,
+    paper_id: Option<&str>,
+    history: &[QaMessage],
+    top_k: usize,
+    selections: &[crate::qa::SelectionInput],
+) -> Result<(String, Vec<Citation>), String> {
+    // 检索 + 组装（同步，用完即释放数据库锁）
+    let prepared = {
+        let conn = db.conn();
+        crate::qa::prepare(&conn, question, paper_id, history, top_k, selections)
+            .map_err(|e| e.to_string())?
+    };
+    crate::qa::ask(llm, &prepared).await.map_err(|e| e.to_string())
+}
+
+/// 一轮问答（agent 深度研究 / quick 快速），并持久化到 conversations。
+/// `mode`：`"quick" | "agent"`，缺省 `"agent"`。agent 失败时自动回退 quick。
 #[tauri::command]
 pub async fn ask_question(
     db: State<'_, Db>,
@@ -766,76 +821,85 @@ pub async fn ask_question(
     conversation_id: Option<String>,
     top_k: Option<usize>,
     selections: Option<Vec<crate::qa::SelectionInput>>,
+    mode: Option<String>,
 ) -> Result<Answer, String> {
+    let mode = mode.unwrap_or_else(|| "agent".to_string());
     let top_k = top_k.unwrap_or(5);
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
 
     // 取/建会话与历史
     let now = chrono::Utc::now().timestamp();
-    let conv_id: String;
-    let mut history: Vec<QaMessage>;
-    {
-        let conn = db.conn();
-        match conversation_id {
-            Some(id) => {
-                let messages_json: String = conn
-                    .query_row(
-                        "SELECT messages FROM conversations WHERE id = ?1",
-                        [&id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|e| format!("会话不存在: {e}"))?;
-                history = serde_json::from_str(&messages_json).map_err(|e| e.to_string())?;
-                conv_id = id;
-            }
-            None => {
-                conv_id = Uuid::new_v4().to_string();
-                let title = crate::qa::truncate(&question, QA_TITLE_CHARS);
-                let pid = paper_id.as_deref();
-                conn.execute(
-                    "INSERT INTO conversations \
-                     (id, paper_id, type, title, messages, created_at, updated_at) \
-                     VALUES (?1, ?2, 'qa', ?3, '[]', ?4, ?4)",
-                    params![&conv_id, pid, &title, now],
-                )
-                .map_err(|e| e.to_string())?;
-                history = vec![];
-            }
-        }
-    }
+    let (conv_id, history) = load_or_create_conv(
+        &db,
+        &question,
+        paper_id.as_deref(),
+        conversation_id,
+        now,
+    )?;
+    let selections = selections.as_deref().unwrap_or_default();
 
-    // 检索 + 组装（同步，用完即释放数据库锁）；选中段落（可多条）作为强上下文注入
-    let prepared = {
-        let conn = db.conn();
-        crate::qa::prepare(
-            &conn,
+    // 执行（agent 或 quick；agent 失败回退 quick）
+    let (answer, citations, trace) = if mode == "quick" {
+        let (a, c) = quick_answer(&db, &llm, &question, paper_id.as_deref(), &history, top_k, selections)
+            .await?;
+        (a, c, Vec::new())
+    } else {
+        match crate::agent::run_agent(
+            &llm,
+            &db,
+            &settings,
             &question,
             paper_id.as_deref(),
             &history,
-            top_k,
-            selections.as_deref().unwrap_or_default(),
+            selections,
         )
-        .map_err(|e| e.to_string())?
+        .await
+        {
+            Ok(out) => (out.answer, out.citations, out.trace),
+            Err(agent_err) => {
+                // 回退：快速问答（模型不支持工具等场景）
+                match quick_answer(
+                    &db,
+                    &llm,
+                    &question,
+                    paper_id.as_deref(),
+                    &history,
+                    top_k,
+                    selections,
+                )
+                .await
+                {
+                    Ok((a, c)) => (a, c, Vec::new()),
+                    Err(_) => {
+                        return Err(format!(
+                            "深度研究失败（已尝试回退到快速问答，仍失败）：{agent_err}"
+                        ))
+                    }
+                }
+            }
+        }
     };
 
-    // LLM（await 期间不持有数据库锁）
-    let (answer, citations) = crate::qa::ask(&llm, &prepared)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 追加 user + assistant 两条消息并写回
+    // 追加 user + assistant 两条消息并写回（assistant 携带引用与工具轨迹）
     {
         let conn = db.conn();
+        let mut history = history;
         history.push(QaMessage {
             role: Role::User,
             content: question.clone(),
             citations: None,
+            trace: None,
         });
         history.push(QaMessage {
             role: Role::Assistant,
             content: answer.clone(),
             citations: Some(citations.clone()),
+            trace: if trace.is_empty() {
+                None
+            } else {
+                Some(trace.clone())
+            },
         });
         let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
         conn.execute(
@@ -849,6 +913,7 @@ pub async fn ask_question(
         conversation_id: conv_id,
         answer,
         citations,
+        trace,
     })
 }
 

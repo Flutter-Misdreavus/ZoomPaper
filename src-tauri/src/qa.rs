@@ -48,14 +48,20 @@ pub struct QaMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub citations: Option<Vec<Citation>>,
+    /// agent 模式下的工具调用轨迹（仅 assistant 消息携带；旧数据为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<Vec<crate::agent::ToolStep>>,
 }
 
-/// `ask_question` 的返回：回答 + 引用 + 所属会话 id。
+/// `ask_question` 的返回：回答 + 引用 + 所属会话 id + 工具轨迹（agent 模式）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answer {
     pub conversation_id: String,
     pub answer: String,
     pub citations: Vec<Citation>,
+    /// agent 深度模式的工具调用轨迹；快速模式为空数组
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<crate::agent::ToolStep>,
 }
 
 /// 按字符数截断（超长补省略号）。`pub(crate)` 供命令层截会话标题复用。
@@ -264,11 +270,13 @@ mod tests {
                 role: Role::User,
                 content: "什么是注意力？".into(),
                 citations: None,
+                trace: None,
             },
             QaMessage {
                 role: Role::Assistant,
                 content: "注意力是…".into(),
                 citations: None,
+                trace: None,
             },
         ];
         let msgs = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history);

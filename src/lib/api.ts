@@ -14,6 +14,10 @@ export interface Settings {
   embedding_model: string;
   llm_provider: string;
   llm_model: string;
+  /** 联网搜索 provider：none / auto / deepseek / anthropic（复用对应 API Key） */
+  web_search_provider: string;
+  /** 原生搜索用模型名；null = 用 provider 默认 */
+  web_search_model: string | null;
 }
 
 export interface Paper {
@@ -74,12 +78,24 @@ export interface QaMessage {
   content: string;
   /** 仅 assistant 消息携带 */
   citations?: Citation[] | null;
+  /** agent 深度模式的工具调用轨迹（仅 assistant 消息携带；旧数据为 null） */
+  trace?: ToolStep[] | null;
+}
+
+/** agent 深度模式的一步工具调用轨迹（前端展示用） */
+export interface ToolStep {
+  name: string;
+  args: unknown;
+  summary: string;
+  error?: string | null;
 }
 
 export interface Answer {
   conversation_id: string;
   answer: string;
   citations: Citation[];
+  /** agent 深度模式的工具调用轨迹；快速模式为空数组 */
+  trace: ToolStep[];
 }
 
 export interface Conversation {
@@ -207,6 +223,8 @@ export const askQuestion = (
     topK?: number;
     /** 阅读页选中的段落列表（就地提问的上下文引用，可多条，编号 [1..k] 注入） */
     selections?: { text: string; pageIdx: number }[] | null;
+    /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
+    mode?: "quick" | "agent";
   },
 ) =>
   invoke<Answer>("ask_question", {
@@ -215,6 +233,7 @@ export const askQuestion = (
     conversationId: opts?.conversationId ?? null,
     topK: opts?.topK,
     selections: opts?.selections ?? null,
+    mode: opts?.mode ?? "agent",
   });
 
 export const listConversations = () =>

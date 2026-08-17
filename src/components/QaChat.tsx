@@ -22,6 +22,7 @@ import {
   type QaMessage,
 } from "@/lib/api";
 import { FileSearch, Loader2, MessageSquare, SendHorizonal, X } from "lucide-react";
+import { ToolTrace } from "@/components/ToolTrace";
 
 interface Props {
   /** null/缺省 = 跨论文问答 */
@@ -95,6 +96,8 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
+  const [mode, setMode] = useState<"quick" | "agent">("agent");
   const scrollRef = useRef<HTMLDivElement>(null);
   // 引用条目悬停：完整内容 + 「跳转到原文」（显示在条目左侧）
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -225,6 +228,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         paperId: paperId ?? null,
         conversationId: convId,
         selections: sentSelections,
+        mode,
       });
       setMessages((prev) => [
         ...prev,
@@ -277,6 +281,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                     onOpenPaper={onOpenPaper}
                     onJumpPage={onJumpPage}
                   />
+                  <ToolTrace trace={m.trace} />
                 </div>
               </div>
             ),
@@ -286,7 +291,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           <div className="flex justify-start">
             <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              检索并生成回答…
+              {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
             </div>
           </div>
         )}
@@ -381,6 +386,41 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           </div>
         </div>
       )}
+
+      {/* 问答模式开关：快速（单轮 RAG）/ 深度（多步工具研究，默认） */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5 rounded-full border bg-muted/50 p-0.5 text-[11px]">
+          <button
+            type="button"
+            onClick={() => setMode("quick")}
+            title="单轮检索，快而省"
+            className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
+              mode === "quick"
+                ? "bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            快速
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("agent")}
+            title="AI 多角度研读论文并联网检索后再回答"
+            className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
+              mode === "agent"
+                ? "bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            深度
+          </button>
+        </div>
+        {mode === "agent" && (
+          <span className="text-[11px] text-muted-foreground">
+            会调用工具研读论文与联网检索，回答更深入
+          </span>
+        )}
+      </div>
 
       <div className="flex items-end gap-2">
         <Textarea

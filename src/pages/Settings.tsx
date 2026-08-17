@@ -161,6 +161,47 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">联网搜索</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-1.5">
+            <Label htmlFor="web-search-provider">搜索 Provider</Label>
+            <Select
+              value={settings.web_search_provider}
+              onValueChange={(v) =>
+                setSettings({ ...current, web_search_provider: v ?? current.web_search_provider })
+              }
+            >
+              <SelectTrigger id="web-search-provider" className="w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">关闭</SelectItem>
+                <SelectItem value="auto">自动（优先 DeepSeek，其次 Anthropic）</SelectItem>
+                <SelectItem value="deepseek">DeepSeek 原生搜索</SelectItem>
+                <SelectItem value="anthropic">Anthropic 原生搜索</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              复用上方 DeepSeek / Anthropic API Key，无需新增密钥；未配置对应 Key 时自动禁用。
+            </p>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="web-search-model">搜索模型名（可选）</Label>
+            <Input
+              id="web-search-model"
+              value={settings.web_search_model ?? ""}
+              onChange={(e) =>
+                setSettings({ ...settings, web_search_model: e.target.value || null })
+              }
+              placeholder="默认：deepseek-v4-flash（DeepSeek）/ 当前模型（Anthropic）"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       <Separator />
 
       <div className="flex items-center gap-3">
