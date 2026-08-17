@@ -37,28 +37,38 @@ export function ToolTrace({ trace }: { trace?: ToolStep[] | null }) {
       </button>
       {open && (
         <div className="mt-1.5 flex flex-col gap-1 rounded-lg border bg-background/50 p-2">
-          {trace.map((step, i) => (
-            <div key={i} className="rounded-md px-1.5 py-1 text-xs">
-              <div className="flex items-baseline gap-1.5">
-                <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px]">
-                  {step.name}
-                </code>
-                <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground/80">
-                  {argsPreview(step.args)}
-                </span>
-                {step.error ? (
-                  <span className="shrink-0 text-destructive">失败</span>
-                ) : (
-                  step.summary && (
-                    <span className="shrink-0 text-muted-foreground">{step.summary}</span>
-                  )
+          {trace.map((step, i) =>
+            step.name === "quick_fallback" ? (
+              // 回退提示：非工具调用，渲染为中性信息行
+              <div
+                key={i}
+                className="rounded-md px-1.5 py-1 text-xs text-muted-foreground"
+              >
+                {step.summary}
+              </div>
+            ) : (
+              <div key={i} className="rounded-md px-1.5 py-1 text-xs">
+                <div className="flex items-baseline gap-1.5">
+                  <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px]">
+                    {step.name}
+                  </code>
+                  <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground/80">
+                    {argsPreview(step.args)}
+                  </span>
+                  {step.error ? (
+                    <span className="shrink-0 text-destructive">失败</span>
+                  ) : (
+                    step.summary && (
+                      <span className="shrink-0 text-muted-foreground">{step.summary}</span>
+                    )
+                  )}
+                </div>
+                {step.error && (
+                  <p className="mt-0.5 line-clamp-2 text-destructive/90">{step.error}</p>
                 )}
               </div>
-              {step.error && (
-                <p className="mt-0.5 line-clamp-2 text-destructive/90">{step.error}</p>
-              )}
-            </div>
-          ))}
+            ),
+          )}
         </div>
       )}
     </div>

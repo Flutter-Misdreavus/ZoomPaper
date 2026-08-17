@@ -858,7 +858,7 @@ pub async fn ask_question(
         {
             Ok(out) => (out.answer, out.citations, out.trace),
             Err(agent_err) => {
-                // 回退：快速问答（模型不支持工具等场景）
+                // 回退：快速问答（模型不支持工具等场景），并在轨迹中标记回退原因
                 match quick_answer(
                     &db,
                     &llm,
@@ -870,7 +870,19 @@ pub async fn ask_question(
                 )
                 .await
                 {
-                    Ok((a, c)) => (a, c, Vec::new()),
+                    Ok((a, c)) => {
+                        let mut trace = Vec::new();
+                        trace.push(crate::agent::ToolStep {
+                            name: "quick_fallback".to_string(),
+                            args: serde_json::Value::Null,
+                            summary: format!(
+                                "深度研究不可用，已回退到快速问答：{}",
+                                crate::qa::truncate(&agent_err.to_string(), 300)
+                            ),
+                            error: None,
+                        });
+                        (a, c, trace)
+                    }
                     Err(_) => {
                         return Err(format!(
                             "深度研究失败（已尝试回退到快速问答，仍失败）：{agent_err}"

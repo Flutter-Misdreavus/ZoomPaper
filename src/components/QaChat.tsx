@@ -232,7 +232,12 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       });
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: ans.answer, citations: ans.citations },
+        {
+          role: "assistant",
+          content: ans.answer,
+          citations: ans.citations,
+          trace: ans.trace,
+        },
       ]);
       if (!convId) {
         setConvId(ans.conversation_id);
