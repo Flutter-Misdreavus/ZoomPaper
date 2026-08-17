@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export interface ApiKeys {
   mineru: string;
@@ -80,6 +80,8 @@ export interface QaMessage {
   citations?: Citation[] | null;
   /** agent 深度模式的工具调用轨迹（仅 assistant 消息携带；旧数据为 null） */
   trace?: ToolStep[] | null;
+  /** AI 耗时记录（仅 assistant 消息携带；旧数据为 null） */
+  timing?: Timing | null;
 }
 
 /** agent 深度模式的一步工具调用轨迹（前端展示用） */
@@ -90,12 +92,42 @@ export interface ToolStep {
   error?: string | null;
 }
 
+/** 实时事件流（Tauri Channel 载荷）：思考/正文增量 + 工具状态 */
+export type AgentEvent =
+  | { type: "thinking"; text: string }
+  | { type: "content"; text: string }
+  | { type: "tool_start"; name: string; args: unknown }
+  | {
+      type: "tool_end";
+      name: string;
+      summary: string;
+      error?: string | null;
+      elapsed_ms: number;
+    };
+
+/** AI 耗时记录：model_ms = 模型调用合计（思考+决策+生成）；tool_ms = 工具执行合计 */
+export interface Timing {
+  model_ms: number;
+  tool_ms: number;
+}
+
+/** AI 的澄清请求（模型调用 ask_user 工具中断循环后返回） */
+export interface PendingAsk {
+  question: string;
+  options?: string[] | null;
+  free_text: boolean;
+}
+
 export interface Answer {
   conversation_id: string;
   answer: string;
   citations: Citation[];
   /** agent 深度模式的工具调用轨迹；快速模式为空数组 */
   trace: ToolStep[];
+  /** AI 耗时记录（快速模式为零值） */
+  timing: Timing;
+  /** 模型请求澄清（answer 为空时携带）；无澄清为 null/缺省 */
+  pending?: PendingAsk | null;
 }
 
 export interface Conversation {
@@ -225,6 +257,8 @@ export const askQuestion = (
     selections?: { text: string; pageIdx: number }[] | null;
     /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
     mode?: "quick" | "agent";
+    /** 实时事件流（思考/正文/工具状态） */
+    onEvent?: Channel<AgentEvent>;
   },
 ) =>
   invoke<Answer>("ask_question", {
@@ -234,6 +268,20 @@ export const askQuestion = (
     topK: opts?.topK,
     selections: opts?.selections ?? null,
     mode: opts?.mode ?? "agent",
+    // 后端 Channel 参数必填（null 会导致参数反序列化失败），缺省时创建空通道
+    onEvent: opts?.onEvent ?? new Channel<AgentEvent>(),
+  });
+
+/** 回答 AI 的澄清问题：续跑被 ask_user 中断的深度研究 */
+export const askQuestionReply = (
+  conversationId: string,
+  reply: string,
+  onEvent?: Channel<AgentEvent>,
+) =>
+  invoke<Answer>("ask_question_reply", {
+    conversationId,
+    reply,
+    onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
 export const listConversations = () =>

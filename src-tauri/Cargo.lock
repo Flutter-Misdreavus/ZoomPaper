@@ -7756,6 +7756,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fastembed",
+ "futures-util",
  "objc2-web-kit 0.2.2",
  "reqwest 0.12.24",
  "rusqlite",

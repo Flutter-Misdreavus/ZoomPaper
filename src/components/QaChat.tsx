@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -7,6 +8,8 @@ import rehypeRaw from "rehype-raw";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CitationBadge } from "@/components/CitationBadge";
+import { ThinkingPanel } from "@/components/ThinkingPanel";
+import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import {
   katexOptions,
   markdownUrlTransform,
@@ -16,13 +19,16 @@ import {
 } from "@/lib/markdown";
 import {
   askQuestion,
+  askQuestionReply,
   getConversation,
+  type AgentEvent,
   type AnnotationRect,
   type Citation,
+  type PendingAsk,
   type QaMessage,
+  type Timing,
 } from "@/lib/api";
 import { FileSearch, Loader2, MessageSquare, SendHorizonal, X } from "lucide-react";
-import { ToolTrace } from "@/components/ToolTrace";
 
 interface Props {
   /** null/缺省 = 跨论文问答 */
@@ -89,6 +95,22 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
   );
 }
 
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+/** AI 耗时展示：⏱ AI 思考 X · 工具调用 Y（零值隐藏） */
+function TimingLine({ timing }: { timing?: Timing | null }) {
+  if (!timing || (timing.model_ms === 0 && timing.tool_ms === 0)) return null;
+  return (
+    <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+      <span>⏱</span>
+      <span>AI 思考 {fmtMs(timing.model_ms)}</span>
+      {timing.tool_ms > 0 && <span>· 工具调用 {fmtMs(timing.tool_ms)}</span>}
+    </div>
+  );
+}
+
 export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRemoveSelection, maxSelections, onJumpToSelection }: Props) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
@@ -98,6 +120,12 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const [error, setError] = useState<string | null>(null);
   /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
   const [mode, setMode] = useState<"quick" | "agent">("agent");
+  /** AI 澄清请求（ask_user）：非空时输入框改为作答澄清问题 */
+  const [pending, setPending] = useState<PendingAsk | null>(null);
+  /** 实时流式状态：思考文本 / 回答正文增量 / 工具轨迹（含 running 态） */
+  const [thinkingText, setThinkingText] = useState("");
+  const [streamingText, setStreamingText] = useState("");
+  const [liveTrace, setLiveTrace] = useState<LiveToolStep[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   // 引用条目悬停：完整内容 + 「跳转到原文」（显示在条目左侧）
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -209,27 +237,74 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     };
   }, [conversationId]);
 
-  // 新消息滚动到底部
+  // 切换会话时重置流式/澄清状态
+  useEffect(() => {
+    setPending(null);
+    setThinkingText("");
+    setStreamingText("");
+    setLiveTrace([]);
+  }, [conversationId]);
+
+  // 新消息滚动到底部（含流式增量）
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, sending]);
+  }, [messages, sending, streamingText, thinkingText]);
 
-  async function handleSend() {
-    const question = input.trim();
-    if (!question || sending) return;
-    // 发送时捕获当前引用列表；仅成功后清空（且用户未增删引用）
-    const sentSelections = selections;
+  /** 实时事件分发：思考/正文增量、工具开始/完成 */
+  function onAgentEvent(evt: AgentEvent) {
+    switch (evt.type) {
+      case "thinking":
+        setThinkingText((t) => t + evt.text);
+        break;
+      case "content":
+        setStreamingText((t) => t + evt.text);
+        break;
+      case "tool_start":
+        setLiveTrace((prev) => [
+          ...prev,
+          { name: evt.name, args: evt.args, summary: "", running: true, elapsed_ms: 0 },
+        ]);
+        break;
+      case "tool_end": {
+        setLiveTrace((prev) => {
+          // 结束最后一个同名 running 条目
+          const idx = [...prev].reverse().findIndex((s) => s.name === evt.name && s.running);
+          if (idx === -1) return prev;
+          const real = prev.length - 1 - idx;
+          const next = [...prev];
+          next[real] = {
+            ...next[real],
+            running: false,
+            summary: evt.summary,
+            error: evt.error ?? undefined,
+            elapsed_ms: evt.elapsed_ms,
+          };
+          return next;
+        });
+        break;
+      }
+    }
+  }
+
+  /** 提交澄清回答：续跑被 ask_user 中断的深度研究 */
+  async function submitReply(reply: string) {
+    if (!convId || sending) return;
     setInput("");
     setSending(true);
     setError(null);
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setPending(null); // 移除澄清气泡（其轨迹并入 liveTrace 继续）
+    setStreamingText("");
+    setMessages((prev) => [...prev, { role: "user", content: reply }]);
     try {
-      const ans = await askQuestion(question, {
-        paperId: paperId ?? null,
-        conversationId: convId,
-        selections: sentSelections,
-        mode,
-      });
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const ans = await askQuestionReply(convId, reply, ch);
+      if (ans.pending) {
+        // 防御：理论上每轮最多澄清一次，不会再次中断
+        setPending(ans.pending);
+        return;
+      }
+      setStreamingText("");
       setMessages((prev) => [
         ...prev,
         {
@@ -237,6 +312,66 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           content: ans.answer,
           citations: ans.citations,
           trace: ans.trace,
+          timing: ans.timing,
+        },
+      ]);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleSend() {
+    const question = input.trim();
+    if (!question || sending) return;
+    // 澄清待答：输入内容作为澄清回答提交
+    if (pending) {
+      void submitReply(question);
+      return;
+    }
+    // 发送时捕获当前引用列表；仅成功后清空（且用户未增删引用）
+    const sentSelections = selections;
+    setInput("");
+    setSending(true);
+    setError(null);
+    // 新一轮：重置流式状态
+    setThinkingText("");
+    setStreamingText("");
+    setLiveTrace([]);
+    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    try {
+      const ch = new Channel<AgentEvent>();
+      ch.onmessage = onAgentEvent;
+      const ans = await askQuestion(question, {
+        paperId: paperId ?? null,
+        conversationId: convId,
+        selections: sentSelections,
+        mode,
+        onEvent: ch,
+      });
+      if (ans.pending) {
+        // 模型请求澄清：显示澄清气泡，等待用户作答
+        setPending(ans.pending);
+        if (!convId) {
+          setConvId(ans.conversation_id);
+          onConversationCreated?.(ans.conversation_id);
+        }
+        // 发送成功且引用区未被用户改动 → 自动清空（选中段落已随运行现场持久化）
+        if (sentSelections?.length && selectionsRef.current === sentSelections) {
+          onClearSelections?.();
+        }
+        return;
+      }
+      setStreamingText("");
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: ans.answer,
+          citations: ans.citations,
+          trace: ans.trace,
+          timing: ans.timing,
         },
       ]);
       if (!convId) {
@@ -287,16 +422,73 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                     onJumpPage={onJumpPage}
                   />
                   <ToolTrace trace={m.trace} />
+                  <TimingLine timing={m.timing} />
                 </div>
               </div>
             ),
           )
         )}
-        {sending && (
+        {/* AI 澄清气泡（ask_user）：问题 + 选项 chips + 自由输入提示 + 已执行工具轨迹 */}
+        {pending && (
           <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
+            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-3">
+              <p className="text-sm font-medium">{pending.question}</p>
+              {pending.options && pending.options.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {pending.options.map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => void submitReply(opt)}
+                      className="pressable rounded-full border px-2.5 py-1 text-xs transition-colors hover:border-primary hover:text-primary"
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pending.free_text && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  也可以直接在下方输入框作答后发送
+                </p>
+              )}
+              <ToolTrace trace={liveTrace} />
+            </div>
+          </div>
+        )}
+        {/* 实时生成区：思考面板 + 工具轨迹 + 流式回答 */}
+        {sending && (
+          <>
+            {thinkingText && <ThinkingPanel text={thinkingText} streaming />}
+            {liveTrace.length > 0 && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  <ToolTrace trace={liveTrace} />
+                </div>
+              </div>
+            )}
+            {streamingText && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm">
+                  {streamingText}
+                </div>
+              </div>
+            )}
+            {!thinkingText && liveTrace.length === 0 && !streamingText && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {/* 完成后保留本次思考过程（折叠，可展开回顾；不持久化） */}
+        {!sending && thinkingText && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+              <ThinkingPanel text={thinkingText} streaming={false} />
             </div>
           </div>
         )}
@@ -398,32 +590,37 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           <button
             type="button"
             onClick={() => setMode("quick")}
+            disabled={!!pending}
             title="单轮检索，快而省"
             className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
               mode === "quick"
                 ? "bg-background font-medium text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
-            }`}
+            } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
           >
             快速
           </button>
           <button
             type="button"
             onClick={() => setMode("agent")}
+            disabled={!!pending}
             title="AI 多角度研读论文并联网检索后再回答"
             className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
               mode === "agent"
                 ? "bg-background font-medium text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
-            }`}
+            } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
           >
             深度
           </button>
         </div>
-        {mode === "agent" && (
+        {mode === "agent" && !pending && (
           <span className="text-[11px] text-muted-foreground">
             会调用工具研读论文与联网检索，回答更深入
           </span>
+        )}
+        {pending && (
+          <span className="text-[11px] text-muted-foreground">等待你回答 AI 的澄清问题</span>
         )}
       </div>
 
@@ -437,7 +634,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
               void handleSend();
             }
           }}
-          placeholder={paperId ? "针对这篇论文提问…（Enter 发送，Shift+Enter 换行）" : "向整个论文库提问…（Enter 发送，Shift+Enter 换行）"}
+          placeholder={pending ? "回答 AI 的澄清问题…（Enter 发送）" : paperId ? "针对这篇论文提问…（Enter 发送，Shift+Enter 换行）" : "向整个论文库提问…（Enter 发送，Shift+Enter 换行）"}
           className="min-h-11 flex-1 resize-none"
           rows={1}
         />

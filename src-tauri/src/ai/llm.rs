@@ -8,6 +8,7 @@
 
 use crate::settings::Settings;
 use anyhow::{Context, Result};
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -66,7 +67,8 @@ pub struct ToolCallRef {
 }
 
 /// agent 循环中的一条消息（wire 层，可承载工具调用格式）。
-#[derive(Debug, Clone)]
+/// 可序列化：agent 运行现场（AgentRunState）需持久化到 conversations.agent_state。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentMsg {
     /// 普通 system / user / assistant 文本消息。
     Plain(ChatMessage),
@@ -98,6 +100,15 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCallRef>,
 }
 
+/// 流式事件：模型生成过程中的 token 增量。
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// 推理/思考 token（DeepSeek reasoning_content / Anthropic thinking / OpenAI reasoning）
+    Thinking(String),
+    /// 回答正文 token
+    Content(String),
+}
+
 /// 工具调用对话能力：agent 循环依赖此抽象，测试可注入脚本化假实现。
 pub trait LlmChat {
     async fn chat_with_tools(
@@ -105,6 +116,37 @@ pub trait LlmChat {
         messages: &[AgentMsg],
         tools: &[ToolDef],
     ) -> Result<ChatResponse>;
+
+    /// 流式版：`on_event` 收到思考/正文增量，返回完整 [`ChatResponse`]。
+    /// 默认实现 = 非流式调用后整体发一个 Content 事件（供测试假实现与失败回退）。
+    async fn stream_chat_with_tools(
+        &self,
+        messages: &[AgentMsg],
+        tools: &[ToolDef],
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatResponse> {
+        let resp = self.chat_with_tools(messages, tools).await?;
+        if let Some(c) = &resp.content {
+            if !c.is_empty() {
+                on_event(StreamEvent::Content(c.clone()));
+            }
+        }
+        Ok(resp)
+    }
+}
+
+/// 无工具调用的流式对话（快速问答用）：返回最终文本。
+pub async fn stream_plain_chat<L: LlmChat>(
+    llm: &L,
+    messages: &[ChatMessage],
+    on_event: &mut (dyn FnMut(StreamEvent) + Send),
+) -> Result<String> {
+    let agent_msgs: Vec<AgentMsg> = messages
+        .iter()
+        .map(|m| AgentMsg::Plain(m.clone()))
+        .collect();
+    let resp = llm.stream_chat_with_tools(&agent_msgs, &[], on_event).await?;
+    resp.content.ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 content"))
 }
 
 impl Llm {
@@ -249,6 +291,116 @@ impl LlmChat for Llm {
             }
         }
     }
+
+    /// 流式版：SSE 逐 token 转发思考/正文；SSE 中途失败回退非流式重试一次。
+    async fn stream_chat_with_tools(
+        &self,
+        messages: &[AgentMsg],
+        tools: &[ToolDef],
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatResponse> {
+        let result = match self {
+            Llm::OpenAiCompat {
+                base_url,
+                api_key,
+                model,
+            } => {
+                stream_openai_compat(base_url, api_key, model, messages, tools, on_event).await
+            }
+            Llm::Anthropic { api_key, model } => {
+                stream_anthropic(api_key, model, messages, tools, on_event).await
+            }
+        };
+        match result {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                // 流式失败（网络中断/解析异常等）→ 同一请求非流式重试一次
+                eprintln!("LLM 流式调用失败，回退非流式重试: {e}");
+                self.chat_with_tools(messages, tools).await
+            }
+        }
+    }
+}
+
+/// OpenAI 兼容端流式调用：`stream: true` + SSE 解析。
+async fn stream_openai_compat(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    messages: &[AgentMsg],
+    tools: &[ToolDef],
+    on_event: &mut (dyn FnMut(StreamEvent) + Send),
+) -> Result<ChatResponse> {
+    let mut body = openai_body_with_tools(model, messages, tools);
+    body["stream"] = serde_json::Value::Bool(true);
+    let resp = Client::new()
+        .post(format!("{base_url}/chat/completions"))
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .context("调用 OpenAI 兼容接口失败")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let b: serde_json::Value = resp.json().await.context("解析错误响应失败")?;
+        anyhow::bail!("LLM 返回错误 {status}: {b}");
+    }
+    let mut parser = OpenAiStreamParser::default();
+    let mut buf = String::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("读取流失败")?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // 逐行处理（chunk 可能截断行，用 buf 缓冲）
+        while let Some(pos) = buf.find('\n') {
+            let line = buf[..pos].trim_end_matches('\r').to_string();
+            buf.drain(..=pos);
+            if let Some(evt) = parser.push_line(&line) {
+                on_event(evt);
+            }
+        }
+    }
+    parser.finish()
+}
+
+/// Anthropic 端流式调用：`stream: true` + SSE 事件解析。
+async fn stream_anthropic(
+    api_key: &str,
+    model: &str,
+    messages: &[AgentMsg],
+    tools: &[ToolDef],
+    on_event: &mut (dyn FnMut(StreamEvent) + Send),
+) -> Result<ChatResponse> {
+    let mut body = anthropic_body_with_tools(model, messages, tools);
+    body["stream"] = serde_json::Value::Bool(true);
+    let resp = Client::new()
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await
+        .context("调用 Anthropic 接口失败")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let b: serde_json::Value = resp.json().await.context("解析错误响应失败")?;
+        anyhow::bail!("LLM 返回错误 {status}: {b}");
+    }
+    let mut parser = AnthropicStreamParser::default();
+    let mut buf = String::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("读取流失败")?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buf.find('\n') {
+            let line = buf[..pos].trim_end_matches('\r').to_string();
+            buf.drain(..=pos);
+            if let Some(evt) = parser.push_line(&line) {
+                on_event(evt);
+            }
+        }
+    }
+    parser.finish()
 }
 
 /// 解析 OpenAI 兼容响应：content（可空）+ reasoning_content/reasoning + tool_calls。
@@ -309,6 +461,210 @@ fn parse_anthropic_response(body: &serde_json::Value) -> Result<ChatResponse> {
         reasoning,
         tool_calls,
     })
+}
+
+/// OpenAI 兼容 SSE 流解析状态机（纯逻辑，可单测）。
+#[derive(Default)]
+struct OpenAiStreamParser {
+    content: String,
+    reasoning: String,
+    tool_calls: Vec<OpenAiToolAcc>,
+}
+
+#[derive(Default)]
+struct OpenAiToolAcc {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl OpenAiStreamParser {
+    /// 处理一行 SSE（`data: {...}` 或空行/注释）；产出事件则返回。
+    fn push_line(&mut self, line: &str) -> Option<StreamEvent> {
+        let line = line.trim();
+        if !line.starts_with("data:") {
+            return None;
+        }
+        let data = line["data:".len()..].trim();
+        if data == "[DONE]" {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(data).ok()?;
+        let delta = &v["choices"][0]["delta"];
+        let mut evt = None;
+        if let Some(t) = delta["content"].as_str() {
+            if !t.is_empty() {
+                self.content.push_str(t);
+                evt = Some(StreamEvent::Content(t.to_string()));
+            }
+        }
+        if let Some(t) = delta["reasoning_content"]
+            .as_str()
+            .or_else(|| delta["reasoning"].as_str())
+        {
+            if !t.is_empty() {
+                self.reasoning.push_str(t);
+                evt = Some(StreamEvent::Thinking(t.to_string()));
+            }
+        }
+        if let Some(calls) = delta["tool_calls"].as_array() {
+            for tc in calls {
+                let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                while self.tool_calls.len() <= idx {
+                    self.tool_calls.push(OpenAiToolAcc::default());
+                }
+                if let Some(id) = tc["id"].as_str() {
+                    if !id.is_empty() {
+                        self.tool_calls[idx].id.push_str(id);
+                    }
+                }
+                if let Some(name) = tc["function"]["name"].as_str() {
+                    if !name.is_empty() {
+                        self.tool_calls[idx].name.push_str(name);
+                    }
+                }
+                if let Some(args) = tc["function"]["arguments"].as_str() {
+                    if !args.is_empty() {
+                        self.tool_calls[idx].arguments.push_str(args);
+                    }
+                }
+            }
+        }
+        evt
+    }
+
+    /// 流结束：汇总为完整响应。
+    fn finish(self) -> Result<ChatResponse> {
+        let tool_calls = self
+            .tool_calls
+            .into_iter()
+            .filter(|t| !t.name.is_empty())
+            .enumerate()
+            .map(|(i, t)| ToolCallRef {
+                id: if t.id.is_empty() {
+                    format!("call_{i}")
+                } else {
+                    t.id
+                },
+                name: t.name,
+                arguments: serde_json::from_str(&t.arguments).unwrap_or(serde_json::Value::Null),
+            })
+            .collect();
+        Ok(ChatResponse {
+            content: if self.content.is_empty() {
+                None
+            } else {
+                Some(self.content)
+            },
+            reasoning: if self.reasoning.is_empty() {
+                None
+            } else {
+                Some(self.reasoning)
+            },
+            tool_calls,
+        })
+    }
+}
+
+/// Anthropic SSE 流解析状态机（纯逻辑，可单测）。
+#[derive(Default)]
+struct AnthropicStreamParser {
+    content: String,
+    thinking: String,
+    tool_uses: Vec<AnthropicToolAcc>,
+}
+
+#[derive(Default)]
+struct AnthropicToolAcc {
+    id: String,
+    name: String,
+    input: String,
+}
+
+impl AnthropicStreamParser {
+    /// 处理一行 SSE（`data: {...}`）；产出事件则返回。事件类型以 data JSON 的 `type` 为准。
+    fn push_line(&mut self, line: &str) -> Option<StreamEvent> {
+        let line = line.trim();
+        if !line.starts_with("data:") {
+            return None;
+        }
+        let data = line["data:".len()..].trim();
+        let v: serde_json::Value = serde_json::from_str(data).ok()?;
+        let idx = v["index"].as_u64().unwrap_or(0) as usize;
+        match v["type"].as_str() {
+            Some("content_block_start") => match v["content_block"]["type"].as_str() {
+                Some("tool_use") => {
+                    while self.tool_uses.len() <= idx {
+                        self.tool_uses.push(AnthropicToolAcc::default());
+                    }
+                    self.tool_uses[idx].id = v["content_block"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    self.tool_uses[idx].name = v["content_block"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                _ => {}
+            },
+            Some("content_block_delta") => match v["delta"]["type"].as_str() {
+                Some("text_delta") => {
+                    let t = v["delta"]["text"].as_str().unwrap_or_default();
+                    if !t.is_empty() {
+                        self.content.push_str(t);
+                        return Some(StreamEvent::Content(t.to_string()));
+                    }
+                }
+                Some("thinking_delta") => {
+                    let t = v["delta"]["thinking"].as_str().unwrap_or_default();
+                    if !t.is_empty() {
+                        self.thinking.push_str(t);
+                        return Some(StreamEvent::Thinking(t.to_string()));
+                    }
+                }
+                Some("input_json_delta") => {
+                    let t = v["delta"]["partial_json"].as_str().unwrap_or_default();
+                    if !t.is_empty() {
+                        while self.tool_uses.len() <= idx {
+                            self.tool_uses.push(AnthropicToolAcc::default());
+                        }
+                        self.tool_uses[idx].input.push_str(t);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        None
+    }
+
+    /// 流结束：汇总为完整响应。
+    fn finish(self) -> Result<ChatResponse> {
+        let tool_calls = self
+            .tool_uses
+            .into_iter()
+            .filter(|t| !t.name.is_empty())
+            .map(|t| ToolCallRef {
+                id: t.id,
+                name: t.name,
+                arguments: serde_json::from_str(&t.input).unwrap_or(serde_json::Value::Null),
+            })
+            .collect();
+        Ok(ChatResponse {
+            content: if self.content.is_empty() {
+                None
+            } else {
+                Some(self.content)
+            },
+            reasoning: if self.thinking.is_empty() {
+                None
+            } else {
+                Some(self.thinking)
+            },
+            tool_calls,
+        })
+    }
 }
 
 /// 构造 OpenAI 兼容请求体（`chat/completions`）。
@@ -652,5 +1008,138 @@ mod tests {
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "read_section");
         assert_eq!(resp.tool_calls[0].arguments["topic"], "方法");
+    }
+
+    #[test]
+    fn agent_msg_roundtrips_all_variants() {
+        let msgs = vec![
+            AgentMsg::Plain(msg(Role::System, "sys")),
+            AgentMsg::ToolCalls {
+                content: None,
+                calls: vec![call("c1", "search_papers")],
+            },
+            AgentMsg::ToolResult {
+                call_id: "c1".into(),
+                name: "search_papers".into(),
+                content: "[1] 结果".into(),
+            },
+        ];
+        let json = serde_json::to_string(&msgs).unwrap();
+        let back: Vec<AgentMsg> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 3);
+        match &back[0] {
+            AgentMsg::Plain(cm) => assert_eq!(cm.content, "sys"),
+            _ => panic!("应为 Plain"),
+        }
+        match &back[1] {
+            AgentMsg::ToolCalls { content, calls } => {
+                assert!(content.is_none());
+                assert_eq!(calls[0].name, "search_papers");
+                assert_eq!(calls[0].arguments["q"], "注意力");
+            }
+            _ => panic!("应为 ToolCalls"),
+        }
+        match &back[2] {
+            AgentMsg::ToolResult { call_id, content, .. } => {
+                assert_eq!(call_id, "c1");
+                assert_eq!(content, "[1] 结果");
+            }
+            _ => panic!("应为 ToolResult"),
+        }
+    }
+
+    // ---------- SSE 流解析 ----------
+
+    #[test]
+    fn openai_sse_parses_content_reasoning_and_tool_calls() {
+        let mut p = OpenAiStreamParser::default();
+        let mut events = Vec::new();
+        for line in [
+            r#"data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"中…"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"回答"}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"web_search","arguments":"{\"query\":"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]}}]}"#,
+            "data: [DONE]",
+        ] {
+            if let Some(e) = p.push_line(line) {
+                events.push(e);
+            }
+        }
+        assert_eq!(events.len(), 3); // thinking×2 + content×1（tool_calls 不产事件）
+        let resp = p.finish().unwrap();
+        assert_eq!(resp.reasoning.as_deref(), Some("思考中…"));
+        assert_eq!(resp.content.as_deref(), Some("回答"));
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "c1");
+        assert_eq!(resp.tool_calls[0].name, "web_search");
+        assert_eq!(resp.tool_calls[0].arguments["query"], "x");
+    }
+
+    #[test]
+    fn openai_sse_bad_arguments_falls_back_to_null() {
+        let mut p = OpenAiStreamParser::default();
+        p.push_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"x","arguments":"not-json"}}]}}]}"#)
+            .is_none();
+        let resp = p.finish().unwrap();
+        assert_eq!(resp.tool_calls[0].arguments, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn anthropic_sse_parses_thinking_text_and_tool_use() {
+        let mut p = AnthropicStreamParser::default();
+        let mut events = Vec::new();
+        for line in [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"想"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"好了"}}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"read_section","input":{}}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"topic\":"}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"方法\"}"}}"#,
+            r#"data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"最终答案"}}"#,
+        ] {
+            if let Some(e) = p.push_line(line) {
+                events.push(e);
+            }
+        }
+        assert_eq!(events.len(), 3); // thinking×2 + text×1
+        let resp = p.finish().unwrap();
+        assert_eq!(resp.reasoning.as_deref(), Some("想好了"));
+        assert_eq!(resp.content.as_deref(), Some("最终答案"));
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id, "tu1");
+        assert_eq!(resp.tool_calls[0].name, "read_section");
+        assert_eq!(resp.tool_calls[0].arguments["topic"], "方法");
+    }
+
+    #[tokio::test]
+    async fn default_streaming_impl_emits_content_once() {
+        // 只实现 chat_with_tools 的假 LLM：stream_chat_with_tools 默认实现应整体发一次 Content
+        struct PlainLlm;
+        impl LlmChat for PlainLlm {
+            async fn chat_with_tools(
+                &self,
+                _m: &[AgentMsg],
+                _t: &[ToolDef],
+            ) -> Result<ChatResponse> {
+                Ok(ChatResponse {
+                    content: Some("非流式回答".into()),
+                    reasoning: None,
+                    tool_calls: vec![],
+                })
+            }
+        }
+        let mut events = Vec::new();
+        let resp = PlainLlm
+            .stream_chat_with_tools(&[], &[], &mut |e| events.push(e))
+            .await
+            .unwrap();
+        assert_eq!(resp.content.as_deref(), Some("非流式回答"));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Content(t) => assert_eq!(t, "非流式回答"),
+            _ => panic!("应为 Content 事件"),
+        }
     }
 }

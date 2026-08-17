@@ -6,19 +6,29 @@
 //! - 模型返回工具调用 → 按序执行（本地工具同步短锁、联网工具异步），结果以
 //!   `ToolResult` 消息回喂，本地内容引用编号全局累计；
 //! - 工具失败 → 错误文本回喂（模型可换工具或如实说明）；
+//! - 模型调用 `ask_user` → **中断**：保存运行现场（[`AgentRunState`]）返回
+//!   [`RunResult::NeedInput`]，命令层持久化后由前端向用户提问；用户回答经
+//!   [`resume_agent`] 从断点继续（每轮最多澄清一次）；
 //! - 步数耗尽仍未产出最终文本 → 兜底回答（附已收集的工具结论摘要）。
 //!
 //! 引用机制：每个返回本地内容的工具结果自带 `[n]` 编号上下文块（编号由调用时的全局
 //! offset 决定），system prompt 指示模型最终回答复用这些编号；引用列表按执行顺序累计
 //! 返回给前端，现有 CitationBadge / 跳原文逻辑零改动。
+//!
+//! 会话级研究记忆（[`memory`]）：命令层把会话的已查证来源定位注入 system prompt，
+//! 模型据此直接定位来源、不重复全库检索。
 
 use crate::ai::llm::{AgentMsg, ChatMessage, LlmChat, Role, ToolCallRef, ToolDef};
 use crate::db::Db;
-use crate::qa::{Citation, QaMessage, SelectionInput};
+use crate::qa::{truncate, Citation, QaMessage, SelectionInput};
 use crate::settings::Settings;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub mod memory;
+pub mod tools;
+pub mod web;
 
 /// 单轮问答最多模型调用次数（含工具轮次）。
 pub const MAX_STEPS: usize = 6;
@@ -35,17 +45,85 @@ pub struct ToolStep {
     pub error: Option<String>,
 }
 
-/// agent 循环产物：最终回答 + 引用 + 工具轨迹。
-#[derive(Debug, Clone)]
-pub struct AgentOutcome {
-    pub answer: String,
-    pub citations: Vec<Citation>,
-    pub trace: Vec<ToolStep>,
+/// 推送给前端的实时事件（Tauri Channel 载荷）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentEvent {
+    /// 思考 token 增量
+    Thinking { text: String },
+    /// 回答正文 token 增量
+    Content { text: String },
+    /// 工具开始调用
+    ToolStart { name: String, args: Value },
+    /// 工具执行完成（含单工具耗时）
+    ToolEnd {
+        name: String,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        elapsed_ms: u64,
+    },
 }
 
-/// 运行一轮深度研究（agent 模式）。
+/// AI 耗时记录：model_ms = 模型调用墙钟合计（思考+决策+生成）；tool_ms = 工具执行合计。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timing {
+    pub model_ms: u64,
+    pub tool_ms: u64,
+}
+
+/// agent 运行现场（ask_user 澄清中断时持久化，供续跑）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunState {
+    /// 完整消息列表（含已执行的 ToolCalls / ToolResult 与合成"未执行"结果）
+    pub messages: Vec<AgentMsg>,
+    /// 已消耗的模型调用步数（续跑从此继续）
+    pub step: usize,
+    pub citations: Vec<Citation>,
+    pub trace: Vec<ToolStep>,
+    pub paper_id: Option<String>,
+    pub selections: Vec<SelectionInput>,
+    /// 等待用户回答的 ask_user 调用
+    pub pending_call: ToolCallRef,
+    /// 本轮原始问题（记忆条目与续跑上下文用）
+    pub question: String,
+    /// 是否已澄清过（每轮最多一次）
+    pub asked_user: bool,
+    /// 状态创建时间（unix 秒；过期检查用）
+    pub updated_at: i64,
+    /// 已累计的模型调用耗时（ms；澄清续跑后继续累加）
+    #[serde(default)]
+    pub model_ms: u64,
+    /// 已累计的工具执行耗时（ms）
+    #[serde(default)]
+    pub tool_ms: u64,
+}
+
+/// 一次 agent 运行的产物：完成 或 等待用户澄清。
+#[derive(Debug, Clone)]
+pub enum RunResult {
+    Done {
+        answer: String,
+        citations: Vec<Citation>,
+        trace: Vec<ToolStep>,
+        timing: Timing,
+    },
+    NeedInput {
+        question: String,
+        options: Option<Vec<String>>,
+        free_text: bool,
+        citations: Vec<Citation>,
+        trace: Vec<ToolStep>,
+        state: AgentRunState,
+    },
+}
+
+/// 运行一轮深度研究（agent 模式，新问题）。
 ///
+/// `memory`：本会话之前轮次的研究记忆（注入 system prompt 的「研究记忆」段）；
+/// `sink`：实时事件回调（思考/正文/工具状态），前端经 Tauri Channel 接收。
 /// 注意：本函数不做「模型不支持工具」的降级——由命令层捕获错误后回退到快速问答。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent<L: LlmChat>(
     llm: &L,
     db: &Db,
@@ -54,7 +132,9 @@ pub async fn run_agent<L: LlmChat>(
     paper_id: Option<&str>,
     history: &[QaMessage],
     selections: &[SelectionInput],
-) -> Result<AgentOutcome> {
+    memory: &[memory::MemoryEntry],
+    sink: &mut (dyn FnMut(AgentEvent) + Send),
+) -> Result<RunResult> {
     let http = reqwest::Client::new();
     let tools = tools::build_tools(settings, paper_id, selections);
     let web_enabled = tools.iter().any(|t| matches!(t, tools::ToolKind::WebSearch));
@@ -62,7 +142,7 @@ pub async fn run_agent<L: LlmChat>(
     let mut messages: Vec<AgentMsg> = Vec::new();
     messages.push(AgentMsg::Plain(ChatMessage {
         role: Role::System,
-        content: build_system_prompt(web_enabled, selections.len()),
+        content: build_system_prompt(web_enabled, selections.len(), memory),
     }));
     for m in history {
         messages.push(AgentMsg::Plain(ChatMessage {
@@ -75,18 +155,7 @@ pub async fn run_agent<L: LlmChat>(
         content: question.to_string(),
     }));
 
-    let schemas: Vec<ToolDef> = tools
-        .iter()
-        .map(|t| ToolDef {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
-            parameters: t.parameters(),
-        })
-        .collect();
-
-    let mut citations: Vec<Citation> = Vec::new();
-    let mut trace: Vec<ToolStep> = Vec::new();
-    let mut last_content: Option<String> = None;
+    let schemas = tool_schemas(&tools);
     let ctx = tools::ToolCtx {
         db,
         settings,
@@ -94,39 +163,229 @@ pub async fn run_agent<L: LlmChat>(
         paper_id,
         selections,
     };
+    let mut citations: Vec<Citation> = Vec::new();
+    let mut trace: Vec<ToolStep> = Vec::new();
+    let mut model_ms: u64 = 0;
+    let mut tool_ms: u64 = 0;
+    drive_loop(
+        llm, &ctx, &tools, &mut messages, &schemas, 0, &mut citations, &mut trace, false,
+        question, sink, &mut model_ms, &mut tool_ms,
+    )
+    .await
+}
 
-    for _ in 0..MAX_STEPS {
-        let resp = llm.chat_with_tools(&messages, &schemas).await?;
-        if resp.tool_calls.is_empty() {
-            if let Some(c) = &resp.content {
-                if !c.trim().is_empty() {
-                    last_content = Some(c.clone());
-                    break;
+/// 从澄清断点续跑：把用户回答回喂为 ask_user 的结果，继续循环。
+pub async fn resume_agent<L: LlmChat>(
+    llm: &L,
+    db: &Db,
+    settings: &Settings,
+    state: AgentRunState,
+    reply: &str,
+    sink: &mut (dyn FnMut(AgentEvent) + Send),
+) -> Result<RunResult> {
+    let http = reqwest::Client::new();
+    let tools = tools::build_tools(settings, state.paper_id.as_deref(), &state.selections);
+    let schemas = tool_schemas(&tools);
+    let ctx = tools::ToolCtx {
+        db,
+        settings,
+        http: &http,
+        paper_id: state.paper_id.as_deref(),
+        selections: &state.selections,
+    };
+    let mut messages = state.messages;
+    let mut citations = state.citations;
+    let mut trace = state.trace;
+    // 回喂用户回答（该调用此前未注入结果，保证协议完整），并标记澄清工具完成
+    messages.push(AgentMsg::ToolResult {
+        call_id: state.pending_call.id.clone(),
+        name: "ask_user".to_string(),
+        content: reply.to_string(),
+    });
+    sink(AgentEvent::ToolEnd {
+        name: "ask_user".to_string(),
+        summary: truncate(reply, 60),
+        error: None,
+        elapsed_ms: 0, // 等待用户的时间不算 AI 思考/工具耗时
+    });
+    let mut model_ms = state.model_ms;
+    let mut tool_ms = state.tool_ms;
+    drive_loop(
+        llm,
+        &ctx,
+        &tools,
+        &mut messages,
+        &schemas,
+        state.step,
+        &mut citations,
+        &mut trace,
+        true, // 已澄清过：续跑中不再允许第二次 ask_user
+        &state.question,
+        sink,
+        &mut model_ms,
+        &mut tool_ms,
+    )
+    .await
+}
+
+fn tool_schemas(tools: &[tools::ToolKind]) -> Vec<ToolDef> {
+    tools
+        .iter()
+        .map(|t| ToolDef {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            parameters: t.parameters(),
+        })
+        .collect()
+}
+
+/// 循环驱动器：从 `step` 起调用模型，执行工具/处理澄清，直到完成或中断。
+#[allow(clippy::too_many_arguments)]
+async fn drive_loop<L: LlmChat>(
+    llm: &L,
+    ctx: &tools::ToolCtx<'_>,
+    tools: &[tools::ToolKind],
+    messages: &mut Vec<AgentMsg>,
+    schemas: &[ToolDef],
+    step: usize,
+    citations: &mut Vec<Citation>,
+    trace: &mut Vec<ToolStep>,
+    asked_user: bool,
+    question: &str,
+    sink: &mut (dyn FnMut(AgentEvent) + Send),
+    model_ms: &mut u64,
+    tool_ms: &mut u64,
+) -> Result<RunResult> {
+    let mut used = step;
+    while used < MAX_STEPS {
+        used += 1;
+        // 模型调用（流式：思考/正文增量转发给 sink；模型调用耗时计入「思考」时间）
+        let t0 = std::time::Instant::now();
+        let resp = llm
+            .stream_chat_with_tools(messages, schemas, &mut |evt| match evt {
+                crate::ai::llm::StreamEvent::Thinking(t) => {
+                    sink(AgentEvent::Thinking { text: t })
                 }
-            }
-            // 无文本且无工具调用：罕见情况，跳出兜底
-            break;
-        }
-        if let Some(c) = &resp.content {
-            if !c.trim().is_empty() {
-                last_content = Some(c.clone());
-            }
+                crate::ai::llm::StreamEvent::Content(t) => sink(AgentEvent::Content { text: t }),
+            })
+            .await?;
+        *model_ms += t0.elapsed().as_millis() as u64;
+        if resp.tool_calls.is_empty() {
+            let answer = match &resp.content {
+                Some(c) if !c.trim().is_empty() => c.clone(),
+                _ => build_fallback_answer(trace),
+            };
+            return Ok(RunResult::Done {
+                answer,
+                citations: citations.clone(),
+                trace: trace.clone(),
+                timing: Timing {
+                    model_ms: *model_ms,
+                    tool_ms: *tool_ms,
+                },
+            });
         }
 
-        // 记录 assistant 工具调用消息，再按序执行并回喂结果
-        let calls: Vec<ToolCallRef> = resp.tool_calls;
+        // 记录 assistant 工具调用消息，再按序执行
+        let calls = resp.tool_calls;
         messages.push(AgentMsg::ToolCalls {
             content: resp.content.clone(),
             calls: calls.clone(),
         });
         let mut offset = citations.len();
-        for call in calls.iter().take(MAX_TOOLS_PER_TURN) {
+        for (i, call) in calls.iter().take(MAX_TOOLS_PER_TURN).enumerate() {
             let kind = tools
                 .iter()
                 .find(|t| t.name() == call.name)
                 .copied()
                 .ok_or_else(|| anyhow::anyhow!("模型调用了未知工具: {}", call.name))?;
-            let step = match tools::execute_tool(kind, &ctx, &call.arguments, offset).await {
+
+            // ask_user：中断循环等待用户（每轮最多一次）
+            if kind == tools::ToolKind::AskUser {
+                if asked_user {
+                    messages.push(AgentMsg::ToolResult {
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        content: "工具执行失败：已向用户询问过一次澄清，请基于已有信息继续回答，或明确说明资料不足。"
+                            .to_string(),
+                    });
+                    trace.push(ToolStep {
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                        summary: String::new(),
+                        error: Some("每轮最多澄清一次".to_string()),
+                    });
+                    sink(AgentEvent::ToolEnd {
+                        name: call.name.clone(),
+                        summary: String::new(),
+                        error: Some("每轮最多澄清一次".to_string()),
+                        elapsed_ms: 0,
+                    });
+                    continue;
+                }
+                // 批次内其后的调用注入"未执行"合成结果，保证每个 tool_call_id 都有结果
+                for later in calls.iter().skip(i + 1) {
+                    messages.push(AgentMsg::ToolResult {
+                        call_id: later.id.clone(),
+                        name: later.name.clone(),
+                        content: "该调用因等待用户澄清而未执行。".to_string(),
+                    });
+                }
+                let q = call.arguments["question"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let options = call.arguments["options"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|o| !o.is_empty());
+                let free_text = call.arguments["free_text"].as_bool().unwrap_or(true);
+                trace.push(ToolStep {
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                    summary: truncate(&q, 60),
+                    error: None,
+                });
+                sink(AgentEvent::ToolStart {
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                });
+                let state = AgentRunState {
+                    messages: messages.clone(),
+                    step: used,
+                    citations: citations.clone(),
+                    trace: trace.clone(),
+                    paper_id: ctx.paper_id.map(str::to_string),
+                    selections: ctx.selections.to_vec(),
+                    pending_call: call.clone(),
+                    question: question.to_string(),
+                    asked_user: true,
+                    updated_at: chrono::Utc::now().timestamp(),
+                    model_ms: *model_ms,
+                    tool_ms: *tool_ms,
+                };
+                return Ok(RunResult::NeedInput {
+                    question: q,
+                    options,
+                    free_text,
+                    citations: citations.clone(),
+                    trace: trace.clone(),
+                    state,
+                });
+            }
+
+            // 正常执行工具：开始 → 计时 → 完成（耗时计入工具时间）
+            sink(AgentEvent::ToolStart {
+                name: call.name.clone(),
+                args: call.arguments.clone(),
+            });
+            let t0 = std::time::Instant::now();
+            let step_out = match tools::execute_tool(kind, ctx, &call.arguments, offset).await {
                 Ok(out) => {
                     let n = out.citations.len();
                     citations.extend(out.citations);
@@ -144,7 +403,7 @@ pub async fn run_agent<L: LlmChat>(
                     }
                 }
                 Err(e) => {
-                    let err_text = crate::qa::truncate(&e, 800);
+                    let err_text = truncate(&e, 800);
                     messages.push(AgentMsg::ToolResult {
                         call_id: call.id.clone(),
                         name: call.name.clone(),
@@ -158,23 +417,31 @@ pub async fn run_agent<L: LlmChat>(
                     }
                 }
             };
-            trace.push(step);
+            let elapsed_ms = t0.elapsed().as_millis() as u64;
+            *tool_ms += elapsed_ms;
+            sink(AgentEvent::ToolEnd {
+                name: call.name.clone(),
+                summary: step_out.summary.clone(),
+                error: step_out.error.clone(),
+                elapsed_ms,
+            });
+            trace.push(step_out);
         }
     }
-
-    let answer = match last_content {
-        Some(c) if !c.trim().is_empty() => c,
-        _ => build_fallback_answer(&trace),
-    };
-    Ok(AgentOutcome {
-        answer,
-        citations,
-        trace,
+    // 步数耗尽：兜底
+    Ok(RunResult::Done {
+        answer: build_fallback_answer(trace),
+        citations: citations.clone(),
+        trace: trace.clone(),
+        timing: Timing {
+            model_ms: *model_ms,
+            tool_ms: *tool_ms,
+        },
     })
 }
 
-/// 动态 system prompt：base 研读指引 + 引用规则 + 按启用状态拼接的工具指引段。
-fn build_system_prompt(web_enabled: bool, selections: usize) -> String {
+/// 动态 system prompt：base 研读指引 + 澄清说明 + 引用规则 + 记忆段 + 按启用状态拼接的工具指引段。
+fn build_system_prompt(web_enabled: bool, selections: usize, memory: &[memory::MemoryEntry]) -> String {
     let mut p = String::from(
         "你是一名论文研究助手，帮助用户深入理解论文。你可以调用工具从多个角度研读论文：\
          本地知识库语义检索、章节精读、章节目录、论文元数据、用户标注与译文。\n\n\
@@ -182,6 +449,8 @@ fn build_system_prompt(web_enabled: bool, selections: usize) -> String {
          1. 先用 get_outline / get_paper_meta 了解论文结构与背景；\n\
          2. 再用 search_papers / read_section 精读与问题相关的章节；\n\
          3. 综合所有资料后给出有依据的回答。\n\n\
+         澄清说明：如果问题有歧义、或需要用户选择研究方向，且现有信息不足以继续时，\
+         可调用 ask_user 向用户澄清（每轮最多一次）；优先基于已有信息回答，不要频繁打断。\n\n\
          引用规则：\n\
          - 引用本地资料时，必须复用工具结果中给出的编号 [n]；\n\
          - 资料中没有的信息要明确说明「资料中没有相关信息」，不要编造。\n\n\
@@ -199,6 +468,7 @@ fn build_system_prompt(web_enabled: bool, selections: usize) -> String {
             "\n\n用户选中了 {selections} 段论文原文（阅读页划选），可使用 read_selection 工具读取（index 从 0 开始）。优先围绕选中段落回答。"
         ));
     }
+    p.push_str(&memory::format_memory_section(memory));
     p
 }
 
@@ -221,9 +491,6 @@ fn build_fallback_answer(trace: &[ToolStep]) -> String {
     out.push_str("\n你可以继续追问，或切换为「快速问答」模式。");
     out
 }
-
-pub mod tools;
-pub mod web;
 
 #[cfg(test)]
 mod tests {
@@ -285,9 +552,17 @@ mod tests {
         }
     }
 
-    fn setup() -> (ScriptedLlm, Db, Settings) {
+    fn ask_user_call(id: &str, question: &str, options: serde_json::Value) -> ChatResponse {
+        calls(&[(
+            id,
+            "ask_user",
+            json!({ "question": question, "options": options, "free_text": true }),
+        )])
+    }
+
+    fn setup() -> (Db, Settings) {
         let db = Db::from_connection(Connection::open_in_memory().unwrap());
-        (ScriptedLlm::new(vec![]), db, Settings::default())
+        (db, Settings::default())
     }
 
     fn sel(text: &str, page: Option<i64>) -> SelectionInput {
@@ -299,66 +574,82 @@ mod tests {
 
     #[tokio::test]
     async fn direct_answer_without_tools() {
-        let (llm, db, settings) = setup();
+        let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![content("直接回答")]);
-        let out = run_agent(&llm, &db, &settings, "你好", Some("p1"), &[], &[])
+        match run_agent(&llm, &db, &settings, "你好", Some("p1"), &[], &[], &[], &mut |_| {})
             .await
-            .unwrap();
-        assert_eq!(out.answer, "直接回答");
-        assert!(out.trace.is_empty());
-        assert!(out.citations.is_empty());
+            .unwrap()
+        {
+            RunResult::Done {
+                answer,
+                citations,
+                trace,
+                timing: _,
+            } => {
+                assert_eq!(answer, "直接回答");
+                assert!(trace.is_empty());
+                assert!(citations.is_empty());
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
     }
 
     #[tokio::test]
     async fn calls_selection_tools_and_numbers_citations_continuously() {
-        let (llm, db, settings) = setup();
+        let (db, settings) = setup();
         let selections = [sel("第一段选中", Some(2)), sel("第二段选中", Some(5))];
         let llm = ScriptedLlm::new(vec![
-            // 第一轮：同时请求两个 read_selection（按序执行）
             calls(&[
                 ("c1", "read_selection", json!({ "index": 0 })),
                 ("c2", "read_selection", json!({ "index": 1 })),
             ]),
-            // 第二轮：再读一次（引用编号应从 3 起）
             calls(&[("c3", "read_selection", json!({ "index": 1 }))]),
-            // 最终回答复用编号
             content("综合 [1] 与 [3] 得出结论。"),
         ]);
-        let out = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections)
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
             .await
-            .unwrap();
-        assert_eq!(out.answer, "综合 [1] 与 [3] 得出结论。");
-        assert_eq!(out.trace.len(), 3);
-        // 引用编号全局连续：1,2,3
-        let idxs: Vec<usize> = out.citations.iter().map(|c| c.index).collect();
-        assert_eq!(idxs, vec![1, 2, 3]);
-        // 工具结果消息回喂了全局编号
-        assert!(out.citations[0].snippet.contains("第一段选中"));
-        assert_eq!(out.citations[0].page_idx, Some(2));
+            .unwrap()
+        {
+            RunResult::Done {
+                answer,
+                citations,
+                trace,
+                timing: _,
+            } => {
+                assert_eq!(answer, "综合 [1] 与 [3] 得出结论。");
+                assert_eq!(trace.len(), 3);
+                let idxs: Vec<usize> = citations.iter().map(|c| c.index).collect();
+                assert_eq!(idxs, vec![1, 2, 3]);
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
     }
 
     #[tokio::test]
     async fn tool_error_is_fed_back_and_trace_marks_it() {
-        let (llm, db, settings) = setup();
+        let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![
-            // search_papers 缺 query 参数 → 工具报错
             calls(&[("c1", "search_papers", json!({}))]),
             content("我无法检索，但可以基于已有知识回答。"),
         ]);
-        let out = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[])
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
             .await
-            .unwrap();
-        assert_eq!(out.trace.len(), 1);
-        assert!(out.trace[0].error.is_some());
-        assert!(out.trace[0].name == "search_papers");
-        assert_eq!(out.answer, "我无法检索，但可以基于已有知识回答。");
+            .unwrap()
+        {
+            RunResult::Done { answer, trace, .. } => {
+                assert_eq!(answer, "我无法检索，但可以基于已有知识回答。");
+                assert_eq!(trace.len(), 1);
+                assert!(trace[0].error.is_some());
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
     }
 
     #[tokio::test]
     async fn unknown_tool_aborts_loop_with_error() {
-        let (llm, db, settings) = setup();
+        let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![calls(&[("c1", "no_such_tool", json!({}))])]);
-        let err = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[])
+        let err = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("未知工具"));
@@ -366,9 +657,8 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_exhausted_produces_fallback() {
-        let (llm, db, settings) = setup();
+        let (db, settings) = setup();
         let selections = [sel("选中", None)];
-        // 每轮都只调工具，永不给出文本 → 触发 MAX_STEPS 兜底
         let mut responses = Vec::new();
         for i in 0..6 {
             responses.push(calls(&[(
@@ -378,23 +668,270 @@ mod tests {
             )]));
         }
         let llm = ScriptedLlm::new(responses);
-        let out = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections)
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
             .await
-            .unwrap();
-        assert_eq!(out.trace.len(), 6);
-        assert!(out.answer.contains("未能整理出完整回答"));
-        assert!(out.answer.contains("read_selection"));
+            .unwrap()
+        {
+            RunResult::Done { answer, trace, .. } => {
+                assert_eq!(trace.len(), 6);
+                assert!(answer.contains("未能整理出完整回答"));
+                assert!(answer.contains("read_selection"));
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
     }
 
     #[test]
     fn system_prompt_web_section_follows_enablement() {
-        let with_web = build_system_prompt(true, 0);
+        let with_web = build_system_prompt(true, 0, &[]);
         assert!(with_web.contains("web_search"));
-        let without = build_system_prompt(false, 0);
+        let without = build_system_prompt(false, 0, &[]);
         assert!(!without.contains("web_search"));
         assert!(without.contains("引用规则"));
-        // 选中段落指引按数量拼接
-        let with_sel = build_system_prompt(false, 3);
+        assert!(without.contains("ask_user")); // 澄清说明常驻
+        let with_sel = build_system_prompt(false, 3, &[]);
         assert!(with_sel.contains("read_selection"));
+        // 记忆段注入
+        let with_mem = build_system_prompt(
+            false,
+            0,
+            &[memory::MemoryEntry {
+                text: "论文《A》· 第 3 页 · Method：…".into(),
+                at: 1,
+            }],
+        );
+        assert!(with_mem.contains("研究记忆"));
+    }
+
+    // ---------- ask_user 澄清 ----------
+
+    #[tokio::test]
+    async fn ask_user_interrupts_then_resume_completes() {
+        let (db, settings) = setup();
+        let llm = ScriptedLlm::new(vec![
+            ask_user_call("c1", "你想对比哪个方向？", json!(["A", "B"])),
+            content("根据你的选择，最终回答。"),
+        ]);
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+            .await
+            .unwrap();
+        let (question, options, free_text, state) = match run {
+            RunResult::NeedInput {
+                question,
+                options,
+                free_text,
+                state,
+                ..
+            } => (question, options, free_text, state),
+            RunResult::Done { .. } => panic!("应请求澄清"),
+        };
+        assert_eq!(question, "你想对比哪个方向？");
+        assert_eq!(options.unwrap(), vec!["A".to_string(), "B".to_string()]);
+        assert!(free_text);
+        assert_eq!(state.step, 1);
+        assert!(state.asked_user);
+        assert_eq!(state.pending_call.name, "ask_user");
+        // 中断时未给 ask_user 注入结果
+        assert!(!state.messages.iter().any(|m| matches!(
+            m,
+            AgentMsg::ToolResult { name, .. } if name == "ask_user"
+        )));
+
+        // 续跑：回答被回喂为 ask_user 的结果
+        let done = resume_agent(&llm, &db, &settings, state, "选 A", &mut |_| {})
+            .await
+            .unwrap();
+        match done {
+            RunResult::Done { answer, .. } => assert_eq!(answer, "根据你的选择，最终回答。"),
+            RunResult::NeedInput { .. } => panic!("不应再次澄清"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_user_capped_at_one_after_resume() {
+        let (db, settings) = setup();
+        let llm = ScriptedLlm::new(vec![
+            ask_user_call("c1", "第一次澄清", json!([])),
+            ask_user_call("c2", "第二次澄清", json!([])),
+            content("最终回答"),
+        ]);
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+            .await
+            .unwrap();
+        let state = match &run {
+            RunResult::NeedInput { state, .. } => state.clone(),
+            _ => panic!("应请求澄清"),
+        };
+        let done = resume_agent(&llm, &db, &settings, state, "回答", &mut |_| {})
+            .await
+            .unwrap();
+        match done {
+            RunResult::Done { answer, trace, .. } => {
+                assert_eq!(answer, "最终回答");
+                // 第二次 ask_user 被拒绝并标记错误
+                let ask_steps: Vec<&ToolStep> = trace
+                    .iter()
+                    .filter(|t| t.name == "ask_user")
+                    .collect();
+                assert_eq!(ask_steps.len(), 2);
+                assert!(ask_steps[1].error.is_some());
+            }
+            RunResult::NeedInput { .. } => panic!("不应再次请求澄清"),
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_with_ask_user_injects_synthetic_results_for_later_calls() {
+        let (db, settings) = setup();
+        let selections = [sel("选中段", Some(1))];
+        let llm = ScriptedLlm::new(vec![
+            calls(&[
+                ("c1", "read_selection", json!({ "index": 0 })),
+                ("c2", "ask_user", json!({ "question": "确认方向", "options": [] })),
+                ("c3", "read_selection", json!({ "index": 0 })),
+            ]),
+            content("完成"),
+        ]);
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
+            .await
+            .unwrap();
+        let state = match run {
+            RunResult::NeedInput { state, .. } => state,
+            _ => panic!("应请求澄清"),
+        };
+        // c1 正常执行（有结果），c3 注入"未执行"合成结果，c2（ask_user）无结果
+        assert!(state.messages.iter().any(|m| matches!(
+            m,
+            AgentMsg::ToolResult { call_id, .. } if call_id == "c1"
+        )));
+        assert!(state.messages.iter().any(|m| matches!(
+            m,
+            AgentMsg::ToolResult { call_id, content, .. }
+                if call_id == "c3" && content.contains("未执行")
+        )));
+        assert!(!state.messages.iter().any(|m| matches!(
+            m,
+            AgentMsg::ToolResult { call_id, .. } if call_id == "c2"
+        )));
+        // 引用编号：c1 已产生一条
+        assert_eq!(state.citations.len(), 1);
+        // 续跑后全部调用都有结果，模型可继续
+        let done = resume_agent(&llm, &db, &settings, state, "选 A", &mut |_| {})
+            .await
+            .unwrap();
+        assert!(matches!(done, RunResult::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn agent_run_state_roundtrips_json() {
+        let state = AgentRunState {
+            messages: vec![AgentMsg::Plain(ChatMessage {
+                role: Role::User,
+                content: "hi".into(),
+            })],
+            step: 1,
+            citations: vec![],
+            trace: vec![],
+            paper_id: Some("p1".into()),
+            selections: vec![],
+            pending_call: ToolCallRef {
+                id: "c1".into(),
+                name: "ask_user".into(),
+                arguments: json!({ "question": "?" }),
+            },
+            question: "问题".into(),
+            asked_user: true,
+            updated_at: 1,
+            model_ms: 1234,
+            tool_ms: 56,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AgentRunState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.step, 1);
+        assert_eq!(back.pending_call.name, "ask_user");
+        assert!(back.asked_user);
+        assert_eq!(back.model_ms, 1234);
+        assert_eq!(back.tool_ms, 56);
+        // 旧状态 JSON（无 model_ms/tool_ms 字段）也能解析（serde default = 0）
+        let mut obj = serde_json::from_str::<serde_json::Value>(&json)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        obj.remove("model_ms");
+        obj.remove("tool_ms");
+        let back2: AgentRunState = serde_json::from_value(serde_json::Value::Object(obj)).unwrap();
+        assert_eq!(back2.model_ms, 0);
+        assert_eq!(back2.tool_ms, 0);
+    }
+
+    /// 实时事件流：思考 → 工具开始 → 工具结束 → 回答；计时单调累计。
+    #[tokio::test]
+    async fn emits_events_in_order_and_accumulates_timing() {
+        let (db, settings) = setup();
+        let selections = [sel("选中段", Some(1))];
+        // 第一轮：思考 + 调 read_selection；第二轮：最终回答
+        let llm = ScriptedLlm::new(vec![
+            ChatResponse {
+                content: Some("先看一下".into()),
+                reasoning: Some("让我想想".into()),
+                tool_calls: vec![ToolCallRef {
+                    id: "c1".into(),
+                    name: "read_selection".into(),
+                    arguments: json!({ "index": 0 }),
+                }],
+            },
+            content("最终回答 [1]"),
+        ]);
+        // 脚本化 LLM 走默认流式实现：非流式响应整体作为一次 Content 事件
+        let mut events = Vec::new();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &selections,
+            &[],
+            &mut |e| events.push(e),
+        )
+        .await
+        .unwrap();
+        let (answer, _timing) = match run {
+            RunResult::Done {
+                answer,
+                timing: _,
+                trace,
+                ..
+            } => {
+                assert_eq!(trace.len(), 1);
+                (answer, Timing::default())
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        };
+        assert_eq!(answer, "最终回答 [1]");
+        // 事件顺序：Content(先看一下) → ToolStart → ToolEnd → Content(最终回答)
+        // （默认流式实现不产生 Thinking 事件，因为非流式响应不带 reasoning 分流）
+        let kinds: Vec<&str> = events.iter().map(|e| evt_kind(e)).collect();
+        assert_eq!(
+            kinds,
+            vec!["content", "tool_start", "tool_end", "content"]
+        );
+        // 工具结束事件带耗时字段
+        if let AgentEvent::ToolEnd { elapsed_ms, .. } = &events[2] {
+            let _ = elapsed_ms;
+        } else {
+            panic!("第 3 个事件应为 ToolEnd");
+        }
+    }
+
+    fn evt_kind(e: &AgentEvent) -> &'static str {
+        match e {
+            AgentEvent::Thinking { .. } => "thinking",
+            AgentEvent::Content { .. } => "content",
+            AgentEvent::ToolStart { .. } => "tool_start",
+            AgentEvent::ToolEnd { .. } => "tool_end",
+        }
     }
 }

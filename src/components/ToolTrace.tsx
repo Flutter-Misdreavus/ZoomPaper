@@ -1,6 +1,12 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-react";
 import type { ToolStep } from "@/lib/api";
+
+/** 实时轨迹条目：ToolStep + 运行态（生成中）与单工具耗时 */
+export type LiveToolStep = ToolStep & {
+  running?: boolean;
+  elapsed_ms?: number;
+};
 
 /** 把工具参数压成短预览文本（截断） */
 function argsPreview(args: unknown): string {
@@ -13,11 +19,16 @@ function argsPreview(args: unknown): string {
   }
 }
 
-/** agent 深度模式的「工具调用轨迹」折叠条：工具名 + 参数 + 结果摘要（错误红色） */
-export function ToolTrace({ trace }: { trace?: ToolStep[] | null }) {
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+/** agent 深度模式的「工具调用轨迹」折叠条：工具名 + 参数 + 状态/摘要（错误红色） */
+export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
   const [open, setOpen] = useState(false);
   if (!trace || trace.length === 0) return null;
   const errors = trace.filter((t) => t.error).length;
+  const running = trace.some((t) => t.running);
 
   return (
     <div className="mt-2">
@@ -33,6 +44,7 @@ export function ToolTrace({ trace }: { trace?: ToolStep[] | null }) {
         )}
         <Wrench className="h-3 w-3" />
         工具调用（{trace.length}）
+        {running && <span className="text-primary">· 执行中</span>}
         {errors > 0 && <span className="text-destructive">· {errors} 个失败</span>}
       </button>
       {open && (
@@ -49,17 +61,29 @@ export function ToolTrace({ trace }: { trace?: ToolStep[] | null }) {
             ) : (
               <div key={i} className="rounded-md px-1.5 py-1 text-xs">
                 <div className="flex items-baseline gap-1.5">
+                  {step.running ? (
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
+                  ) : null}
                   <code className="shrink-0 rounded bg-muted px-1 py-0.5 text-[11px]">
                     {step.name}
                   </code>
                   <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground/80">
                     {argsPreview(step.args)}
                   </span>
-                  {step.error ? (
+                  {step.running ? (
+                    <span className="shrink-0 text-primary">
+                      {step.elapsed_ms != null ? fmtMs(step.elapsed_ms) : "执行中"}
+                    </span>
+                  ) : step.error ? (
                     <span className="shrink-0 text-destructive">失败</span>
                   ) : (
                     step.summary && (
-                      <span className="shrink-0 text-muted-foreground">{step.summary}</span>
+                      <span className="shrink-0 text-muted-foreground">
+                        {step.summary}
+                        {step.elapsed_ms != null && step.elapsed_ms > 0
+                          ? ` · ${fmtMs(step.elapsed_ms)}`
+                          : ""}
+                      </span>
                     )
                   )}
                 </div>

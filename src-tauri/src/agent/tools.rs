@@ -60,6 +60,7 @@ pub enum ToolKind {
     WebSearch,
     WebFetch,
     ReadSelection,
+    AskUser,
 }
 
 impl ToolKind {
@@ -75,6 +76,7 @@ impl ToolKind {
             Self::WebSearch => "web_search",
             Self::WebFetch => "web_fetch",
             Self::ReadSelection => "read_selection",
+            Self::AskUser => "ask_user",
         }
     }
 
@@ -90,6 +92,7 @@ impl ToolKind {
             Self::WebSearch => "联网搜索资料（返回来源列表与摘录）。",
             Self::WebFetch => "抓取指定 URL 的网页正文（转 markdown）。",
             Self::ReadSelection => "读取用户选中的一段论文原文（带页码）。",
+            Self::AskUser => "向用户提问澄清（问题有歧义或需要用户选择研究方向时使用，每轮最多一次）。",
         }
     }
 
@@ -154,6 +157,14 @@ impl ToolKind {
                     "index": { "type": "number", "description": "用户选中段落的编号（从 0 开始）" },
                 }),
             ),
+            Self::AskUser => obj(
+                &["question"],
+                json!({
+                    "question": { "type": "string", "description": "向用户提出的澄清问题，应具体、可回答" },
+                    "options": { "type": "array", "items": { "type": "string" }, "maxItems": 4, "description": "候选选项（用户点击即答）；省略则仅自由输入" },
+                    "free_text": { "type": "boolean", "description": "是否允许用户自由输入，默认 true" },
+                }),
+            ),
         }
     }
 }
@@ -172,6 +183,7 @@ pub fn build_tools(
         ToolKind::ListPapers,
         ToolKind::ReadAnnotations,
         ToolKind::ReadTranslation,
+        ToolKind::AskUser,
     ];
     if settings.web_search_available().is_some() {
         tools.push(ToolKind::WebSearch);
@@ -185,6 +197,8 @@ pub fn build_tools(
 }
 
 /// 执行一个工具（顺序执行；`offset` 为当前全局引用编号起点，工具内部编号顺延）。
+///
+/// 注意：`AskUser` 由循环层（agent::drive_loop）拦截处理，不经过本函数。
 pub async fn execute_tool(
     kind: ToolKind,
     ctx: &ToolCtx<'_>,
@@ -202,6 +216,7 @@ pub async fn execute_tool(
         ToolKind::WebSearch => web_search(ctx, args).await,
         ToolKind::WebFetch => web_fetch(ctx, args).await,
         ToolKind::ReadSelection => read_selection(ctx, args, offset),
+        ToolKind::AskUser => Err("ask_user 应由 agent 循环层处理".to_string()),
     }
 }
 
@@ -700,7 +715,13 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
     )
     .await?;
     let text = web::format_search_result(&result);
-    let summary = format!("{} 条来源", result.sources.len());
+    // 摘要收录前 2 个来源 URL（供研究记忆与轨迹展示）
+    let urls: Vec<&str> = result.sources.iter().take(2).map(|s| s.url.as_str()).collect();
+    let summary = if urls.is_empty() {
+        format!("{} 条来源", result.sources.len())
+    } else {
+        format!("{} 条来源：{}", result.sources.len(), urls.join(", "))
+    };
     Ok(ToolOutput {
         text,
         citations: vec![],
@@ -949,6 +970,7 @@ mod tests {
         assert!(!tools.contains(&ToolKind::WebSearch));
         assert!(tools.contains(&ToolKind::SearchPapers));
         assert!(!tools.contains(&ToolKind::ReadSelection));
+        assert!(tools.contains(&ToolKind::AskUser)); // 澄清工具恒可用
 
         s.web_search_provider = "auto".into();
         s.api_keys.deepseek = "sk-test".into();

@@ -3,7 +3,7 @@
 //! 复用 [`crate::rag::search`] 取 Top-K 段落、[`crate::ai::llm::Llm`] 生成回答；
 //! 回答文本用 `[n]` 标注引用，结构化引用见 [`Citation`]。会话持久化由命令层完成。
 
-use crate::ai::llm::{ChatMessage, Llm, Role};
+use crate::ai::llm::{ChatMessage, Role};
 use crate::db::models::SearchHit;
 use anyhow::Result;
 use rusqlite::Connection;
@@ -51,6 +51,19 @@ pub struct QaMessage {
     /// agent 模式下的工具调用轨迹（仅 assistant 消息携带；旧数据为 None）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<Vec<crate::agent::ToolStep>>,
+    /// AI 耗时记录（仅 assistant 消息携带；旧数据为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<crate::agent::Timing>,
+}
+
+/// ask_user 澄清请求（模型调用 ask_user 工具中断循环后随 Answer 返回）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingAsk {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    #[serde(default)]
+    pub free_text: bool,
 }
 
 /// `ask_question` 的返回：回答 + 引用 + 所属会话 id + 工具轨迹（agent 模式）。
@@ -62,6 +75,12 @@ pub struct Answer {
     /// agent 深度模式的工具调用轨迹；快速模式为空数组
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<crate::agent::ToolStep>,
+    /// AI 耗时记录（快速模式为零值）
+    #[serde(default)]
+    pub timing: crate::agent::Timing,
+    /// 模型请求澄清（answer 为空时携带）；无澄清为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingAsk>,
 }
 
 /// 按字符数截断（超长补省略号）。`pub(crate)` 供命令层截会话标题复用。
@@ -214,18 +233,6 @@ pub fn prepare(
     })
 }
 
-/// 用组装好的消息调 LLM（异步阶段，不持有 `&Connection`，保证 future 可 `Send`）。
-pub async fn ask(llm: &Llm, prepared: &Prepared) -> Result<(String, Vec<Citation>)> {
-    if prepared.empty {
-        return Ok((
-            "未检索到相关内容，请确认论文已解析并完成索引。".to_string(),
-            Vec::new(),
-        ));
-    }
-    let answer = llm.chat(&prepared.messages).await?;
-    Ok((answer, prepared.citations.clone()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,12 +278,14 @@ mod tests {
                 content: "什么是注意力？".into(),
                 citations: None,
                 trace: None,
+                timing: None,
             },
             QaMessage {
                 role: Role::Assistant,
                 content: "注意力是…".into(),
                 citations: None,
                 trace: None,
+                timing: None,
             },
         ];
         let msgs = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history);

@@ -792,7 +792,7 @@ fn load_or_create_conv(
     }
 }
 
-/// 快速问答（现有单轮 RAG 路径）。
+/// 快速问答（单轮 RAG，流式输出思考/正文并计时）。
 async fn quick_answer(
     db: &Db,
     llm: &Llm,
@@ -801,18 +801,230 @@ async fn quick_answer(
     history: &[QaMessage],
     top_k: usize,
     selections: &[crate::qa::SelectionInput],
-) -> Result<(String, Vec<Citation>), String> {
+    sink: &mut (dyn FnMut(crate::agent::AgentEvent) + Send),
+) -> Result<(String, Vec<Citation>, crate::agent::Timing), String> {
     // 检索 + 组装（同步，用完即释放数据库锁）
     let prepared = {
         let conn = db.conn();
         crate::qa::prepare(&conn, question, paper_id, history, top_k, selections)
             .map_err(|e| e.to_string())?
     };
-    crate::qa::ask(llm, &prepared).await.map_err(|e| e.to_string())
+    if prepared.empty {
+        return Ok((
+            "未检索到相关内容，请确认论文已解析并完成索引。".to_string(),
+            vec![],
+            crate::agent::Timing::default(),
+        ));
+    }
+    let t0 = std::time::Instant::now();
+    let answer = crate::ai::llm::stream_plain_chat(llm, &prepared.messages, &mut |evt| match evt {
+        crate::ai::llm::StreamEvent::Thinking(t) => {
+            sink(crate::agent::AgentEvent::Thinking { text: t })
+        }
+        crate::ai::llm::StreamEvent::Content(t) => {
+            sink(crate::agent::AgentEvent::Content { text: t })
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let model_ms = t0.elapsed().as_millis() as u64;
+    Ok((
+        answer,
+        prepared.citations.clone(),
+        crate::agent::Timing {
+            model_ms,
+            tool_ms: 0,
+        },
+    ))
+}
+
+// ---------- 会话级 agent 状态 / 研究记忆（ask_user 澄清 + 跨轮记忆） ----------
+
+/// 实时事件批处理：Thinking/Content 增量按 50ms / 80 字符合并发送（IPC 防抖）。
+const BATCH_FLUSH_INTERVAL_MS: u64 = 50;
+const BATCH_FLUSH_CHARS: usize = 80;
+
+struct EventBatcher<'a> {
+    channel: &'a tauri::ipc::Channel<crate::agent::AgentEvent>,
+    thinking: String,
+    content: String,
+    last_flush: std::time::Instant,
+}
+
+impl<'a> EventBatcher<'a> {
+    fn new(channel: &'a tauri::ipc::Channel<crate::agent::AgentEvent>) -> Self {
+        Self {
+            channel,
+            thinking: String::new(),
+            content: String::new(),
+            last_flush: std::time::Instant::now(),
+        }
+    }
+
+    fn push(&mut self, evt: crate::agent::AgentEvent) {
+        match evt {
+            crate::agent::AgentEvent::Thinking { text } => {
+                self.thinking.push_str(&text);
+                self.maybe_flush();
+            }
+            crate::agent::AgentEvent::Content { text } => {
+                self.content.push_str(&text);
+                self.maybe_flush();
+            }
+            other => {
+                self.flush();
+                let _ = self.channel.send(other);
+            }
+        }
+    }
+
+    fn maybe_flush(&mut self) {
+        let elapsed = self.last_flush.elapsed().as_millis() as u64;
+        let size = self.thinking.chars().count() + self.content.chars().count();
+        if elapsed >= BATCH_FLUSH_INTERVAL_MS || size >= BATCH_FLUSH_CHARS {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.thinking.is_empty() {
+            let text = std::mem::take(&mut self.thinking);
+            let _ = self.channel.send(crate::agent::AgentEvent::Thinking { text });
+        }
+        if !self.content.is_empty() {
+            let text = std::mem::take(&mut self.content);
+            let _ = self.channel.send(crate::agent::AgentEvent::Content { text });
+        }
+        self.last_flush = std::time::Instant::now();
+    }
+}
+
+/// agent 澄清状态过期时间（秒）：30 分钟。
+const AGENT_STATE_TTL_SECS: i64 = 30 * 60;
+
+fn write_messages(
+    conn: &rusqlite::Connection,
+    conv_id: &str,
+    history: &[QaMessage],
+    now: i64,
+) -> Result<(), String> {
+    let messages_json = serde_json::to_string(history).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
+        params![conv_id, messages_json, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn clear_agent_state(db: &Db, conv_id: &str) -> Result<(), String> {
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE conversations SET agent_state = NULL WHERE id = ?1",
+        [conv_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn save_agent_state(
+    db: &Db,
+    conv_id: &str,
+    state: &crate::agent::AgentRunState,
+) -> Result<(), String> {
+    let json = serde_json::to_string(state).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE conversations SET agent_state = ?2, updated_at = ?3 WHERE id = ?1",
+        params![conv_id, json, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn load_agent_state(db: &Db, conv_id: &str) -> Result<Option<crate::agent::AgentRunState>, String> {
+    let conn = db.conn();
+    // 列为 NULL（新会话/无澄清）→ None；行不存在 → None
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT agent_state FROM conversations WHERE id = ?1",
+            [conv_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    match raw {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => Ok(None),
+        Some(s) => serde_json::from_str(&s)
+            .map(Some)
+            .map_err(|e| format!("解析 agent 状态失败: {e}")),
+    }
+}
+
+fn load_memory(
+    db: &Db,
+    conv_id: &str,
+) -> Result<Vec<crate::agent::memory::MemoryEntry>, String> {
+    let conn = db.conn();
+    // 列为 NULL（新会话/未生成记忆）→ 空数组；行不存在 → 空数组
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT agent_memory FROM conversations WHERE id = ?1",
+            [conv_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+    match raw {
+        None => Ok(vec![]),
+        Some(s) if s.trim().is_empty() => Ok(vec![]),
+        Some(s) => serde_json::from_str(&s).map_err(|e| format!("解析研究记忆失败: {e}")),
+    }
+}
+
+fn save_memory(
+    db: &Db,
+    conv_id: &str,
+    entries: &[crate::agent::memory::MemoryEntry],
+) -> Result<(), String> {
+    let json = serde_json::to_string(entries).map_err(|e| e.to_string())?;
+    let conn = db.conn();
+    conn.execute(
+        "UPDATE conversations SET agent_memory = ?2 WHERE id = ?1",
+        params![conv_id, json],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 一轮完成后更新研究记忆：trace 非空才生成确定性条目并追加（超限自动压缩）。
+async fn update_memory(
+    db: &Db,
+    llm: &Llm,
+    conv_id: &str,
+    memory: Vec<crate::agent::memory::MemoryEntry>,
+    question: &str,
+    citations: &[Citation],
+    trace: &[crate::agent::ToolStep],
+    now: i64,
+) -> Result<Vec<crate::agent::memory::MemoryEntry>, String> {
+    if trace.is_empty() {
+        return Ok(memory);
+    }
+    let entry = crate::agent::memory::build_memory_entry(question, citations, trace);
+    let entries = crate::agent::memory::append_memory(llm, memory, entry, now).await;
+    save_memory(db, conv_id, &entries)?;
+    Ok(entries)
 }
 
 /// 一轮问答（agent 深度研究 / quick 快速），并持久化到 conversations。
-/// `mode`：`"quick" | "agent"`，缺省 `"agent"`。agent 失败时自动回退 quick。
+/// `mode`：`"quick" | "agent"`，缺省 `"agent"`。agent 失败时自动回退 quick；
+/// agent 模式下模型可调用 ask_user 澄清：返回 `Answer.pending`，由
+/// `ask_question_reply` 续跑。`on_event`：实时事件流（思考/正文/工具状态）。
 #[tauri::command]
 pub async fn ask_question(
     db: State<'_, Db>,
@@ -822,6 +1034,7 @@ pub async fn ask_question(
     top_k: Option<usize>,
     selections: Option<Vec<crate::qa::SelectionInput>>,
     mode: Option<String>,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<Answer, String> {
     let mode = mode.unwrap_or_else(|| "agent".to_string());
     let top_k = top_k.unwrap_or(5);
@@ -839,94 +1052,326 @@ pub async fn ask_question(
     )?;
     let selections = selections.as_deref().unwrap_or_default();
 
-    // 执行（agent 或 quick；agent 失败回退 quick）
-    let (answer, citations, trace) = if mode == "quick" {
-        let (a, c) = quick_answer(&db, &llm, &question, paper_id.as_deref(), &history, top_k, selections)
-            .await?;
-        (a, c, Vec::new())
-    } else {
-        match crate::agent::run_agent(
-            &llm,
+    // 实时事件转发（Thinking/Content 批处理防抖）
+    let mut batcher = EventBatcher::new(&on_event);
+    let mut sink = |evt: crate::agent::AgentEvent| batcher.push(evt);
+
+    if mode == "quick" {
+        let (answer, citations, timing) = quick_answer(
             &db,
-            &settings,
+            &llm,
             &question,
             paper_id.as_deref(),
             &history,
+            top_k,
             selections,
+            &mut sink,
         )
-        .await
-        {
-            Ok(out) => (out.answer, out.citations, out.trace),
-            Err(agent_err) => {
-                // 回退：快速问答（模型不支持工具等场景），并在轨迹中标记回退原因
-                match quick_answer(
-                    &db,
-                    &llm,
-                    &question,
-                    paper_id.as_deref(),
-                    &history,
-                    top_k,
-                    selections,
-                )
-                .await
-                {
-                    Ok((a, c)) => {
-                        let mut trace = Vec::new();
-                        trace.push(crate::agent::ToolStep {
-                            name: "quick_fallback".to_string(),
-                            args: serde_json::Value::Null,
-                            summary: format!(
-                                "深度研究不可用，已回退到快速问答：{}",
-                                crate::qa::truncate(&agent_err.to_string(), 300)
-                            ),
-                            error: None,
-                        });
-                        (a, c, trace)
-                    }
-                    Err(_) => {
-                        return Err(format!(
-                            "深度研究失败（已尝试回退到快速问答，仍失败）：{agent_err}"
-                        ))
-                    }
-                }
-            }
-        }
-    };
-
-    // 追加 user + assistant 两条消息并写回（assistant 携带引用与工具轨迹）
-    {
-        let conn = db.conn();
-        let mut history = history;
-        history.push(QaMessage {
+        .await?;
+        batcher.flush();
+        let mut hist = history;
+        hist.push(QaMessage {
             role: Role::User,
             content: question.clone(),
             citations: None,
             trace: None,
+            timing: None,
         });
-        history.push(QaMessage {
+        hist.push(QaMessage {
             role: Role::Assistant,
             content: answer.clone(),
             citations: Some(citations.clone()),
-            trace: if trace.is_empty() {
-                None
-            } else {
-                Some(trace.clone())
-            },
+            trace: None,
+            timing: Some(timing),
         });
-        let messages_json = serde_json::to_string(&history).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE conversations SET messages = ?2, updated_at = ?3 WHERE id = ?1",
-            params![&conv_id, messages_json, now],
-        )
-        .map_err(|e| e.to_string())?;
+        write_messages(&db.conn(), &conv_id, &hist, now)?;
+        return Ok(Answer {
+            conversation_id: conv_id,
+            answer,
+            citations,
+            trace: vec![],
+            timing,
+            pending: None,
+        });
     }
 
-    Ok(Answer {
-        conversation_id: conv_id,
-        answer,
-        citations,
-        trace,
-    })
+    // agent 模式：清陈旧澄清状态 → 立即持久化 user 消息 → 载入记忆 → 运行
+    clear_agent_state(&db, &conv_id)?;
+    {
+        let mut hist = history.clone();
+        hist.push(QaMessage {
+            role: Role::User,
+            content: question.clone(),
+            citations: None,
+            trace: None,
+            timing: None,
+        });
+        write_messages(&db.conn(), &conv_id, &hist, now)?;
+    }
+    let memory = load_memory(&db, &conv_id)?;
+
+    match crate::agent::run_agent(
+        &llm,
+        &db,
+        &settings,
+        &question,
+        paper_id.as_deref(),
+        &history,
+        selections,
+        &memory,
+        &mut sink,
+    )
+    .await
+    {
+        Ok(crate::agent::RunResult::Done {
+            answer,
+            citations,
+            trace,
+            timing,
+        }) => {
+            batcher.flush();
+            update_memory(&db, &llm, &conv_id, memory, &question, &citations, &trace, now).await?;
+            clear_agent_state(&db, &conv_id)?;
+            let mut hist = history;
+            hist.push(QaMessage {
+                role: Role::User,
+                content: question.clone(),
+                citations: None,
+                trace: None,
+                timing: None,
+            });
+            hist.push(QaMessage {
+                role: Role::Assistant,
+                content: answer.clone(),
+                citations: Some(citations.clone()),
+                trace: if trace.is_empty() {
+                    None
+                } else {
+                    Some(trace.clone())
+                },
+                timing: Some(timing),
+            });
+            write_messages(&db.conn(), &conv_id, &hist, now)?;
+            Ok(Answer {
+                conversation_id: conv_id,
+                answer,
+                citations,
+                trace,
+                timing,
+                pending: None,
+            })
+        }
+        Ok(crate::agent::RunResult::NeedInput {
+            question: q,
+            options,
+            free_text,
+            citations,
+            trace,
+            state,
+        }) => {
+            batcher.flush();
+            // 保存运行现场，前端提问后由 ask_question_reply 续跑
+            save_agent_state(&db, &conv_id, &state)?;
+            Ok(Answer {
+                conversation_id: conv_id,
+                answer: String::new(),
+                citations,
+                trace,
+                timing: crate::agent::Timing {
+                    model_ms: state.model_ms,
+                    tool_ms: state.tool_ms,
+                },
+                pending: Some(crate::qa::PendingAsk {
+                    question: q,
+                    options,
+                    free_text,
+                }),
+            })
+        }
+        Err(agent_err) => {
+            // 回退：快速问答（模型不支持工具等场景），并在轨迹中标记回退原因
+            match quick_answer(
+                &db,
+                &llm,
+                &question,
+                paper_id.as_deref(),
+                &history,
+                top_k,
+                selections,
+                &mut sink,
+            )
+            .await
+            {
+                Ok((answer, citations, timing)) => {
+                    batcher.flush();
+                    let trace = vec![crate::agent::ToolStep {
+                        name: "quick_fallback".to_string(),
+                        args: serde_json::Value::Null,
+                        summary: format!(
+                            "深度研究不可用，已回退到快速问答：{}",
+                            crate::qa::truncate(&agent_err.to_string(), 300)
+                        ),
+                        error: None,
+                    }];
+                    let mut hist = history;
+                    hist.push(QaMessage {
+                        role: Role::User,
+                        content: question.clone(),
+                        citations: None,
+                        trace: None,
+                        timing: None,
+                    });
+                    hist.push(QaMessage {
+                        role: Role::Assistant,
+                        content: answer.clone(),
+                        citations: Some(citations.clone()),
+                        trace: Some(trace.clone()),
+                        timing: Some(timing),
+                    });
+                    write_messages(&db.conn(), &conv_id, &hist, now)?;
+                    Ok(Answer {
+                        conversation_id: conv_id,
+                        answer,
+                        citations,
+                        trace,
+                        timing,
+                        pending: None,
+                    })
+                }
+                Err(_) => Err(format!(
+                    "深度研究失败（已尝试回退到快速问答，仍失败）：{agent_err}"
+                )),
+            }
+        }
+    }
+}
+
+/// 回答 AI 的澄清问题：载入 agent 运行现场，把回答回喂为 ask_user 的结果并续跑。
+#[tauri::command]
+pub async fn ask_question_reply(
+    db: State<'_, Db>,
+    conversation_id: String,
+    reply: String,
+    on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
+) -> Result<Answer, String> {
+    let reply = reply.trim().to_string();
+    if reply.is_empty() {
+        return Err("回答不能为空".into());
+    }
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+
+    // 校验会话与澄清状态（含过期检查）
+    let state = load_agent_state(&db, &conversation_id)?
+        .ok_or_else(|| "没有待澄清的问题（可能已过期或已处理），请重新提问".to_string())?;
+    if now - state.updated_at > AGENT_STATE_TTL_SECS {
+        clear_agent_state(&db, &conversation_id)?;
+        return Err("澄清已过期（超过 30 分钟），请重新提问".into());
+    }
+
+    // 历史：载入并持久化 reply 为 user 消息
+    let history: Vec<QaMessage> = {
+        let conn = db.conn();
+        let messages_json: String = conn
+            .query_row(
+                "SELECT messages FROM conversations WHERE id = ?1",
+                [&conversation_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("会话不存在: {e}"))?;
+        serde_json::from_str(&messages_json).map_err(|e| e.to_string())?
+    };
+    let mut hist = history;
+    hist.push(QaMessage {
+        role: Role::User,
+        content: reply.clone(),
+        citations: None,
+        trace: None,
+        timing: None,
+    });
+    write_messages(&db.conn(), &conversation_id, &hist, now)?;
+    let memory = load_memory(&db, &conversation_id)?;
+
+    // 实时事件转发（续跑段；暂停段的状态已在第一次返回时送达前端）
+    let mut batcher = EventBatcher::new(&on_event);
+    let mut sink = |evt: crate::agent::AgentEvent| batcher.push(evt);
+
+    match crate::agent::resume_agent(&llm, &db, &settings, state, &reply, &mut sink).await {
+        Ok(crate::agent::RunResult::Done {
+            answer,
+            citations,
+            trace,
+            timing,
+        }) => {
+            batcher.flush();
+            // 记忆条目以「原始问题」为主题；trace 含澄清前后全部工具
+            let entry_question = hist
+                .iter()
+                .find(|m| m.role == Role::User)
+                .map(|m| m.content.as_str())
+                .unwrap_or_default();
+            update_memory(
+                &db,
+                &llm,
+                &conversation_id,
+                memory,
+                entry_question,
+                &citations,
+                &trace,
+                now,
+            )
+            .await?;
+            clear_agent_state(&db, &conversation_id)?;
+            hist.push(QaMessage {
+                role: Role::Assistant,
+                content: answer.clone(),
+                citations: Some(citations.clone()),
+                trace: if trace.is_empty() {
+                    None
+                } else {
+                    Some(trace.clone())
+                },
+                timing: Some(timing),
+            });
+            write_messages(&db.conn(), &conversation_id, &hist, now)?;
+            Ok(Answer {
+                conversation_id,
+                answer,
+                citations,
+                trace,
+                timing,
+                pending: None,
+            })
+        }
+        Ok(crate::agent::RunResult::NeedInput {
+            question,
+            options,
+            free_text,
+            citations,
+            trace,
+            state,
+        }) => {
+            batcher.flush();
+            save_agent_state(&db, &conversation_id, &state)?;
+            Ok(Answer {
+                conversation_id,
+                answer: String::new(),
+                citations,
+                trace,
+                timing: crate::agent::Timing {
+                    model_ms: state.model_ms,
+                    tool_ms: state.tool_ms,
+                },
+                pending: Some(crate::qa::PendingAsk {
+                    question,
+                    options,
+                    free_text,
+                }),
+            })
+        }
+        Err(e) => Err(format!("深度研究续跑失败: {e}")),
+    }
 }
 
 /// 列出所有问答会话（按更新时间倒序）。
@@ -2137,5 +2582,70 @@ mod tests {
         assert_eq!(back.title, "Attention Is All You Need");
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// 回归：agent_state / agent_memory 列为 NULL（新会话）时必须读为空，不得报
+    /// 「Invalid column type Null」（rusqlite 用非 Option 类型读 NULL 列会抛错）。
+    #[test]
+    fn agent_state_and_memory_null_columns_load_as_empty() {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO conversations \
+             (id, type, title, messages, created_at, updated_at) \
+             VALUES ('c1', 'qa', '测试', '[]', 0, 0)",
+            [],
+        )
+        .unwrap();
+        let db = db::Db::from_connection(conn);
+
+        // 新会话：两列均为 NULL → 读为空（不得报类型错误）
+        assert!(load_agent_state(&db, "c1").unwrap().is_none());
+        assert!(load_memory(&db, "c1").unwrap().is_empty());
+        // 行不存在 → 空
+        assert!(load_agent_state(&db, "nope").unwrap().is_none());
+        assert!(load_memory(&db, "nope").unwrap().is_empty());
+
+        // 写入后能读回（roundtrip）
+        save_memory(
+            &db,
+            "c1",
+            &[crate::agent::memory::MemoryEntry {
+                text: "论文《A》· 第 3 页 · Method：…".into(),
+                at: 1,
+            }],
+        )
+        .unwrap();
+        let m = load_memory(&db, "c1").unwrap();
+        assert_eq!(m.len(), 1);
+        assert!(m[0].text.contains("论文《A》"));
+
+        // agent_state 写入/读回
+        let state = crate::agent::AgentRunState {
+            messages: vec![],
+            step: 2,
+            citations: vec![],
+            trace: vec![],
+            paper_id: None,
+            selections: vec![],
+            pending_call: crate::ai::llm::ToolCallRef {
+                id: "c1".into(),
+                name: "ask_user".into(),
+                arguments: serde_json::json!({ "question": "?" }),
+            },
+            question: "问题".into(),
+            asked_user: true,
+            updated_at: 1,
+            model_ms: 0,
+            tool_ms: 0,
+        };
+        save_agent_state(&db, "c1", &state).unwrap();
+        let loaded = load_agent_state(&db, "c1").unwrap().expect("应能读回状态");
+        assert_eq!(loaded.step, 2);
+        assert!(loaded.asked_user);
+        // 清理后为 None
+        clear_agent_state(&db, "c1").unwrap();
+        assert!(load_agent_state(&db, "c1").unwrap().is_none());
     }
 }

@@ -22,7 +22,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 sqlite-vec = "0.1"
 zerocopy = "0.7"
 fastembed = "5"
-reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+reqwest = { version = "=0.12.24", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
+futures-util = "0.3"
 zip = "2"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"

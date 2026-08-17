@@ -94,6 +94,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE conversations ADD COLUMN concept_index INTEGER;
     "#,
+    // v8：agent 深度研究会话状态。
+    // agent_state：进行中的 agent 运行现场 JSON（ask_user 澄清中断时保存，供 ask_question_reply 续跑）；
+    // agent_memory：研究记忆条目数组 JSON（跨轮复用已查证来源的定位索引）。
+    r#"
+    ALTER TABLE conversations ADD COLUMN agent_state TEXT;
+    ALTER TABLE conversations ADD COLUMN agent_memory TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -136,7 +143,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 8);
 
         // 论文数据无损
         let title: String = conn
@@ -175,6 +182,8 @@ mod tests {
             .unwrap();
         assert!(cols.contains(&"feynman_state".to_string()));
         assert!(cols.contains(&"concept_index".to_string())); // v7
+        assert!(cols.contains(&"agent_state".to_string())); // v8
+        assert!(cols.contains(&"agent_memory".to_string())); // v8
         let legacy_state: Option<String> = conn
             .query_row(
                 "SELECT feynman_state FROM conversations WHERE id = 'paper-1'",

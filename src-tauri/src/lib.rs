@@ -65,6 +65,7 @@ pub fn run() {
             commands::remove_papers_from_folder,
             commands::rename_paper,
             commands::ask_question,
+            commands::ask_question_reply,
             commands::list_conversations,
             commands::get_conversation,
             commands::feynman_turn,
