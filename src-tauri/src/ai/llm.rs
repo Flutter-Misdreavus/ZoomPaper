@@ -328,6 +328,22 @@ impl LlmChat for Llm {
     }
 }
 
+/// 从字节缓冲中切出所有**完整行**（以 `\n` 结尾）并解码交给 `on_line`。
+///
+/// SSE 数据行以 `\n` 分隔；`\n`（0x0A）绝不会作为 UTF-8 续字节出现，因此在
+/// `\n` 处切分不会切开多字节字符——跨网络 chunk 被拆开的中文等字符先留在
+/// 字节缓冲里，等字节完整后再整体解码，避免 `from_utf8_lossy` 逐 chunk 处理
+/// 产生 U+FFFD（�）。
+fn drain_lines(buf: &mut Vec<u8>, on_line: &mut dyn FnMut(String)) {
+    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line = String::from_utf8_lossy(&buf[..pos])
+            .trim_end_matches('\r')
+            .to_string();
+        buf.drain(..=pos);
+        on_line(line);
+    }
+}
+
 /// OpenAI 兼容端流式调用：`stream: true` + SSE 解析。
 async fn stream_openai_compat(
     base_url: &str,
@@ -352,19 +368,19 @@ async fn stream_openai_compat(
         anyhow::bail!("LLM 返回错误 {status}: {b}");
     }
     let mut parser = OpenAiStreamParser::default();
-    let mut buf = String::new();
+    // 字节缓冲：多字节 UTF-8 字符可能被拆到相邻 chunk，若逐 chunk 做
+    // from_utf8_lossy 会产生 U+FFFD（�）；改为按 `\n`（ASCII，绝不作为
+    // UTF-8 续字节）切出完整行后再解码，保证中文等字符不损坏。
+    let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("读取流失败")?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        // 逐行处理（chunk 可能截断行，用 buf 缓冲）
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim_end_matches('\r').to_string();
-            buf.drain(..=pos);
+        buf.extend_from_slice(&chunk);
+        drain_lines(&mut buf, &mut |line| {
             if let Some(evt) = parser.push_line(&line) {
                 on_event(evt);
             }
-        }
+        });
     }
     parser.finish()
 }
@@ -393,18 +409,17 @@ async fn stream_anthropic(
         anyhow::bail!("LLM 返回错误 {status}: {b}");
     }
     let mut parser = AnthropicStreamParser::default();
-    let mut buf = String::new();
+    // 同上：字节缓冲 + 完整行解码，避免跨 chunk 的 UTF-8 字符被 lossy 损坏
+    let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("读取流失败")?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim_end_matches('\r').to_string();
-            buf.drain(..=pos);
+        buf.extend_from_slice(&chunk);
+        drain_lines(&mut buf, &mut |line| {
             if let Some(evt) = parser.push_line(&line) {
                 on_event(evt);
             }
-        }
+        });
     }
     parser.finish()
 }
@@ -1117,6 +1132,38 @@ mod tests {
         assert_eq!(resp.tool_calls[0].id, "tu1");
         assert_eq!(resp.tool_calls[0].name, "read_section");
         assert_eq!(resp.tool_calls[0].arguments["topic"], "方法");
+    }
+
+    #[test]
+    fn drain_lines_preserves_multibyte_chars_across_chunks() {
+        // 模拟：一条含中文的 SSE 数据行被网络拆成多个 chunk，且 3 字节中文字符
+        // 恰好被切开（0xE6 0xAD 0x90 是「正」的 UTF-8 编码前两字节+后一字节）
+        let mut buf: Vec<u8> = Vec::new();
+        // 「正」= E6 AD A3：第一段只给首字节 E6，模拟字符被网络拆开
+        buf.extend_from_slice("data: {\"content\":\"".as_bytes());
+        buf.extend_from_slice(&[0xE6]);
+        // 第二段补全「正」的剩余字节 + 下一个字符「确」
+        buf.extend_from_slice(&[0xAD, 0xA3]);
+        buf.extend_from_slice("确\"}\n".as_bytes());
+        let mut lines = Vec::new();
+        drain_lines(&mut buf, &mut |l| lines.push(l));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("正确"), "跨 chunk 的中文字符不应损坏: {:?}", lines[0]);
+        assert!(!lines[0].contains('\u{fffd}'), "不应出现 U+FFFD 替换符");
+        assert!(buf.is_empty(), "缓冲应被清空");
+    }
+
+    #[test]
+    fn drain_lines_keeps_partial_tail_in_buffer() {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice("data: x\n".as_bytes());
+        buf.extend_from_slice("data: 未完".as_bytes());
+        let mut lines = Vec::new();
+        drain_lines(&mut buf, &mut |l| lines.push(l));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "data: x");
+        // 未以 \n 结尾的尾部保留在字节缓冲（可能含半截字符，等下一 chunk 补全）
+        assert!(!buf.is_empty());
     }
 
     #[tokio::test]
