@@ -15,8 +15,8 @@ function fmtDuration(ms: number): string {
 }
 
 /**
- * AI 思考链胶囊：**默认收纳**，形式同网页版 AI 对话——生成中显示「AI 思考中…」、
- * 完成后显示「已深度思考（用时 X 秒）」，点击展开查看思考内容。
+ * 「思考」区：思考链胶囊，**默认收纳**——生成中显示「AI 思考中…」、
+ * 完成后显示「已深度思考（用时 X 秒）」；展开后为带「思考」区块头的滚动文本块。
  * 思考内容不持久化，仅本次会话内可回顾。
  */
 export function ThinkingPanel({ text, streaming, durationMs }: Props) {
@@ -39,7 +39,7 @@ export function ThinkingPanel({ text, streaming, durationMs }: Props) {
       : `思考过程（${text.length} 字）`;
 
   return (
-    <div className="flex flex-col items-start">
+    <div className="flex w-full flex-col items-start">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -54,12 +54,19 @@ export function ThinkingPanel({ text, streaming, durationMs }: Props) {
         )}
       </button>
       {open && (
-        <div
-          ref={ref}
-          className="mt-1.5 max-h-[40vh] w-full max-w-[85%] overflow-y-auto whitespace-pre-wrap rounded-lg border bg-background/50 p-2.5 text-xs leading-relaxed text-muted-foreground"
-        >
-          {text}
-          {streaming && <span className="animate-pulse">▍</span>}
+        <div className="mt-1.5 w-full overflow-hidden rounded-lg border bg-muted/30">
+          <div className="flex items-center gap-1 border-b bg-muted/40 px-2.5 py-1 text-[10px] text-muted-foreground/80">
+            <Brain className="h-3 w-3" />
+            思考
+            {streaming && <span className="ml-auto animate-pulse">生成中…</span>}
+          </div>
+          <div
+            ref={ref}
+            className="max-h-[40vh] overflow-y-auto whitespace-pre-wrap px-2.5 py-2 text-xs leading-relaxed text-muted-foreground"
+          >
+            {text}
+            {streaming && <span className="animate-pulse">▍</span>}
+          </div>
         </div>
       )}
     </div>
