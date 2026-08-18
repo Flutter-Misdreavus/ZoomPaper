@@ -87,7 +87,7 @@ impl ToolKind {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::SearchPapers => "在本地论文知识库中做语义检索，返回相关段落（带 [n] 引用编号）。",
+            Self::SearchPapers => "在本地论文知识库中做语义检索，返回相关段落（带 [n] 引用编号）。省略 paper_id 时检索当前会话绑定的论文（阅读页会话应优先使用当前论文）；确需其他论文时才传入 paper_id。",
             Self::ReadSection => "精读某篇论文中与某个主题最相关的章节全文（可多章节），返回带 [n] 引用编号。",
             Self::GetOutline => "获取某篇论文的章节目录（TOC），了解论文结构。",
             Self::GetPaperMeta => "获取某篇论文的元数据：标题、作者、摘要、解析状态。",

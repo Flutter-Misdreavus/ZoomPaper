@@ -12,6 +12,15 @@ use serde::{Deserialize, Serialize};
 /// RAG 问答 system prompt：只依据上下文，用 [n] 标注引用，缺失则明说。
 const QA_SYSTEM_PROMPT: &str = "你是一个论文知识库问答助手。\n\n规则：\n1. 只依据下面提供的【上下文资料】回答，引用某段资料时用 [n] 标注（n 为该资料的编号）。\n2. 资料里没有的信息就明确说「资料中没有相关信息」，不要编造。\n3. 用中文回答，简洁准确。";
 
+/// 绑定论文（阅读页会话）时追加的系统提示段：强调当前论文优先，不要用通用知识替代论文内容。
+fn bound_paper_prompt(title: &str) -> String {
+    format!(
+        "\n\n当前阅读论文《{title}》：问题围绕这篇论文展开，回答应优先锚定这篇论文的内容；\
+         上下文资料（除用户选中段落外）均来自该论文。不要用通用知识或猜测替代论文内容，\
+         资料中与论文直接相关的信息优先采用。"
+    )
+}
+
 /// 引用 snippet 截断长度（字符）。
 const SNIPPET_CHARS: usize = 200;
 
@@ -115,10 +124,22 @@ pub fn build_context(hits: &[SearchHit], offset: usize) -> String {
 }
 
 /// 组装对话消息：system + 历史轮次 + 当前问题（含上下文）。
-pub fn build_messages(question: &str, context: &str, history: &[QaMessage]) -> Vec<ChatMessage> {
+///
+/// `paper_title`：阅读页会话绑定论文的标题；`Some` 时在 system 提示中追加「当前阅读论文」
+/// 段（强调优先锚定该论文），`None`（跨论文会话）时保持原提示。
+pub fn build_messages(
+    question: &str,
+    context: &str,
+    history: &[QaMessage],
+    paper_title: Option<&str>,
+) -> Vec<ChatMessage> {
+    let system = match paper_title {
+        Some(t) if !t.trim().is_empty() => format!("{QA_SYSTEM_PROMPT}{}", bound_paper_prompt(t)),
+        _ => QA_SYSTEM_PROMPT.to_string(),
+    };
     let mut messages = vec![ChatMessage {
         role: Role::System,
-        content: QA_SYSTEM_PROMPT.to_string(),
+        content: system,
     }];
     for m in history {
         messages.push(ChatMessage {
@@ -170,6 +191,14 @@ pub fn prepare(
     selections: &[SelectionInput],
 ) -> Result<Prepared> {
     let hits = crate::rag::search(conn, question, top_k, paper_id)?;
+    // 阅读页会话绑定论文的标题：用于 system 提示「当前阅读论文」段与选中段落引用标注；
+    // 查询失败回退「当前论文」。
+    let paper_title: Option<String> = paper_id.map(|pid| {
+        conn.query_row("SELECT title FROM papers WHERE id = ?1", [pid], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap_or_else(|_| "当前论文".to_string())
+    });
     // 过滤空文本并截断（防御），按序编号
     let sels: Vec<(String, Option<i64>)> = selections
         .iter()
@@ -189,14 +218,7 @@ pub fn prepare(
     // 选中段落占 [1..=k]，检索命中从 k+1 起
     let offset = sels.len();
     if offset > 0 {
-        let title = paper_id
-            .and_then(|pid| {
-                conn.query_row("SELECT title FROM papers WHERE id = ?1", [pid], |r| {
-                    r.get::<_, String>(0)
-                })
-                .ok()
-            })
-            .unwrap_or_else(|| "当前论文".to_string());
+        let title = paper_title.as_deref().unwrap_or("当前论文");
         for (i, (s, page)) in sels.iter().enumerate() {
             let idx = i + 1;
             let page_str = page
@@ -209,7 +231,7 @@ pub fn prepare(
                 index: idx,
                 chunk_id: -1, // 哨兵：非检索命中，无 chunk 可查
                 paper_id: paper_id.unwrap_or_default().to_string(),
-                paper_title: title.clone(),
+                paper_title: title.to_string(),
                 section: "用户选中段落".to_string(),
                 page_idx: *page,
                 snippet: truncate(s, SNIPPET_CHARS),
@@ -226,8 +248,10 @@ pub fn prepare(
     }
     context.push_str(&build_context(&hits, offset));
     citations.extend(citations_from_hits(&hits, offset));
+    // system 提示注入标题前截断（防超长标题撑爆提示词；引用 paper_title 仍用全名）
+    let prompt_title = paper_title.as_deref().map(|t| truncate(t, 120));
     Ok(Prepared {
-        messages: build_messages(question, &context, history),
+        messages: build_messages(question, &context, history, prompt_title.as_deref()),
         citations,
         empty: false,
     })
@@ -288,7 +312,7 @@ mod tests {
                 timing: None,
             },
         ];
-        let msgs = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history);
+        let msgs = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history, None);
         assert_eq!(msgs[0].role, Role::System);
         assert_eq!(msgs[1].role, Role::User);
         assert_eq!(msgs[1].content, "什么是注意力？");
@@ -296,6 +320,18 @@ mod tests {
         assert_eq!(msgs[3].role, Role::User);
         assert!(msgs[3].content.contains("它为何有效？"));
         assert!(msgs[3].content.contains("【上下文资料】"));
+        // 未绑定论文：system 保持原提示，不含「当前阅读论文」段
+        assert!(!msgs[0].content.contains("当前阅读论文"));
+
+        // 绑定论文：system 追加「当前阅读论文」段（含标题）
+        let bound = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history, Some("注意力论文"));
+        assert!(bound[0].content.contains("当前阅读论文《注意力论文》"));
+        assert!(bound[0].content.contains("优先锚定这篇论文的内容"));
+        // 超长标题注入提示词前被截断
+        let long_title = "长标题".repeat(80);
+        let bound2 = build_messages("问题", "ctx", &history, Some(&long_title));
+        assert!(bound2[0].content.contains("当前阅读论文《"));
+        assert!(bound2[0].content.chars().count() < 2000);
     }
 
     #[test]
@@ -361,6 +397,9 @@ mod tests {
         assert!(user_msg.content.contains("第 3 页"));
         assert!(user_msg.content.contains("记忆系统通过显式存储层保存信息"));
         assert!(user_msg.content.contains("检索增强生成（RAG）"));
+        // 绑定论文：system 提示含「当前阅读论文」段与论文标题
+        let system_msg = &prepared.messages[0];
+        assert!(system_msg.content.contains("当前阅读论文《测试论文》"));
 
         // 无选中段落 + 无 chunk → 判 empty（保持原行为）
         let prepared2 = prepare(&conn, "问题", Some("p1"), &[], 5, &[]).unwrap();

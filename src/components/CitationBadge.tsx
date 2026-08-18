@@ -9,13 +9,16 @@ interface Props {
   onJumpPage?: (pageIdx: number) => void;
   /** 跨论文问答场景：跳转到来源论文（可带页码） */
   onOpenPaper?: (paperId: string, pageIdx?: number) => void;
+  /** 阅读页会话绑定的论文 id：用于区分「本篇 / 他篇」引用来源（null = 跨论文会话不标注） */
+  currentPaperId?: string | null;
 }
 
 /** 回答正文中的 [n] 引用徽标，点击弹出原文出处 */
-export function CitationBadge({ index, citation, onJumpPage, onOpenPaper }: Props) {
+export function CitationBadge({ index, citation, onJumpPage, onOpenPaper, currentPaperId }: Props) {
   if (!citation) {
     return <sup className="text-muted-foreground">[{index}]</sup>;
   }
+  const isCurrent = currentPaperId != null && citation.paper_id === currentPaperId;
   return (
     <Popover>
       <PopoverTrigger
@@ -27,7 +30,21 @@ export function CitationBadge({ index, citation, onJumpPage, onOpenPaper }: Prop
       <PopoverContent className="w-80">
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate font-medium">{citation.paper_title}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-medium">{citation.paper_title}</span>
+              {currentPaperId != null && (
+                <span
+                  className={`shrink-0 rounded-sm px-1 py-px text-[10px] font-medium ${
+                    isCurrent
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                  title={isCurrent ? "当前阅读的论文" : "其他论文"}
+                >
+                  {isCurrent ? "本篇" : "他篇"}
+                </span>
+              )}
+            </span>
             {onJumpPage && citation.page_idx != null && (
               <button
                 onClick={() => onJumpPage(citation.page_idx!)}

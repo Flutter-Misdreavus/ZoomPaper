@@ -136,13 +136,28 @@ pub async fn run_agent<L: LlmChat>(
     memory: &[memory::MemoryEntry],
     sink: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<RunResult> {
+    // 阅读页会话绑定论文的标题（system 提示「当前论文优先」段用；查询失败回退占位）
+    let paper_title: Option<String> = paper_id.map(|pid| {
+        db.conn()
+            .query_row("SELECT title FROM papers WHERE id = ?1", [pid], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap_or_else(|_| "当前论文".to_string())
+    });
     let tools = tools::build_tools(settings, paper_id, selections);
     let web_enabled = tools.iter().any(|t| matches!(t, tools::ToolKind::WebSearch));
 
     let mut messages: Vec<AgentMsg> = Vec::new();
+    // system 提示注入标题前截断（防超长标题撑爆提示词）
+    let prompt_title = paper_title.as_deref().map(|t| truncate(t, 120));
     messages.push(AgentMsg::Plain(ChatMessage {
         role: Role::System,
-        content: build_system_prompt(web_enabled, selections.len(), memory),
+        content: build_system_prompt(
+            web_enabled,
+            selections.len(),
+            prompt_title.as_deref(),
+            memory,
+        ),
     }));
     for m in history {
         messages.push(AgentMsg::Plain(ChatMessage {
@@ -464,8 +479,18 @@ async fn drive_loop<L: LlmChat>(
     })
 }
 
-/// 动态 system prompt：base 研读指引 + 澄清说明 + 引用规则 + 记忆段 + 按启用状态拼接的工具指引段。
-fn build_system_prompt(web_enabled: bool, selections: usize, memory: &[memory::MemoryEntry]) -> String {
+/// 动态 system prompt：base 研读指引 + 【当前论文】段（绑定论文时）+ 澄清说明 + 引用规则 +
+/// 记忆段 + 按启用状态拼接的工具指引段。
+///
+/// `paper_title`：阅读页会话绑定论文的标题；`Some` 时注入「当前论文优先」段并弱化联网段
+/// （当前论文能回答就不联网）；`None`（跨论文会话）时保持原措辞。
+fn build_system_prompt(
+    web_enabled: bool,
+    selections: usize,
+    paper_title: Option<&str>,
+    memory: &[memory::MemoryEntry],
+) -> String {
+    let bound = paper_title.filter(|t| !t.trim().is_empty());
     let mut p = String::from(
         "你是一名论文研究助手，帮助用户深入理解论文。你可以调用工具从多个角度研读论文：\
          本地知识库语义检索、章节精读、章节目录、论文元数据、用户标注与译文。\n\n\
@@ -480,13 +505,35 @@ fn build_system_prompt(web_enabled: bool, selections: usize, memory: &[memory::M
          - 资料中没有的信息要明确说明「资料中没有相关信息」，不要编造。\n\n\
          要求：用中文回答，简洁准确。",
     );
+    // 绑定论文：注入「当前论文优先」段（阅读页会话的注意力锚点）
+    if let Some(title) = bound {
+        p.push_str(&format!(
+            "\n\n【当前论文】\n本会话正在阅读论文《{title}》。回答时：\n\
+             1. 优先从这篇论文取材：先 get_outline / get_paper_meta 了解结构，\
+             再 search_papers（省略 paper_id 即检索当前论文）/ read_section 精读相关章节；\n\
+             2. 当前论文能回答的问题，不要转向其他论文或联网搜索；\n\
+             3. 确需参考其他论文或联网资料时，回答中明确区分「本篇论文」「其他论文」「联网资料」，\
+             并优先引用本篇内容。"
+        ));
+    }
     if web_enabled {
-        p.push_str(
-            "\n\n联网搜索：当问题涉及论文之外的信息——该方向的最新进展、与其他工作的对比、\
-             背景资料、事实核验、作者/机构信息等——应当使用 web_search 查证后再回答；\
-             本地资料无法回答的问题也必须尝试联网搜索。对具体来源可用 web_fetch 获取全文，\
-             回答时以 markdown 链接形式引用来源。搜索无结果或报错时，换个说法重试一次。",
-        );
+        if bound.is_some() {
+            // 绑定论文：弱化联网段——当前论文优先，联网仅作补充并明确标注外部资料
+            p.push_str(
+                "\n\n联网搜索：当前论文能回答的问题优先从论文取材，不要联网；\
+                 确需外部信息（该方向的最新进展、与其他工作的对比、背景资料、事实核验、作者/机构信息等）\
+                 或当前论文确实无法回答时，再使用 web_search 查证。对具体来源可用 web_fetch 获取全文，\
+                 回答时以 markdown 链接形式引用来源，并明确标注为外部资料。搜索无结果或报错时，换个说法重试一次。",
+            );
+        } else {
+            // 跨论文会话：保持原措辞
+            p.push_str(
+                "\n\n联网搜索：当问题涉及论文之外的信息——该方向的最新进展、与其他工作的对比、\
+                 背景资料、事实核验、作者/机构信息等——应当使用 web_search 查证后再回答；\
+                 本地资料无法回答的问题也必须尝试联网搜索。对具体来源可用 web_fetch 获取全文，\
+                 回答时以 markdown 链接形式引用来源。搜索无结果或报错时，换个说法重试一次。",
+            );
+        }
     }
     if selections > 0 {
         p.push_str(&format!(
@@ -708,26 +755,57 @@ mod tests {
 
     #[test]
     fn system_prompt_web_section_follows_enablement() {
-        let with_web = build_system_prompt(true, 0, &[]);
+        // 跨论文会话（无绑定论文）：保持原措辞
+        let with_web = build_system_prompt(true, 0, None, &[]);
         assert!(with_web.contains("web_search"));
-        // 指令式触发规则
+        // 指令式触发规则（原措辞）
         assert!(with_web.contains("应当使用 web_search"));
-        let without = build_system_prompt(false, 0, &[]);
+        assert!(with_web.contains("必须尝试联网搜索"));
+        // 跨论文会话不注入「当前论文」段
+        assert!(!with_web.contains("【当前论文】"));
+        let without = build_system_prompt(false, 0, None, &[]);
         assert!(!without.contains("web_search"));
         assert!(without.contains("引用规则"));
         assert!(without.contains("ask_user")); // 澄清说明常驻
-        let with_sel = build_system_prompt(false, 3, &[]);
+        let with_sel = build_system_prompt(false, 3, None, &[]);
         assert!(with_sel.contains("read_selection"));
         // 记忆段注入
         let with_mem = build_system_prompt(
             false,
             0,
+            None,
             &[memory::MemoryEntry {
                 text: "论文《A》· 第 3 页 · Method：…".into(),
                 at: 1,
             }],
         );
         assert!(with_mem.contains("研究记忆"));
+    }
+
+    #[test]
+    fn system_prompt_prioritizes_bound_paper_and_softens_web() {
+        // 绑定论文 + 联网开：注入【当前论文】段，web 段弱化（不再强制联网）
+        let bound_web = build_system_prompt(true, 0, Some("注意力论文"), &[]);
+        assert!(bound_web.contains("【当前论文】"));
+        assert!(bound_web.contains("正在阅读论文《注意力论文》"));
+        assert!(bound_web.contains("优先从这篇论文取材"));
+        assert!(bound_web.contains("不要转向其他论文或联网搜索"));
+        assert!(bound_web.contains("本篇论文」「其他论文」「联网资料"));
+        // web 段弱化：保留工具名，但不再出现「必须尝试联网搜索」的强制措辞
+        assert!(bound_web.contains("web_search"));
+        assert!(bound_web.contains("当前论文能回答的问题优先从论文取材，不要联网"));
+        assert!(!bound_web.contains("必须尝试联网搜索"));
+        assert!(!bound_web.contains("应当使用 web_search"));
+
+        // 绑定论文但联网关闭：仍注入【当前论文】段，无 web 段
+        let bound_no_web = build_system_prompt(false, 0, Some("注意力论文"), &[]);
+        assert!(bound_no_web.contains("【当前论文】"));
+        assert!(!bound_no_web.contains("web_search"));
+
+        // 空标题视为未绑定
+        let empty_title = build_system_prompt(true, 0, Some("   "), &[]);
+        assert!(!empty_title.contains("【当前论文】"));
+        assert!(empty_title.contains("应当使用 web_search"));
     }
 
     // ---------- ask_user 澄清 ----------

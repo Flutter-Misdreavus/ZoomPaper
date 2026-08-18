@@ -65,9 +65,11 @@ interface AssistantBodyProps {
   citations: Citation[] | null | undefined;
   onOpenPaper?: (paperId: string, pageIdx?: number) => void;
   onJumpPage?: (pageIdx: number) => void;
+  /** 阅读页会话绑定的论文 id（区分引用来源「本篇/他篇」） */
+  currentPaperId?: string | null;
 }
 
-function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: AssistantBodyProps) {
+function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPaperId }: AssistantBodyProps) {
   return (
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
@@ -86,6 +88,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage }: Assistan
                   citation={citations?.find((c) => c.index === index)}
                   onOpenPaper={onOpenPaper}
                   onJumpPage={onJumpPage}
+                  currentPaperId={currentPaperId}
                 />
               );
             }
@@ -400,7 +403,9 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           <div className="flex flex-1 flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
             <MessageSquare className="h-10 w-10" />
             <p className="text-sm">
-              {paperId ? "就这篇论文提问，回答会附原文引用" : "跨论文提问，回答会附原文引用"}
+              {paperId
+                ? "就这篇论文提问，回答会优先依据本篇内容并附原文引用"
+                : "跨论文提问，回答会附原文引用"}
             </p>
           </div>
         ) : (
@@ -432,6 +437,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                     citations={m.citations}
                     onOpenPaper={onOpenPaper}
                     onJumpPage={onJumpPage}
+                    currentPaperId={paperId ?? null}
                   />
                   <TimingLine timing={m.timing} />
                 </div>
