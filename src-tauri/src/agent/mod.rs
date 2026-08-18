@@ -26,6 +26,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod html_extract;
 pub mod memory;
 pub mod tools;
 pub mod web;

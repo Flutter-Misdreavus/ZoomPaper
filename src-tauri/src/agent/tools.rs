@@ -8,8 +8,9 @@
 //! - 返回本地内容的工具自带全局编号 `[n]` 上下文块与结构化 [`Citation`]，
 //!   编号由调用方传入的 `offset` 决定（引用列表顺序累计，最终答案复用编号）。
 
-use crate::agent::web;
+use crate::agent::{html_extract, web};
 use crate::db::Db;
+use std::io::Read;
 use crate::qa::{truncate, Citation, SelectionInput};
 use crate::rag;
 use crate::settings::Settings;
@@ -21,6 +22,10 @@ use std::time::Duration;
 
 /// 单次工具结果的文本上限（字符），防上下文膨胀。
 pub const TOOL_RESULT_MAX_CHARS: usize = 12_000;
+/// web_fetch 总下载字节硬上限（防呆；到达后停止下载，用已提取内容输出）。
+const FETCH_DOWNLOAD_MAX_BYTES: usize = 10 * 1024 * 1024;
+/// web_fetch 提取文本预算（字符）：到达即断流。128k 可覆盖 GitHub README 等靠后正文。
+const FETCH_EXTRACT_TEXT_BUDGET: usize = 128_000;
 /// 引用 snippet 截断长度（字符）。
 const SNIPPET_CHARS: usize = 300;
 /// 用户标注/译文总字符预算。
@@ -749,7 +754,63 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
 }
 
 /// 9. 抓取网页正文（静态 HTML → markdown）。
-async fn web_fetch(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
+/// blocking 抓取 + 流式提取（在 spawn_blocking 内运行：
+/// html5ever Tokenizer 因 tendril 的 NonAtomic 引用计数而 !Send，不能跨 await 持有）。
+fn fetch_extract_blocking(
+    url: &str,
+) -> Result<(String, bool, reqwest::StatusCode), String> {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(reqwest::blocking::Client::new);
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .map_err(|e| format!("抓取失败: {e}"))?;
+    let status = resp.status();
+
+    // 流式提取：以「提取文本预算」而非「原始字节数」决定停止时机；
+    // 大页面（GitHub 等）只需下载到正文为止，彻底摆脱原始字节大小限制。
+    let mut extractor = html_extract::HtmlExtractor::new(FETCH_EXTRACT_TEXT_BUDGET);
+    let mut reader = resp;
+    let mut chunk = [0u8; 8192];
+    let mut downloaded = 0usize;
+    let mut is_html = false;
+    let mut first = true;
+    let mut body = String::new();
+    let mut hit_cap = false;
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        downloaded += n;
+        if first {
+            is_html = chunk[0] == b'<';
+            first = false;
+        }
+        if is_html {
+            extractor.feed(&chunk[..n]);
+            if extractor.stopped() {
+                break; // 文本预算达标，断流
+            }
+        } else {
+            body.push_str(&String::from_utf8_lossy(&chunk[..n]));
+        }
+        if downloaded >= FETCH_DOWNLOAD_MAX_BYTES {
+            hit_cap = true;
+            break; // 下载硬上限，断流
+        }
+    }
+    if is_html {
+        body = extractor.finish();
+    }
+    Ok((body, hit_cap, status))
+}
+
+async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
     let url = args["url"]
         .as_str()
         .map(str::trim)
@@ -758,31 +819,35 @@ async fn web_fetch(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("仅支持 http/https 链接".to_string());
     }
-    let resp = ctx
-        .http
-        .get(url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("抓取失败: {e}"))?;
-    let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
-    if bytes.len() > 200_000 {
-        return Err("页面过大（超过 200KB），已放弃抓取".to_string());
-    }
-    let raw = String::from_utf8_lossy(&bytes);
-    let body = if raw.trim_start().starts_with('<') {
-        html_to_markdown(&raw)
-    } else {
-        raw.to_string()
-    };
+    // 下载 + 提取整体放入 spawn_blocking（HtmlExtractor 非 Send，不能跨 await 持有）
+    let url_owned = url.to_string();
+    let (body, hit_cap, status) = tokio::task::spawn_blocking(move || {
+        fetch_extract_blocking(&url_owned)
+    })
+    .await
+    .map_err(|e| format!("抓取任务失败: {e}"))??;
+
     let status_note = if status.is_success() {
         String::new()
     } else {
         format!("（页面返回状态 {status}，内容可能不完整）\n")
     };
+    let cap_note = if hit_cap {
+        "\n（下载已达上限，内容可能不完整）"
+    } else {
+        ""
+    };
+    if body.trim().is_empty() {
+        return Ok(ToolOutput {
+            text: format!(
+                "{status_note}未提取到有效正文内容（页面可能为脚本渲染，或需要登录）。{cap_note}"
+            ),
+            citations: vec![],
+            summary: format!("抓取 {url}（无正文）"),
+        });
+    }
     Ok(ToolOutput {
-        text: truncate(&format!("{status_note}{body}"), TOOL_RESULT_MAX_CHARS),
+        text: truncate(&format!("{status_note}{body}{cap_note}"), TOOL_RESULT_MAX_CHARS),
         citations: vec![],
         summary: format!("抓取 {url}"),
     })
@@ -827,110 +892,6 @@ fn read_selection(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<Tool
         citations: vec![citation],
         summary: "选中段落".to_string(),
     })
-}
-
-// ---------- HTML → markdown（web_fetch 用） ----------
-
-/// 把静态 HTML 粗略转成 markdown（标题/段落/链接/列表，剔除脚本与导航等）。
-fn html_to_markdown(html: &str) -> String {
-    let doc = scraper::Html::parse_document(html);
-    let mut out = String::new();
-    if let Some(body) = doc.select(&scraper::Selector::parse("body").unwrap()).next() {
-        walk_element(body, &mut out);
-    }
-    // 压缩连续空行
-    let lines: Vec<&str> = out.lines().map(str::trim_end).collect();
-    let mut result = String::new();
-    let mut blank = false;
-    for line in lines {
-        if line.trim().is_empty() {
-            if !blank && !result.is_empty() {
-                result.push('\n');
-            }
-            blank = true;
-        } else {
-            result.push_str(line);
-            result.push('\n');
-            blank = false;
-        }
-    }
-    result
-}
-
-fn walk_element(el: scraper::ElementRef<'_>, out: &mut String) {
-    let name = el.value().name();
-    // 跳过与正文无关的节点
-    if matches!(
-        name,
-        "script" | "style" | "nav" | "header" | "footer" | "iframe" | "form" | "svg"
-            | "noscript" | "button" | "input"
-    ) {
-        return;
-    }
-    // 标题
-    if let Some(level) = name
-        .strip_prefix('h')
-        .and_then(|rest| rest.parse::<usize>().ok())
-    {
-        if level >= 1 && level <= 6 {
-            let t = el.text().collect::<String>();
-            let t = t.trim();
-            if !t.is_empty() {
-                out.push_str(&format!("{} {} \n", "#".repeat(level), t));
-            }
-        }
-        return;
-    }
-    // 链接
-    if name == "a" {
-        let t = el.text().collect::<String>();
-        let t = t.trim();
-        if let Some(href) = el.value().attr("href") {
-            if !t.is_empty() && (href.starts_with("http://") || href.starts_with("https://")) {
-                out.push_str(&format!("[{}]({})", t, href));
-                return;
-            }
-        }
-        if !t.is_empty() {
-            out.push_str(t);
-        }
-        return;
-    }
-    // 图片
-    if name == "img" {
-        if let Some(src) = el.value().attr("src") {
-            let alt = el.value().attr("alt").unwrap_or("");
-            if src.starts_with("http://") || src.starts_with("https://") {
-                out.push_str(&format!("![{alt}]({src})\n"));
-            }
-        }
-        return;
-    }
-    // 段落/块级：先输出文本行再递归（链接/行内元素由子节点追加）
-    let block = matches!(name, "p" | "div" | "section" | "article" | "blockquote" | "pre" | "table" | "tr" | "td" | "th");
-    if block {
-        let t = el.text().collect::<String>();
-        let t = t.trim();
-        if !t.is_empty() {
-            out.push_str(t);
-            out.push('\n');
-        }
-    }
-    if name == "li" {
-        let t = el.text().collect::<String>();
-        let t = t.trim();
-        if !t.is_empty() {
-            out.push_str("- ");
-            out.push_str(t);
-            out.push('\n');
-        }
-        return;
-    }
-    for child in el.children() {
-        if let Some(child_el) = scraper::ElementRef::wrap(child) {
-            walk_element(child_el, out);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1127,7 +1088,8 @@ mod tests {
     }
 
     #[test]
-    fn html_to_markdown_extracts_content() {
+    fn web_fetch_text_extraction_covers_html_markdown_cases() {
+        // 新提取器（html_extract）覆盖原 html_to_markdown 的场景（工具内联使用）
         let html = r#"
             <html><head><style>.x{}</style></head>
             <body>
@@ -1138,7 +1100,9 @@ mod tests {
               <script>var x = 1;</script>
             </body></html>
         "#;
-        let md = html_to_markdown(html);
+        let mut ex = crate::agent::html_extract::HtmlExtractor::new(100_000);
+        ex.feed(html.as_bytes());
+        let md = ex.finish();
         assert!(md.contains("# 标题一"));
         assert!(md.contains("第一段"));
         assert!(md.contains("[链接A](https://example.com/a)"));
