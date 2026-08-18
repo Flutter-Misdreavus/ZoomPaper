@@ -18,7 +18,7 @@ import { copyTextToClipboard } from "@/lib/utils";
 import {
   buildZhDoc,
   chunkMarkdown,
-  pairBlocks,
+  pairChunks,
   splitReferences,
   stripStandaloneImagesAndMath,
 } from "@/lib/translate";
@@ -61,6 +61,7 @@ function labelFor(docKey: string): string {
   if (bi) return `译文·第 ${Number(bi[1]) + 1} 段`;
   if (docKey === "trans:bi:refs") return "译文·参考文献";
   if (docKey.startsWith("trans:bi:rest:")) return "译文·未对齐段";
+  if (docKey.startsWith("trans:bi:zrest:")) return "译文·未对齐段（多余译文）";
   if (docKey === "trans:en") return "译文·纯英";
   if (docKey === "trans:zh") return "译文·纯中";
   return "译文";
@@ -69,7 +70,8 @@ function labelFor(docKey: string): string {
 /**
  * AI 翻译：把论文 paper.md 正文分块译成中文（参考文献不翻译、不进 LLM 省 token），
  * 本地缓存为 translation.json（带版本号）。纯英 = 完整原文；纯中 = 正文译文 + 末尾英文原版
- * 参考文献；对照 = 正文按段落逐段配对（英文段黑色 + 中文段浅蓝色）+ 末尾英文原版参考文献。
+ * 参考文献；对照 = 正文按段落逐段配对（英文段黑色 + 中文段浅蓝色）+ 末尾英文原版参考文献；
+ * 未配对的英文段（无中文译文）与多余中文段（多余译文）均完整展示并加徽标，绝不静默丢弃。
  *
  * 目录：扫描渲染后 DOM 的 h1–h6 构建 MacDown 风格大纲（对照模式跳过 .trans-zh 中文段标题，
  * 避免重复条目），点击平滑滚动 + 高亮闪烁，滚动时当前章节跟随高亮。
@@ -225,11 +227,8 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
 
   const doc = docFor();
   const needsTranslate = mode !== "en" && !chunks;
-  // 对照模式：正文（不含参考文献）与中文全文各自按段切分后配对
-  const bi =
-    mode === "bi" && chunks && body
-      ? pairBlocks(body, buildZhDoc(chunks))
-      : null;
+  // 对照模式：按翻译块逐块对齐（块内错位不传播到后续块；未对齐内容完整展示）
+  const bi = mode === "bi" && chunks ? pairChunks(chunks) : null;
 
   // 内容渲染后扫描 DOM 标题构建目录（对照模式跳过 .trans-zh 中文段，避免重复条目）
   useLayoutEffect(() => {
@@ -562,10 +561,13 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
           </div>
         ) : bi ? (
           <div className="flex flex-col gap-4">
-            {bi.enCount !== bi.zhCount && (
+            {(bi.restEn.length > 0 || bi.restZh.length > 0) && (
               <p className="text-xs text-muted-foreground">
-                英文 {bi.enCount} 段 / 中文 {bi.zhCount} 段，已按序配对前 {bi.pairs.length}
-                段，其余未对齐。
+                英文 {bi.enCount} 段 / 中文 {bi.zhCount} 段，已配对 {bi.pairs.length} 段
+                {bi.restEn.length > 0 &&
+                  `；英文未对齐 ${bi.restEn.length} 段（无中文译文）`}
+                {bi.restZh.length > 0 &&
+                  `；中文未对齐 ${bi.restZh.length} 段（多余译文）`}
               </p>
             )}
             {bi.pairs.map((p, i) => {
@@ -582,14 +584,35 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
                 </div>
               );
             })}
+            {/* 未配对英文段：缺中文译文，加徽标提示，内容不丢失 */}
             {bi.restEn.map((en, i) => (
               <div
                 key={`un-${i}`}
+                className="flex flex-col gap-1.5"
                 ref={(el) => registerContainer(el, `trans:bi:rest:${i}`)}
               >
+                <span className="inline-block w-fit rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                  无中文译文
+                </span>
                 <MarkdownView markdown={en} />
               </div>
             ))}
+            {/* 未配对中文段：多余译文，同样完整展示，不再静默丢弃 */}
+            {bi.restZh.map((zh, i) => {
+              const stripped = stripStandaloneImagesAndMath(zh).trim();
+              return stripped ? (
+                <div
+                  key={`zun-${i}`}
+                  className="flex flex-col gap-1.5"
+                  ref={(el) => registerContainer(el, `trans:bi:zrest:${i}`)}
+                >
+                  <span className="inline-block w-fit rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    多余译文
+                  </span>
+                  <MarkdownView markdown={stripped} className="trans-zh" />
+                </div>
+              ) : null;
+            })}
             {/* 末尾附英文原版参考文献（不翻译） */}
             {references && (
               <div
