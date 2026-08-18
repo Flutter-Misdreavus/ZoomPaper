@@ -330,6 +330,10 @@ export const listConversations = () =>
 export const getConversation = (conversationId: string) =>
   invoke<Conversation>("get_conversation", { conversationId });
 
+/** 删除单个问答会话（含其全部消息） */
+export const deleteConversation = (conversationId: string) =>
+  invoke<void>("delete_conversation", { conversationId });
+
 export const feynmanStart = (paperId: string) =>
   invoke<FeynmanTurn>("feynman_start", { paperId });
 

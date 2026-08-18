@@ -2,29 +2,25 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaChat } from "@/components/QaChat";
-import { listConversations, type Conversation } from "@/lib/api";
-import { MessageSquare, Plus } from "lucide-react";
+import { ConversationDeleteDialog } from "@/components/ConversationDeleteDialog";
+import { deleteConversation, listConversations, type Conversation } from "@/lib/api";
+import { formatTime } from "@/lib/utils";
+import { MessageSquare, Plus, Trash2 } from "lucide-react";
 
 interface Props {
   onOpenPaper: (paperId: string, pageIdx?: number) => void;
 }
 
-function formatTime(ts: number): string {
-  return new Date(ts * 1000).toLocaleString("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-/** 跨论文知识库问答：左侧会话列表 + 右侧对话区 */
+/** 跨论文知识库问答：左侧会话列表 + 右侧对话区（支持新建 / 选择 / 删除） */
 export function AskPage({ onOpenPaper }: Props) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** null = 新会话 */
   const [activeId, setActiveId] = useState<string | null>(null);
+  /** 待删除确认的会话 */
+  const [confirmDelete, setConfirmDelete] = useState<Conversation | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -41,6 +37,22 @@ export function AskPage({ onOpenPaper }: Props) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /** 确认删除：删除会话；若删的是当前会话则回到新会话 */
+  async function handleDeleteConfirm() {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await deleteConversation(confirmDelete.id);
+      if (activeId === confirmDelete.id) setActiveId(null);
+      setConfirmDelete(null);
+      void refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 gap-4">
@@ -60,18 +72,29 @@ export function AskPage({ onOpenPaper }: Props) {
             <p className="px-2 py-4 text-xs text-muted-foreground">暂无历史会话</p>
           ) : (
             conversations.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setActiveId(c.id)}
-                className={`pressable rounded-md px-3 py-2 text-left transition-colors ${
-                  activeId === c.id
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
-                }`}
-              >
-                <div className="truncate text-sm font-medium">{c.title || "未命名会话"}</div>
-                <div className="mt-0.5 text-xs opacity-70">{formatTime(c.updated_at)}</div>
-              </button>
+              <div key={c.id} className="group relative">
+                <button
+                  onClick={() => setActiveId(c.id)}
+                  className={`block w-full rounded-md px-3 py-2 pr-8 text-left transition-colors ${
+                    activeId === c.id
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
+                  }`}
+                >
+                  <div className="truncate text-sm font-medium">{c.title || "未命名会话"}</div>
+                  <div className="mt-0.5 text-xs opacity-70">{formatTime(c.updated_at)}</div>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDelete(c);
+                  }}
+                  title="删除会话"
+                  className="pressable absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/80 hover:text-destructive group-hover:opacity-100"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
             ))
           )}
         </div>
@@ -98,6 +121,14 @@ export function AskPage({ onOpenPaper }: Props) {
           }}
         />
       </section>
+
+      {/* 删除会话确认弹窗 */}
+      <ConversationDeleteDialog
+        conversation={confirmDelete}
+        deleting={deleting}
+        onConfirm={() => void handleDeleteConfirm()}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

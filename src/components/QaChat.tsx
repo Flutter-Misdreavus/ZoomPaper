@@ -61,6 +61,8 @@ interface Props {
   maxSelections?: number;
   /** 引用悬停层「跳转到原文」：跳回 PDF 选中段落所在位置 */
   onJumpToSelection?: (pageIdx: number, rects?: AnnotationRect[]) => void;
+  /** 发送状态变化回调（供外层在生成期间禁用会话切换等操作） */
+  onSendingChange?: (sending: boolean) => void;
 }
 
 // 把正文里的 [n] 改写成 markdown 链接，交给自定义 a 渲染成 CitationBadge
@@ -110,13 +112,18 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPap
   );
 }
 
-export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRemoveSelection, maxSelections, onJumpToSelection }: Props) {
+export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRemoveSelection, maxSelections, onJumpToSelection, onSendingChange }: Props) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 发送状态上报（外层据此禁用会话切换等操作）
+  useEffect(() => {
+    onSendingChange?.(sending);
+  }, [sending, onSendingChange]);
   /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
   const [mode, setMode] = useState<"quick" | "agent">("agent");
   /** 联网搜索开关（默认开；未配置 provider 时显示「未配置」提示） */

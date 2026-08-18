@@ -69,6 +69,7 @@ pub fn run() {
             commands::cancel_generation,
             commands::list_conversations,
             commands::get_conversation,
+            commands::delete_conversation,
             commands::feynman_turn,
             commands::feynman_start,
             commands::feynman_confirm_plan,

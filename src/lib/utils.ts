@@ -23,3 +23,14 @@ export async function copyTextToClipboard(text: string) {
   ta.remove();
 }
 
+/** unix 秒 → 「M月D日 HH:mm」本地时间 */
+export function formatTime(ts: number): string {
+  return new Date(ts * 1000).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+

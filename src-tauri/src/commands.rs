@@ -1550,6 +1550,26 @@ pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// 删除单个问答会话（含其 agent 状态与研究记忆列，随行删除）。
+#[tauri::command]
+pub fn delete_conversation(db: State<'_, Db>, conversation_id: String) -> Result<(), String> {
+    delete_conversation_inner(&db, &conversation_id)
+}
+
+fn delete_conversation_inner(db: &Db, conversation_id: &str) -> Result<(), String> {
+    let conn = db.conn();
+    let n = conn
+        .execute(
+            "DELETE FROM conversations WHERE id = ?1",
+            [conversation_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("会话不存在".into());
+    }
+    Ok(())
+}
+
 /// 读回单个会话（含完整 messages JSON）。
 #[tauri::command]
 pub fn get_conversation(
@@ -3148,5 +3168,57 @@ mod tests {
         assert!(!guard.flag().load(Ordering::Relaxed));
         drop(guard);
         assert!(!cancel_flags().lock().unwrap().contains_key("guard-tok"));
+    }
+
+    // ---------- 会话删除 ----------
+
+    #[test]
+    fn delete_conversation_removes_row_and_errors_on_missing() {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        // conversations.paper_id 外键 → 先建一篇论文
+        conn.execute(
+            "INSERT INTO papers (id, title, pdf_path, md_path) \
+             VALUES ('p1', '测试论文', '/x.pdf', '/x.md')",
+            [],
+        )
+        .unwrap();
+        let db = db::Db::from_connection(conn);
+
+        // 建两个会话（一个绑定论文，一个跨论文）
+        let (id1, _) = load_or_create_conv(&db, "问题一", Some("p1"), None, 100).unwrap();
+        let (id2, _) = load_or_create_conv(&db, "问题二", None, None, 101).unwrap();
+
+        let qa_count = |db: &Db| -> i64 {
+            db.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM conversations WHERE type = 'qa'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(qa_count(&db), 2);
+
+        // 删除 id1 → 行消失，id2 不受影响
+        delete_conversation_inner(&db, &id1).unwrap();
+        assert_eq!(qa_count(&db), 1);
+        assert!(
+            db.conn()
+                .query_row(
+                    "SELECT 1 FROM conversations WHERE id = ?1",
+                    [&id2],
+                    |_| Ok(()),
+                )
+                .is_ok(),
+            "id2 应保留"
+        );
+
+        // 重复删除报错
+        assert!(delete_conversation_inner(&db, &id1).is_err());
+        // 删掉剩余会话后可删空
+        delete_conversation_inner(&db, &id2).unwrap();
+        assert_eq!(qa_count(&db), 0);
     }
 }
