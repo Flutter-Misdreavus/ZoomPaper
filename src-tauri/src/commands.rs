@@ -776,17 +776,37 @@ pub fn get_translation(
 
 // ---------- 阅读标注（高亮 / 笔记） ----------
 
-/// 读取论文的阅读标注（annotations.json），不存在则返回 None。
+/// 标注文件的 kind → 文件名白名单（PDF 原文 / AI 博客 / AI 译文 各自独立文件，
+/// 前端自持 schema，后端仅读写字符串；分开存放避免跨视图全量覆盖竞态）。
+const ANNOTATION_KINDS: [(&str, &str); 3] = [
+    ("annotations", "annotations.json"),
+    ("blog", "blog_annotations.json"),
+    ("translate", "translation_annotations.json"),
+];
+
+/// 解析标注 kind（缺省 = PDF 原文标注）；未知 kind 报错。
+fn resolve_annotation_file(kind: Option<&str>) -> Result<&'static str, String> {
+    let kind = kind.unwrap_or("annotations");
+    ANNOTATION_KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, f)| *f)
+        .ok_or_else(|| format!("未知的标注类型: {kind}"))
+}
+
+/// 读取论文目录下某类标注文件（kind：annotations / blog / translate），不存在返回 None。
 /// 返回原始 JSON 字符串，schema 由前端维护（与 save 侧对称）。
 #[tauri::command]
 pub fn get_annotations(
     db: State<'_, Db>,
     paper_id: String,
+    kind: Option<String>,
 ) -> Result<Option<String>, String> {
-    get_annotations_inner(&db, &paper_id)
+    let file = resolve_annotation_file(kind.as_deref())?;
+    get_annotations_file(&db, &paper_id, file)
 }
 
-fn get_annotations_inner(db: &Db, paper_id: &str) -> Result<Option<String>, String> {
+fn get_annotations_file(db: &Db, paper_id: &str, file: &str) -> Result<Option<String>, String> {
     let md_path = {
         let conn = db.conn();
         conn.query_row(
@@ -799,7 +819,7 @@ fn get_annotations_inner(db: &Db, paper_id: &str) -> Result<Option<String>, Stri
     let path = Path::new(&md_path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join("annotations.json");
+        .join(file);
     if !path.exists() {
         return Ok(None);
     }
@@ -807,17 +827,19 @@ fn get_annotations_inner(db: &Db, paper_id: &str) -> Result<Option<String>, Stri
     Ok(Some(json))
 }
 
-/// 把阅读标注（高亮 / 笔记，前端序列化的 JSON）落盘为论文目录下的 annotations.json。
+/// 把某类阅读标注（高亮 / 笔记，前端序列化的 JSON）落盘到论文目录对应文件。
 #[tauri::command]
 pub fn save_annotations(
     db: State<'_, Db>,
     paper_id: String,
     data: String,
+    kind: Option<String>,
 ) -> Result<(), String> {
-    save_annotations_inner(&db, &paper_id, &data)
+    let file = resolve_annotation_file(kind.as_deref())?;
+    save_annotations_file(&db, &paper_id, file, &data)
 }
 
-fn save_annotations_inner(db: &Db, paper_id: &str, data: &str) -> Result<(), String> {
+fn save_annotations_file(db: &Db, paper_id: &str, file: &str, data: &str) -> Result<(), String> {
     let md_path = {
         let conn = db.conn();
         conn.query_row(
@@ -830,7 +852,7 @@ fn save_annotations_inner(db: &Db, paper_id: &str, data: &str) -> Result<(), Str
     let path = Path::new(&md_path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join("annotations.json");
+        .join(file);
     crate::fs::write_md(&path, data).map_err(|e| e.to_string())
 }
 
@@ -2813,17 +2835,52 @@ mod tests {
         let paper = import_pdf_inner(&db, &library, src.to_str().unwrap()).unwrap();
 
         // 初始无标注
-        assert_eq!(get_annotations_inner(&db, &paper.id).unwrap(), None);
+        assert_eq!(get_annotations_file(&db, &paper.id, "annotations.json").unwrap(), None);
 
         // 保存后可读回，且落在论文目录下
         let data = r#"{"version":1,"highlights":[{"id":"h1","page_idx":0,"rects":[{"x":0.1,"y":0.2,"w":0.4,"h":0.015}],"color":"rgba(255,213,0,.45)","text":"hello","note":null,"created_at":1712000000}]}"#;
-        save_annotations_inner(&db, &paper.id, data).unwrap();
-        let back = get_annotations_inner(&db, &paper.id).unwrap().unwrap();
+        save_annotations_file(&db, &paper.id, "annotations.json", data).unwrap();
+        let back = get_annotations_file(&db, &paper.id, "annotations.json").unwrap().unwrap();
         assert_eq!(back, data);
         let file = library
             .join(&paper.id)
             .join("annotations.json");
         assert!(file.exists(), "annotations.json 应写入论文目录");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn annotations_kind_whitelist_and_files() {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        let db = db::Db::from_connection(conn);
+
+        let tmp = std::env::temp_dir().join(format!("zoompaper-test-{}", uuid::Uuid::new_v4()));
+        let library = tmp.join("papers");
+        let src = tmp.join("src-paper.pdf");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(&src, b"%PDF-1.4 test").unwrap();
+        let paper = import_pdf_inner(&db, &library, src.to_str().unwrap()).unwrap();
+
+        // 三种 kind 各自独立文件，互不覆盖
+        for (kind, filename, payload) in [
+            ("annotations", "annotations.json", r#"{"kind":"pdf"}"#),
+            ("blog", "blog_annotations.json", r#"{"kind":"blog"}"#),
+            ("translate", "translation_annotations.json", r#"{"kind":"translate"}"#),
+        ] {
+            let file = resolve_annotation_file(Some(kind)).unwrap();
+            assert_eq!(file, filename);
+            save_annotations_file(&db, &paper.id, file, payload).unwrap();
+            let back = get_annotations_file(&db, &paper.id, file).unwrap().unwrap();
+            assert_eq!(back, payload);
+            assert!(library.join(&paper.id).join(filename).exists());
+        }
+        // 缺省 kind = annotations
+        assert_eq!(resolve_annotation_file(None).unwrap(), "annotations.json");
+        // 未知 kind 报错
+        assert!(resolve_annotation_file(Some("nope")).is_err());
 
         fs::remove_dir_all(&tmp).ok();
     }

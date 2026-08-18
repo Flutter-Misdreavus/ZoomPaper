@@ -20,13 +20,21 @@ function loadWidth(): number {
 /** PDF 选中段落（上下文引用条目；rects 为归一化矩形，用于「跳转到原文」精确定位） */
 export interface AskSelection {
   text: string;
-  pageIdx: number;
+  /** 0-based 页码；博客/译文划选为 null */
+  pageIdx: number | null;
   rects?: AnnotationRect[];
+  /** 人类可读来源位置（博客/译文划选：如「博客·洞见」；PDF 划选不传） */
+  location?: string;
 }
 
 export interface QaPanelHandle {
-  /** 接收 PDF 选中的段落：展开面板并把该段追加到上下文引用区（去重、有上限） */
-  acceptSelection: (text: string, pageIdx: number, rects?: AnnotationRect[]) => void;
+  /** 接收 PDF/博客/译文选中的段落：展开面板并把该段追加到上下文引用区（去重、有上限） */
+  acceptSelection: (
+    text: string,
+    pageIdx: number | null,
+    rects?: AnnotationRect[],
+    location?: string,
+  ) => void;
 }
 
 interface Props {
@@ -61,13 +69,18 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   const rootRef = useRef<HTMLDivElement>(null);
 
   useImperativeHandle(ref, () => ({
-    acceptSelection(text: string, pageIdx: number, rects?: AnnotationRect[]) {
+    acceptSelection(
+      text: string,
+      pageIdx: number | null,
+      rects?: AnnotationRect[],
+      location?: string,
+    ) {
       setCollapsed(false);
       setSelections((prev) => {
         // 同页同文本去重；达到上限后忽略
         if (prev.some((s) => s.text === text && s.pageIdx === pageIdx)) return prev;
         if (prev.length >= MAX_SELECTIONS) return prev;
-        return [...prev, { text, pageIdx, rects }];
+        return [...prev, { text, pageIdx, rects, location }];
       });
     },
   }));

@@ -682,6 +682,7 @@ mod tests {
         SelectionInput {
             text: text.to_string(),
             page_idx: page,
+            location: None,
         }
     }
 

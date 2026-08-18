@@ -108,11 +108,21 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
                   onBlogGenerated={(path) =>
                     setPaper({ ...paper, blog_md_path: path })
                   }
+                  onAskSelection={(text, location) =>
+                    qaRef.current?.acceptSelection(text, null, undefined, location)
+                  }
                 />
               )}
             </TabsContent>
             <TabsContent value="translate" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
-              {ready && <TranslatePanel paperId={paperId} />}
+              {ready && (
+                <TranslatePanel
+                  paperId={paperId}
+                  onAskSelection={(text, location) =>
+                    qaRef.current?.acceptSelection(text, null, undefined, location)
+                  }
+                />
+              )}
             </TabsContent>
             <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
               {ready && <FeynmanChat paperId={paperId} />}

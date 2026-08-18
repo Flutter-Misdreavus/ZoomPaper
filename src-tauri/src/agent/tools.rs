@@ -540,87 +540,94 @@ fn read_paper_json(ctx: &ToolCtx<'_>, paper_id: &str, file: &str) -> Result<Opti
         .map_err(|e| format!("解析 {file} 失败: {e}"))
 }
 
-/// 6. 用户标注（高亮 + 笔记）。
+/// 6. 用户标注（PDF 高亮 + 笔记 / 博客标注 / 译文标注，三类合并读取）。
+///
+/// 博客/译文条目使用存储的 `label` 字段作位置描述（如「博客·洞见」「译文·第 5 段」），
+/// PDF 条目沿用页码；来源经 `Citation.section`（用户标注 / 博客标注 / 译文标注）区分。
 fn read_annotations(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolOutput, String> {
     let paper_id = resolve_paper(ctx, args)?;
-    let json = read_paper_json(ctx, &paper_id, "annotations.json")?;
-    let Some(v) = json else {
+    let title = paper_title(&ctx.db.conn(), &paper_id).unwrap_or_else(|| paper_id.clone());
+    // (文件名, 引用 section)
+    let sources: [(&str, &str); 3] = [
+        ("annotations.json", "用户标注"),
+        ("blog_annotations.json", "博客标注"),
+        ("translation_annotations.json", "译文标注"),
+    ];
+
+    // 汇总三类条目（含来源），按创建时间倒序取最近 N 条、总字符预算内
+    let mut items: Vec<(i64, String, Citation)> = Vec::new();
+    for (file, section) in sources {
+        let Some(v) = read_paper_json(ctx, &paper_id, file)? else {
+            continue;
+        };
+        let highlights = v["highlights"].as_array().cloned().unwrap_or_default();
+        for h in highlights {
+            let sel_text = h["text"].as_str().unwrap_or_default().trim().to_string();
+            if sel_text.is_empty() {
+                continue;
+            }
+            let page = h["page_idx"].as_i64();
+            let label = h["label"].as_str().unwrap_or_default().to_string();
+            // 位置描述：博客/译文用存储的 label，PDF 用页码
+            let loc = if !label.is_empty() {
+                label
+            } else if let Some(p) = page {
+                format!("第 {} 页", p + 1)
+            } else {
+                "页码未知".to_string()
+            };
+            let note = h["note"]["text"].as_str().unwrap_or_default();
+            let block = if note.trim().is_empty() {
+                format!("{loc} · {section}：{sel_text}")
+            } else {
+                format!(
+                    "{loc} · {section}：{sel_text}\n    用户笔记：{}",
+                    truncate(note, 200)
+                )
+            };
+            items.push((
+                h["created_at"].as_i64().unwrap_or(0),
+                block,
+                Citation {
+                    index: 0, // 编号在下方按顺序赋值
+                    chunk_id: -1,
+                    paper_id: paper_id.clone(),
+                    paper_title: title.clone(),
+                    section: section.to_string(),
+                    page_idx: page,
+                    snippet: truncate(&sel_text, SNIPPET_CHARS),
+                },
+            ));
+        }
+    }
+    if items.is_empty() {
         return Ok(ToolOutput {
             text: "该论文还没有阅读标注。".to_string(),
             citations: vec![],
             summary: "无标注".to_string(),
         });
-    };
-    let highlights = v["highlights"].as_array().cloned().unwrap_or_default();
-    if highlights.is_empty() {
-        return Ok(ToolOutput {
-            text: "该论文的标注文件为空。".to_string(),
-            citations: vec![],
-            summary: "0 条标注".to_string(),
-        });
     }
-    // 按创建时间倒序取最近 N 条
-    let mut items: Vec<&Value> = highlights.iter().collect();
-    items.sort_by(|a, b| {
-        b["created_at"]
-            .as_i64()
-            .unwrap_or(0)
-            .cmp(&a["created_at"].as_i64().unwrap_or(0))
-    });
+    items.sort_by(|a, b| b.0.cmp(&a.0)); // 新的在前
     items.truncate(ANNOTATIONS_MAX_ITEMS);
 
     let mut text = String::new();
     let mut citations = Vec::new();
     let mut budget = USER_DATA_MAX_CHARS;
-    for h in items {
+    for (i, (_ts, block, mut cit)) in items.into_iter().enumerate() {
         if budget == 0 {
             break;
         }
-        let page = h["page_idx"].as_i64();
-        let sel_text = h["text"].as_str().unwrap_or_default();
-        if sel_text.trim().is_empty() {
-            continue;
-        }
-        let idx = citations.len() + 1 + offset;
-        let note = h["note"]["text"].as_str().unwrap_or_default();
-        let block = if note.trim().is_empty() {
-            format!(
-                "[{idx}] 第 {} 页 · 用户标注：{}\n\n",
-                page.map(|p| p + 1).unwrap_or(0),
-                sel_text
-            )
-        } else {
-            format!(
-                "[{idx}] 第 {} 页 · 用户标注：{}\n    用户笔记：{}\n\n",
-                page.map(|p| p + 1).unwrap_or(0),
-                sel_text,
-                truncate(note, 200)
-            )
-        };
-        if block.chars().count() > budget {
-            text.push_str(&truncate(&block, budget));
+        let idx = i + 1 + offset;
+        let numbered = format!("[{idx}] {block}\n\n");
+        if numbered.chars().count() > budget {
+            text.push_str(&truncate(&numbered, budget));
             budget = 0;
         } else {
-            text.push_str(&block);
-            budget -= block.chars().count();
+            text.push_str(&numbered);
+            budget -= numbered.chars().count();
         }
-        citations.push(Citation {
-            index: idx,
-            chunk_id: -1,
-            paper_id: paper_id.clone(),
-            paper_title: paper_title(&ctx.db.conn(), &paper_id)
-                .unwrap_or_else(|| paper_id.clone()),
-            section: "用户标注".to_string(),
-            page_idx: page,
-            snippet: truncate(sel_text, SNIPPET_CHARS),
-        });
-    }
-    if citations.is_empty() {
-        return Ok(ToolOutput {
-            text: "该论文的标注没有可用的文本内容。".to_string(),
-            citations: vec![],
-            summary: "无文本标注".to_string(),
-        });
+        cit.index = idx;
+        citations.push(cit);
     }
     let n = citations.len();
     Ok(ToolOutput {
@@ -872,10 +879,13 @@ fn read_selection(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<Tool
         .and_then(|pid| paper_title(&ctx.db.conn(), pid))
         .unwrap_or_else(|| "当前论文".to_string());
     let idx = 1 + offset;
-    let page = sel.page_idx;
+    // 来源位置：博客/译文带 location（如「博客·洞见」），PDF 用页码
+    let loc_str = sel
+        .location
+        .clone()
+        .unwrap_or_else(|| page_str(sel.page_idx));
     let out_text = format!(
-        "[{idx}] 论文《{paper_title}》· {} · 用户选中段落：\n{}",
-        page_str(page),
+        "[{idx}] 论文《{paper_title}》· {loc_str} · 用户选中段落：\n{}",
         text
     );
     let citation = Citation {
@@ -883,8 +893,11 @@ fn read_selection(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<Tool
         chunk_id: -1,
         paper_id: ctx.paper_id.unwrap_or_default().to_string(),
         paper_title,
-        section: "用户选中段落".to_string(),
-        page_idx: page,
+        section: sel
+            .location
+            .clone()
+            .unwrap_or_else(|| "用户选中段落".to_string()),
+        page_idx: sel.page_idx,
         snippet: truncate(text, SNIPPET_CHARS),
     };
     Ok(ToolOutput {
@@ -961,6 +974,7 @@ mod tests {
         let sel = [SelectionInput {
             text: "选中段落".into(),
             page_idx: Some(2),
+            location: None,
         }];
         let tools = build_tools(&s, Some("p1"), &sel);
         assert!(tools.contains(&ToolKind::ReadSelection));
@@ -1053,10 +1067,12 @@ mod tests {
             SelectionInput {
                 text: "记忆系统通过显式存储层保存信息。".into(),
                 page_idx: Some(2),
+                location: None,
             },
             SelectionInput {
                 text: "检索增强生成（RAG）结合外部知识库。".into(),
                 page_idx: Some(5),
+                location: Some("博客·洞见".to_string()),
             },
         ];
         let c = ctx(&db, &settings, &sel, &http);
@@ -1065,9 +1081,88 @@ mod tests {
         assert_eq!(out.citations[0].index, 3); // offset 2 → 编号 3
         assert_eq!(out.citations[0].page_idx, Some(5));
         assert!(out.text.contains("[3]"));
-        assert!(out.text.contains("第 6 页"));
+        // 带 location 的条目：用 location 代替页码，Citation.section 也用 location
+        assert!(out.text.contains("博客·洞见"));
+        assert!(!out.text.contains("第 6 页"));
+        assert_eq!(out.citations[0].section, "博客·洞见");
+        // 无 location 的条目保持页码格式
+        let out3 = execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 0 }), 0)
+            .await
+            .unwrap();
+        assert!(out3.text.contains("第 3 页"));
+        assert_eq!(out3.citations[0].section, "用户选中段落");
         // 越界报错
         assert!(execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 9 }), 0).await.is_err());
+    }
+
+    /// 临时论文目录夹具：真实目录下建 paper.md，返回 (Db, 论文目录)。
+    fn setup_annotations_dir() -> (Db, std::path::PathBuf) {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        let tmp = std::env::temp_dir().join(format!("zp-annot-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let md = tmp.join("paper.md");
+        std::fs::write(&md, "paper").unwrap();
+        conn.execute(
+            "INSERT INTO papers (id, title, authors, abstract, pdf_path, md_path, \
+             created_at, reading_status, parse_status) \
+             VALUES ('p1', '测试论文', '[\"A\"]', '摘要', '/x.pdf', ?1, 0, 'unread', 'ready')",
+            [md.to_str().unwrap()],
+        )
+        .unwrap();
+        let db = Db::from_connection(conn);
+        (db, tmp)
+    }
+
+    #[tokio::test]
+    async fn read_annotations_merges_all_three_sources() {
+        let (db, tmp) = setup_annotations_dir();
+        // PDF 标注（页码格式）
+        std::fs::write(
+            tmp.join("annotations.json"),
+            r##"{"version":1,"highlights":[{"id":"p1","page_idx":2,"color":"#ff0","text":"PDF 高亮内容","note":null,"created_at":100}]}"##,
+        )
+        .unwrap();
+        // 博客标注（label 格式 + 笔记）
+        std::fs::write(
+            tmp.join("blog_annotations.json"),
+            r##"{"version":1,"highlights":[{"id":"b1","docKey":"blog:analysis:insight","label":"博客·洞见","start":0,"end":5,"color":"#0f0","text":"博客标注内容","note":{"text":"博客笔记","updated_at":1},"created_at":300}]}"##,
+        )
+        .unwrap();
+        // 译文标注
+        std::fs::write(
+            tmp.join("translation_annotations.json"),
+            r##"{"version":1,"highlights":[{"id":"t1","docKey":"trans:bi:2","label":"译文·第 3 段","start":0,"end":5,"color":"#00f","text":"译文标注内容","note":null,"created_at":200}]}"##,
+        )
+        .unwrap();
+
+        let settings = Settings::default();
+        let http = reqwest::Client::new();
+        let c = ctx(&db, &settings, &[], &http);
+        let out = execute_tool(ToolKind::ReadAnnotations, &c, &json!({}), 0)
+            .await
+            .unwrap();
+        // 三条都返回，按 created_at 倒序：博客(300) → 译文(200) → PDF(100)
+        assert_eq!(out.citations.len(), 3);
+        assert!(out.text.contains("博客·洞见 · 博客标注：博客标注内容"));
+        assert!(out.text.contains("用户笔记：博客笔记"));
+        assert!(out.text.contains("译文·第 3 段 · 译文标注：译文标注内容"));
+        assert!(out.text.contains("第 3 页 · 用户标注：PDF 高亮内容"));
+        // section 区分来源
+        let sections: Vec<&str> = out.citations.iter().map(|c| c.section.as_str()).collect();
+        assert_eq!(sections, vec!["博客标注", "译文标注", "用户标注"]);
+        std::fs::remove_dir_all(&tmp).ok();
+
+        // 无任何标注文件 → 返回「还没有阅读标注」
+        let (db2, tmp2) = setup_annotations_dir();
+        let c2 = ctx(&db2, &settings, &[], &http);
+        let out2 = execute_tool(ToolKind::ReadAnnotations, &c2, &json!({}), 0)
+            .await
+            .unwrap();
+        assert!(out2.text.contains("还没有阅读标注"));
+        assert!(out2.citations.is_empty());
+        std::fs::remove_dir_all(&tmp2).ok();
     }
 
     #[tokio::test]

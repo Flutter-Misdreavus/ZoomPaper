@@ -277,8 +277,10 @@ export const askQuestion = (
     paperId?: string | null;
     conversationId?: string | null;
     topK?: number;
-    /** 阅读页选中的段落列表（就地提问的上下文引用，可多条，编号 [1..k] 注入） */
-    selections?: { text: string; pageIdx: number }[] | null;
+    /** 阅读页选中的段落列表（就地提问的上下文引用，可多条，编号 [1..k] 注入；
+     * pageIdx 为 0-based 页码（博客/译文划选为 null）；location 为人类可读来源位置，
+     * 如「博客·洞见」「译文·第 5 段」，PDF 选中不传） */
+    selections?: { text: string; pageIdx: number | null; location?: string }[] | null;
     /** 问答模式：quick = 单轮 RAG；agent = 深度研究（多步工具循环，默认） */
     mode?: "quick" | "agent";
     /** 联网搜索开关（缺省开） */
@@ -458,10 +460,11 @@ export interface AnnotationsFile {
   highlights: PdfAnnotation[];
 }
 
-/** 读取论文的阅读标注（annotations.json），无标注返回 null */
-export const getAnnotations = (paperId: string) =>
-  invoke<string | null>("get_annotations", { paperId });
+/** 读取论文的阅读标注（annotations.json / blog_annotations.json / translation_annotations.json，
+ * 由 kind 指定：缺省 = PDF 原文标注），无标注返回 null */
+export const getAnnotations = (paperId: string, kind?: string) =>
+  invoke<string | null>("get_annotations", { paperId, kind: kind ?? null });
 
-/** 把阅读标注 JSON 落盘为论文目录下的 annotations.json */
-export const saveAnnotations = (paperId: string, data: string) =>
-  invoke<void>("save_annotations", { paperId, data });
+/** 把阅读标注 JSON 落盘为论文目录对应文件（kind 同上） */
+export const saveAnnotations = (paperId: string, data: string, kind?: string) =>
+  invoke<void>("save_annotations", { paperId, data, kind: kind ?? null });

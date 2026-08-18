@@ -41,8 +41,11 @@ pub struct Citation {
 #[serde(rename_all = "camelCase")]
 pub struct SelectionInput {
     pub text: String,
-    /// 0-based 页码
+    /// 0-based 页码（PDF 原文选中）
     pub page_idx: Option<i64>,
+    /// 人类可读的来源位置（如「博客·洞见」「译文·第 5 段」）；PDF 选中不传
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
 }
 
 /// 注入上下文时每条选中段落的字符上限（防多条引用撑爆上下文）。
@@ -207,14 +210,18 @@ pub fn prepare(
         .unwrap_or_else(|_| "当前论文".to_string())
     });
     // 过滤空文本并截断（防御），按序编号
-    let sels: Vec<(String, Option<i64>)> = selections
+    let sels: Vec<(String, Option<i64>, Option<String>)> = selections
         .iter()
         .filter_map(|s| {
             let t = s.text.trim();
             if t.is_empty() {
                 None
             } else {
-                Some((truncate(t, SELECTION_CONTEXT_CHARS), s.page_idx))
+                Some((
+                    truncate(t, SELECTION_CONTEXT_CHARS),
+                    s.page_idx,
+                    s.location.clone(),
+                ))
             }
         })
         .take(MAX_SELECTIONS)
@@ -226,20 +233,24 @@ pub fn prepare(
     let offset = sels.len();
     if offset > 0 {
         let title = paper_title.as_deref().unwrap_or("当前论文");
-        for (i, (s, page)) in sels.iter().enumerate() {
+        for (i, (s, page, location)) in sels.iter().enumerate() {
             let idx = i + 1;
-            let page_str = page
-                .map(|p| format!("第 {} 页", p + 1))
-                .unwrap_or_else(|| "页码未知".to_string());
+            // 来源位置：博客/译文带 location（如「博客·洞见」），PDF 用页码
+            let loc_str = location.clone().unwrap_or_else(|| {
+                page.map(|p| format!("第 {} 页", p + 1))
+                    .unwrap_or_else(|| "页码未知".to_string())
+            });
             context.push_str(&format!(
-                "[{idx}] 论文《{title}》· {page_str} · 用户选中段落：\n{s}\n\n"
+                "[{idx}] 论文《{title}》· {loc_str} · 用户选中段落：\n{s}\n\n"
             ));
             citations.push(Citation {
                 index: idx,
                 chunk_id: -1, // 哨兵：非检索命中，无 chunk 可查
                 paper_id: paper_id.unwrap_or_default().to_string(),
                 paper_title: title.to_string(),
-                section: "用户选中段落".to_string(),
+                section: location
+                    .clone()
+                    .unwrap_or_else(|| "用户选中段落".to_string()),
                 page_idx: *page,
                 snippet: truncate(s, SNIPPET_CHARS),
             });
@@ -380,10 +391,12 @@ mod tests {
                 SelectionInput {
                     text: "记忆系统通过显式存储层保存信息。".into(),
                     page_idx: Some(2),
+                    location: None,
                 },
                 SelectionInput {
                     text: "检索增强生成（RAG）结合外部知识库。".into(),
                     page_idx: Some(5),
+                    location: Some("译文·第 5 段".to_string()),
                 },
             ],
         )
@@ -404,6 +417,9 @@ mod tests {
         assert!(user_msg.content.contains("第 3 页"));
         assert!(user_msg.content.contains("记忆系统通过显式存储层保存信息"));
         assert!(user_msg.content.contains("检索增强生成（RAG）"));
+        // 第二条带 location：上下文与 Citation.section 用 location 而非页码
+        assert!(user_msg.content.contains("译文·第 5 段"));
+        assert_eq!(prepared.citations[1].section, "译文·第 5 段");
         // 绑定论文：system 提示含「当前阅读论文」段与论文标题
         let system_msg = &prepared.messages[0];
         assert!(system_msg.content.contains("当前阅读论文《测试论文》"));
@@ -423,6 +439,7 @@ mod tests {
             &[SelectionInput {
                 text: "   ".into(),
                 page_idx: None,
+                location: None,
             }],
         )
         .unwrap();

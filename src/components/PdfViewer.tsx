@@ -11,17 +11,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { SelectionToolbar, HIGHLIGHT_COLORS } from "@/components/SelectionToolbar";
 import {
   Check,
   ChevronDown,
   ChevronRight,
-  Copy,
   List,
   ListTree,
-  MessageSquare,
   Minus,
   Plus,
   StickyNote,
@@ -40,14 +38,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const SCALE_STEP = 0.25;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
-
-/** 高亮色板（rgba，叠在白底页面上） */
-const HIGHLIGHT_COLORS = [
-  { name: "黄", color: "rgba(255,213,0,.45)" },
-  { name: "绿", color: "rgba(0,200,83,.35)" },
-  { name: "蓝", color: "rgba(64,156,255,.32)" },
-  { name: "粉", color: "rgba(255,64,129,.32)" },
-];
 
 /** PDF 大纲节点（doc.getOutline() 返回值的子集） */
 interface OutlineNode {
@@ -1282,53 +1272,16 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         </div>
       </div>
 
-      {/* 划选浮动工具条 */}
+      {/* 划选浮动工具条（共享组件） */}
       {selToolbar && (
-        <div
-          className="fixed z-50 flex items-center gap-1 rounded-lg border bg-popover px-1.5 py-1 shadow-lg select-none"
-          style={{ left: selToolbar.x, top: selToolbar.y }}
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {HIGHLIGHT_COLORS.map((c) => (
-            <button
-              key={c.name}
-              title={`高亮：${c.name}`}
-              className="h-5 w-5 rounded-full ring-1 ring-black/15 transition-transform hover:scale-110"
-              style={{ background: c.color }}
-              onClick={() => createHighlights(c.color)}
-            />
-          ))}
-          <Separator orientation="vertical" className="mx-0.5 h-4" />
-          {onAskSelection && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-1.5 text-xs"
-              onClick={askSelection}
-            >
-              <MessageSquare className="h-3 w-3" />
-              提问
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-1.5 text-xs"
-            onClick={() => createHighlights(HIGHLIGHT_COLORS[0].color, true)}
-          >
-            <StickyNote className="h-3 w-3" />
-            笔记
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-1.5 text-xs"
-            onClick={() => void copySelection()}
-          >
-            <Copy className="h-3 w-3" />
-            复制
-          </Button>
-        </div>
+        <SelectionToolbar
+          x={selToolbar.x}
+          y={selToolbar.y}
+          onHighlight={(color) => createHighlights(color)}
+          onNote={() => createHighlights(HIGHLIGHT_COLORS[0].color, true)}
+          onAsk={onAskSelection ? askSelection : undefined}
+          onCopy={() => void copySelection()}
+        />
       )}
 
       {/* 笔记编辑弹层 */}

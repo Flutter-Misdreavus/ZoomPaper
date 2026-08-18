@@ -46,7 +46,14 @@ interface Props {
   /** 新会话第一次提问成功后回调（AskPage 刷新会话列表） */
   onConversationCreated?: (conversationId: string) => void;
   /** 阅读页选中的段落列表（上下文引用区，可多条；发送成功后自动清空） */
-  selections?: { text: string; pageIdx: number; rects?: AnnotationRect[] }[] | null;
+  selections?: {
+    text: string;
+    /** 0-based 页码；博客/译文划选为 null */
+    pageIdx: number | null;
+    rects?: AnnotationRect[];
+    /** 人类可读来源位置（博客/译文划选），PDF 划选不传 */
+    location?: string;
+  }[] | null;
   onClearSelections?: () => void;
   /** 移除第 i 条引用 */
   onRemoveSelection?: (index: number) => void;
@@ -601,19 +608,25 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           </p>
           <div className="mt-2 flex items-center justify-end gap-2">
             <span className="text-[11px] text-muted-foreground">
-              第 {selections[hoverIdx].pageIdx + 1} 页
+              {selections[hoverIdx].location ??
+                (selections[hoverIdx].pageIdx != null
+                  ? `第 ${selections[hoverIdx].pageIdx + 1} 页`
+                  : "")}
             </span>
-            <button
-              onClick={() => {
-                const sel = selections[hoverIdx];
-                closeHover();
-                onJumpToSelection?.(sel.pageIdx, sel.rects);
-              }}
-              className="pressable inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
-            >
-              <FileSearch className="h-3.5 w-3.5" />
-              跳转到原文
-            </button>
+            {selections[hoverIdx].pageIdx != null && (
+              <button
+                onClick={() => {
+                  const sel = selections[hoverIdx];
+                  closeHover();
+                  // 守卫已保证 pageIdx 非空（博客/译文划选为 null 时不显示该按钮）
+                  onJumpToSelection?.(sel.pageIdx!, sel.rects);
+                }}
+                className="pressable inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+              >
+                <FileSearch className="h-3.5 w-3.5" />
+                跳转到原文
+              </button>
+            )}
           </div>
         </div>
       )}
