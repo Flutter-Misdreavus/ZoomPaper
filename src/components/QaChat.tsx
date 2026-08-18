@@ -23,6 +23,7 @@ import { WebToggle } from "@/components/WebToggle";
 import {
   askQuestion,
   askQuestionReply,
+  cancelGeneration,
   getConversation,
   getSettings,
   isWebSearchConfigured,
@@ -32,7 +33,7 @@ import {
   type PendingAsk,
   type QaMessage,
 } from "@/lib/api";
-import { FileSearch, Loader2, MessageSquare, SendHorizonal, X } from "lucide-react";
+import { FileSearch, Loader2, MessageSquare, SendHorizonal, Square, X } from "lucide-react";
 
 interface Props {
   /** null/缺省 = 跨论文问答 */
@@ -139,6 +140,10 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const [hoverReady, setHoverReady] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<number | null>(null);
+  /** 本次发送生成的取消令牌：「暂停」按钮据此中止生成（每次发送重新生成） */
+  const cancelTokenRef = useRef<string | null>(null);
+  /** 本轮被用户暂停：显示「已暂停」提示（下次发送清除） */
+  const [pausedNote, setPausedNote] = useState(false);
   // 镜像最新 selections，用于发送完成时判断用户是否已增删引用（避免误清新列表）
   const selectionsRef = useRef(selections);
   useEffect(() => {
@@ -295,27 +300,32 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     setError(null);
     setPending(null); // 移除澄清气泡（其轨迹并入 liveTrace 继续）
     setStreamingText("");
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     setMessages((prev) => [...prev, { role: "user", content: reply }]);
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const ans = await askQuestionReply(convId, reply, webOn, ch);
+      const ans = await askQuestionReply(convId, reply, webOn, cancelTokenRef.current, ch);
       if (ans.pending) {
         // 防御：理论上每轮最多澄清一次，不会再次中断
         setPending(ans.pending);
         return;
       }
+      if (ans.cancelled) setPausedNote(true);
       setStreamingText("");
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: ans.answer,
-          citations: ans.citations,
-          trace: ans.trace,
-          timing: ans.timing,
-        },
-      ]);
+      if (ans.answer.trim()) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: ans.answer,
+            citations: ans.citations,
+            trace: ans.trace,
+            timing: ans.timing,
+          },
+        ]);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -336,6 +346,8 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     setInput("");
     setSending(true);
     setError(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     // 新一轮：重置流式状态
     setThinkingText("");
     setStreamingText("");
@@ -350,6 +362,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         selections: sentSelections,
         mode,
         webSearch: webOn,
+        cancelToken: cancelTokenRef.current,
         onEvent: ch,
       });
       if (ans.pending) {
@@ -365,17 +378,20 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         }
         return;
       }
+      if (ans.cancelled) setPausedNote(true);
       setStreamingText("");
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: ans.answer,
-          citations: ans.citations,
-          trace: ans.trace,
-          timing: ans.timing,
-        },
-      ]);
+      if (ans.answer.trim()) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: ans.answer,
+            citations: ans.citations,
+            trace: ans.trace,
+            timing: ans.timing,
+          },
+        ]);
+      }
       if (!convId) {
         setConvId(ans.conversation_id);
         onConversationCreated?.(ans.conversation_id);
@@ -503,6 +519,12 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
               </div>
             )}
           </>
+        )}
+        {/* 已暂停提示（本轮被用户暂停且无正文可提交时） */}
+        {pausedNote && !sending && (
+          <div className="flex justify-center">
+            <span className="text-[11px] text-muted-foreground">已暂停</span>
+          </div>
         )}
       </div>
 
@@ -646,18 +668,27 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
           className="min-h-11 flex-1 resize-none"
           rows={1}
         />
-        <Button
-          size="icon"
-          onClick={() => void handleSend()}
-          disabled={sending || !input.trim()}
-          className="pressable h-11 w-11"
-        >
-          {sending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
+        {sending ? (
+          <Button
+            size="icon"
+            onClick={() => {
+              if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
+            }}
+            title="暂停生成"
+            className="pressable h-11 w-11"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button
+            size="icon"
+            onClick={() => void handleSend()}
+            disabled={!input.trim()}
+            className="pressable h-11 w-11"
+          >
             <SendHorizonal className="h-4 w-4" />
-          )}
-        </Button>
+          </Button>
+        )}
       </div>
     </div>
   );

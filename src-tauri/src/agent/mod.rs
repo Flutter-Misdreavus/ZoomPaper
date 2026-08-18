@@ -25,6 +25,7 @@ use crate::settings::Settings;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod html_extract;
 pub mod memory;
@@ -35,6 +36,8 @@ pub mod web;
 pub const MAX_STEPS: usize = 6;
 /// 单轮模型调用中最多执行的工具条数（防御）。
 const MAX_TOOLS_PER_TURN: usize = 8;
+/// 用户暂停后无正文可提交时的回答提示。
+const PAUSED_ANSWER: &str = "已暂停生成。";
 
 /// 前端展示的一步工具调用轨迹。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +126,7 @@ pub enum RunResult {
 ///
 /// `memory`：本会话之前轮次的研究记忆（注入 system prompt 的「研究记忆」段）；
 /// `sink`：实时事件回调（思考/正文/工具状态），前端经 Tauri Channel 接收。
+/// `cancel`：用户「暂停」标志；置位时中断生成并返回已生成的部分内容。
 /// 注意：本函数不做「模型不支持工具」的降级——由命令层捕获错误后回退到快速问答。
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent<L: LlmChat>(
@@ -134,6 +138,7 @@ pub async fn run_agent<L: LlmChat>(
     history: &[QaMessage],
     selections: &[SelectionInput],
     memory: &[memory::MemoryEntry],
+    cancel: Option<&AtomicBool>,
     sink: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<RunResult> {
     // 阅读页会话绑定论文的标题（system 提示「当前论文优先」段用；查询失败回退占位）
@@ -170,13 +175,14 @@ pub async fn run_agent<L: LlmChat>(
         content: question.to_string(),
     }));
 
-    run_agent_loop(llm, db, settings, messages, paper_id, selections, tools, sink).await
+    run_agent_loop(llm, db, settings, messages, paper_id, selections, tools, cancel, sink).await
 }
 
 /// 通用循环入口：给定完整消息列表（system + 历史 + user）与工具集，运行 agent 循环。
 ///
 /// 供费曼等非 RAG 场景复用（调用方自行组装消息与工具集）；行为与 [`run_agent`] 一致：
 /// 流式思考/正文经 `sink` 转发、工具执行发 ToolStart/ToolEnd、耗时累计返回。
+/// `cancel`：用户「暂停」标志，置位时中断生成并返回已生成的部分内容。
 pub async fn run_agent_loop<L: LlmChat>(
     llm: &L,
     db: &Db,
@@ -185,6 +191,7 @@ pub async fn run_agent_loop<L: LlmChat>(
     paper_id: Option<&str>,
     selections: &[SelectionInput],
     tools: Vec<tools::ToolKind>,
+    cancel: Option<&AtomicBool>,
     sink: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<RunResult> {
     let http = reqwest::Client::new();
@@ -203,7 +210,7 @@ pub async fn run_agent_loop<L: LlmChat>(
     let mut tool_ms: u64 = 0;
     drive_loop(
         llm, &ctx, &tools, &mut messages, &schemas, 0, &mut citations, &mut trace, false, "",
-        sink, &mut model_ms, &mut tool_ms,
+        cancel, sink, &mut model_ms, &mut tool_ms,
     )
     .await
 }
@@ -220,6 +227,7 @@ pub async fn resume_agent<L: LlmChat>(
     settings: &Settings,
     state: AgentRunState,
     reply: &str,
+    cancel: Option<&AtomicBool>,
     sink: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Result<RunResult> {
     let http = reqwest::Client::new();
@@ -260,6 +268,7 @@ pub async fn resume_agent<L: LlmChat>(
         &mut trace,
         true, // 已澄清过：续跑中不再允许第二次 ask_user
         &state.question,
+        cancel,
         sink,
         &mut model_ms,
         &mut tool_ms,
@@ -279,6 +288,9 @@ fn tool_schemas(tools: &[tools::ToolKind]) -> Vec<ToolDef> {
 }
 
 /// 循环驱动器：从 `step` 起调用模型，执行工具/处理澄清，直到完成或中断。
+///
+/// `cancel`：用户「暂停」标志；循环顶部与模型调用期间检查，置位即停止并返回
+/// 已生成的部分内容（正文流中暂停 → 部分正文即最终回答；工具阶段暂停 → 短提示回答）。
 #[allow(clippy::too_many_arguments)]
 async fn drive_loop<L: LlmChat>(
     llm: &L,
@@ -291,17 +303,30 @@ async fn drive_loop<L: LlmChat>(
     trace: &mut Vec<ToolStep>,
     asked_user: bool,
     question: &str,
+    cancel: Option<&AtomicBool>,
     sink: &mut (dyn FnMut(AgentEvent) + Send),
     model_ms: &mut u64,
     tool_ms: &mut u64,
 ) -> Result<RunResult> {
     let mut used = step;
     while used < MAX_STEPS {
+        // 用户暂停（工具执行期间点暂停）：本轮不再继续，返回短提示回答
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Ok(RunResult::Done {
+                answer: PAUSED_ANSWER.to_string(),
+                citations: citations.clone(),
+                trace: trace.clone(),
+                timing: Timing {
+                    model_ms: *model_ms,
+                    tool_ms: *tool_ms,
+                },
+            });
+        }
         used += 1;
         // 模型调用（流式：思考/正文增量转发给 sink；模型调用耗时计入「思考」时间）
         let t0 = std::time::Instant::now();
         let resp = llm
-            .stream_chat_with_tools(messages, schemas, &mut |evt| match evt {
+            .stream_chat_with_tools_abortable(messages, schemas, cancel, &mut |evt| match evt {
                 crate::ai::llm::StreamEvent::Thinking(t) => {
                     sink(AgentEvent::Thinking { text: t })
                 }
@@ -309,6 +334,22 @@ async fn drive_loop<L: LlmChat>(
             })
             .await?;
         *model_ms += t0.elapsed().as_millis() as u64;
+        // 用户暂停（正文流中/模型调用后）：把已累积的部分内容作为最终回答，不再继续
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            let answer = match &resp.content {
+                Some(c) if !c.trim().is_empty() => c.clone(),
+                _ => PAUSED_ANSWER.to_string(),
+            };
+            return Ok(RunResult::Done {
+                answer,
+                citations: citations.clone(),
+                trace: trace.clone(),
+                timing: Timing {
+                    model_ms: *model_ms,
+                    tool_ms: *tool_ms,
+                },
+            });
+        }
         if resp.tool_calls.is_empty() {
             let answer = match &resp.content {
                 Some(c) if !c.trim().is_empty() => c.clone(),
@@ -648,7 +689,7 @@ mod tests {
     async fn direct_answer_without_tools() {
         let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![content("直接回答")]);
-        match run_agent(&llm, &db, &settings, "你好", Some("p1"), &[], &[], &[], &mut |_| {})
+        match run_agent(&llm, &db, &settings, "你好", Some("p1"), &[], &[], &[], None, &mut |_| {})
             .await
             .unwrap()
         {
@@ -678,7 +719,7 @@ mod tests {
             calls(&[("c3", "read_selection", json!({ "index": 1 }))]),
             content("综合 [1] 与 [3] 得出结论。"),
         ]);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
             .await
             .unwrap()
         {
@@ -704,7 +745,7 @@ mod tests {
             calls(&[("c1", "search_papers", json!({}))]),
             content("我无法检索，但可以基于已有知识回答。"),
         ]);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
             .await
             .unwrap()
         {
@@ -721,7 +762,7 @@ mod tests {
     async fn unknown_tool_aborts_loop_with_error() {
         let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![calls(&[("c1", "no_such_tool", json!({}))])]);
-        let err = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+        let err = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
             .await
             .unwrap_err();
         assert!(err.to_string().contains("未知工具"));
@@ -740,7 +781,7 @@ mod tests {
             )]));
         }
         let llm = ScriptedLlm::new(responses);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
+        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
             .await
             .unwrap()
         {
@@ -808,6 +849,88 @@ mod tests {
         assert!(empty_title.contains("应当使用 web_search"));
     }
 
+    // ---------- 生成取消（「暂停」） ----------
+
+    #[tokio::test]
+    async fn cancel_between_tool_steps_stops_loop_with_paused_answer() {
+        let (db, settings) = setup();
+        // 第一轮调工具；工具结束后（ToolEnd 事件）置位取消标志 → 第二轮循环顶部应提前结束
+        let llm = ScriptedLlm::new(vec![
+            calls(&[("c1", "search_papers", json!({}))]),
+            content("不应到达的最终回答"),
+        ]);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_in_sink = cancel.clone();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            Some(cancel.as_ref()),
+            &mut |e| {
+                if matches!(e, AgentEvent::ToolEnd { .. }) {
+                    cancel_in_sink.store(true, Ordering::Relaxed);
+                }
+            },
+        )
+        .await
+        .unwrap();
+        match run {
+            RunResult::Done { answer, trace, .. } => {
+                assert!(trace.len() >= 1, "第一轮工具应已执行");
+                assert!(answer.contains("已暂停"), "回答应为暂停提示，实际: {answer}");
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
+        // 模型只被调用一次（第二轮被取消拦截）
+        assert_eq!(llm.counter.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_stream_keeps_partial_content_as_answer() {
+        let (db, settings) = setup();
+        // 第一轮工具；第二轮正文流中置位取消 → 部分正文应作为最终回答
+        let llm = ScriptedLlm::new(vec![
+            calls(&[("c1", "search_papers", json!({}))]),
+            content("部分回答内容"),
+        ]);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_in_sink = cancel.clone();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            Some(cancel.as_ref()),
+            &mut |e| {
+                if let AgentEvent::Content { text } = &e {
+                    if text.contains("部分") {
+                        cancel_in_sink.store(true, Ordering::Relaxed);
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        match run {
+            RunResult::Done { answer, .. } => {
+                assert!(
+                    answer.contains("部分回答内容"),
+                    "部分正文应保留为回答，实际: {answer}"
+                );
+            }
+            RunResult::NeedInput { .. } => panic!("不应请求澄清"),
+        }
+    }
+
     // ---------- ask_user 澄清 ----------
 
     #[tokio::test]
@@ -817,7 +940,7 @@ mod tests {
             ask_user_call("c1", "你想对比哪个方向？", json!(["A", "B"])),
             content("根据你的选择，最终回答。"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
             .await
             .unwrap();
         let (question, options, free_text, state) = match run {
@@ -843,7 +966,7 @@ mod tests {
         )));
 
         // 续跑：回答被回喂为 ask_user 的结果
-        let done = resume_agent(&llm, &db, &settings, state, "选 A", &mut |_| {})
+        let done = resume_agent(&llm, &db, &settings, state, "选 A", None, &mut |_| {})
             .await
             .unwrap();
         match done {
@@ -860,14 +983,14 @@ mod tests {
             ask_user_call("c2", "第二次澄清", json!([])),
             content("最终回答"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], &mut |_| {})
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
             .await
             .unwrap();
         let state = match &run {
             RunResult::NeedInput { state, .. } => state.clone(),
             _ => panic!("应请求澄清"),
         };
-        let done = resume_agent(&llm, &db, &settings, state, "回答", &mut |_| {})
+        let done = resume_agent(&llm, &db, &settings, state, "回答", None, &mut |_| {})
             .await
             .unwrap();
         match done {
@@ -897,7 +1020,7 @@ mod tests {
             ]),
             content("完成"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], &mut |_| {})
+        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
             .await
             .unwrap();
         let state = match run {
@@ -921,7 +1044,7 @@ mod tests {
         // 引用编号：c1 已产生一条
         assert_eq!(state.citations.len(), 1);
         // 续跑后全部调用都有结果，模型可继续
-        let done = resume_agent(&llm, &db, &settings, state, "选 A", &mut |_| {})
+        let done = resume_agent(&llm, &db, &settings, state, "选 A", None, &mut |_| {})
             .await
             .unwrap();
         assert!(matches!(done, RunResult::Done { .. }));
@@ -999,6 +1122,7 @@ mod tests {
             &[],
             &selections,
             &[],
+            None,
             &mut |e| events.push(e),
         )
         .await

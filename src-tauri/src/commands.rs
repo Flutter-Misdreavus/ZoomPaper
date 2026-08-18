@@ -10,9 +10,91 @@ use crate::qa::{Answer, Citation, QaMessage};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::{params, OptionalExtension};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 use uuid::Uuid;
+
+// ---------- 生成取消（「暂停」按钮） ----------
+//
+// 前端每次发送生成请求时携带一个 cancel_token；「暂停」按钮调用 cancel_generation 置位
+// 对应标志，后端流式循环（SSE 逐 chunk / agent 循环顶部）检查到置位即停止并返回已生成
+// 的部分内容。token 在命令结束时由 CancelGuard 注销，防止泄漏。
+//
+// 竞态：若 cancel_generation 先于 ask_question 到达（token 尚未注册），记入预登记集，
+// 注册时立即置位——消除毫秒级「点暂停时生成还没开始」的窗口。
+
+/// 进行中生成任务的取消标志（key = cancel_token）。
+static CANCEL_FLAGS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+/// 尚未注册 token 的取消请求（注册时消费）。
+static PENDING_CANCELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn cancel_flags() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    CANCEL_FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pending_cancels() -> &'static Mutex<HashSet<String>> {
+    PENDING_CANCELS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// 注册一个取消标志：若该 token 已被预登记取消，则标志初始即为置位。
+pub(crate) fn register_cancel(token: &str) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    if pending_cancels().lock().unwrap().remove(token) {
+        flag.store(true, Ordering::Relaxed);
+    }
+    cancel_flags().lock().unwrap().insert(token.to_string(), flag.clone());
+    flag
+}
+
+/// 注销取消标志（命令结束，含错误路径）。
+pub(crate) fn unregister_cancel(token: &str) {
+    cancel_flags().lock().unwrap().remove(token);
+}
+
+/// 请求取消：token 已注册则置位；未注册则写入预登记集（注册时生效）。
+pub(crate) fn request_cancel(token: &str) {
+    if let Some(flag) = cancel_flags().lock().unwrap().get(token) {
+        flag.store(true, Ordering::Relaxed);
+    } else {
+        pending_cancels().lock().unwrap().insert(token.to_string());
+    }
+}
+
+/// 命令生命周期守卫：Drop 时注销取消标志。
+struct CancelGuard {
+    token: String,
+    flag: Arc<AtomicBool>,
+}
+
+impl CancelGuard {
+    fn new(token: &str) -> Self {
+        let flag = register_cancel(token);
+        Self {
+            token: token.to_string(),
+            flag,
+        }
+    }
+
+    fn flag(&self) -> &AtomicBool {
+        self.flag.as_ref()
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        unregister_cancel(&self.token);
+    }
+}
+
+/// 「暂停」：置位对应生成任务的取消标志（幂等；token 未注册则预登记）。
+#[tauri::command]
+pub fn cancel_generation(cancel_token: String) -> Result<(), String> {
+    request_cancel(&cancel_token);
+    Ok(())
+}
 
 // ---------- 设置 ----------
 
@@ -793,6 +875,8 @@ fn load_or_create_conv(
 }
 
 /// 快速问答（单轮 RAG，流式输出思考/正文并计时）。
+///
+/// `cancel`：用户「暂停」标志，置位时中断并返回已生成的部分文本。
 async fn quick_answer(
     db: &Db,
     llm: &Llm,
@@ -801,6 +885,7 @@ async fn quick_answer(
     history: &[QaMessage],
     top_k: usize,
     selections: &[crate::qa::SelectionInput],
+    cancel: Option<&AtomicBool>,
     sink: &mut (dyn FnMut(crate::agent::AgentEvent) + Send),
 ) -> Result<(String, Vec<Citation>, crate::agent::Timing), String> {
     // 检索 + 组装（同步，用完即释放数据库锁）
@@ -817,16 +902,17 @@ async fn quick_answer(
         ));
     }
     let t0 = std::time::Instant::now();
-    let answer = crate::ai::llm::stream_plain_chat(llm, &prepared.messages, &mut |evt| match evt {
-        crate::ai::llm::StreamEvent::Thinking(t) => {
-            sink(crate::agent::AgentEvent::Thinking { text: t })
-        }
-        crate::ai::llm::StreamEvent::Content(t) => {
-            sink(crate::agent::AgentEvent::Content { text: t })
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let answer =
+        crate::ai::llm::stream_plain_chat(llm, &prepared.messages, cancel, &mut |evt| match evt {
+            crate::ai::llm::StreamEvent::Thinking(t) => {
+                sink(crate::agent::AgentEvent::Thinking { text: t })
+            }
+            crate::ai::llm::StreamEvent::Content(t) => {
+                sink(crate::agent::AgentEvent::Content { text: t })
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     let model_ms = t0.elapsed().as_millis() as u64;
     Ok((
         answer,
@@ -1046,6 +1132,7 @@ pub async fn ask_question(
     selections: Option<Vec<crate::qa::SelectionInput>>,
     mode: Option<String>,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<Answer, String> {
     let mode = mode.unwrap_or_else(|| "agent".to_string());
@@ -1054,6 +1141,10 @@ pub async fn ask_question(
     // 对话级联网开关（缺省开）
     let run_settings = effective_settings(&settings, web_search.unwrap_or(true));
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     // 取/建会话与历史
     let now = chrono::Utc::now().timestamp();
@@ -1079,10 +1170,12 @@ pub async fn ask_question(
             &history,
             top_k,
             selections,
+            cancel,
             &mut sink,
         )
         .await?;
         batcher.flush();
+        let cancelled = cancel.is_some_and(|c| c.load(Ordering::Relaxed));
         let mut hist = history;
         hist.push(QaMessage {
             role: Role::User,
@@ -1106,6 +1199,7 @@ pub async fn ask_question(
             trace: vec![],
             timing,
             pending: None,
+            cancelled,
         });
     }
 
@@ -1133,6 +1227,7 @@ pub async fn ask_question(
         &history,
         selections,
         &memory,
+        cancel,
         &mut sink,
     )
     .await
@@ -1144,6 +1239,7 @@ pub async fn ask_question(
             timing,
         }) => {
             batcher.flush();
+            let cancelled = cancel.is_some_and(|c| c.load(Ordering::Relaxed));
             update_memory(&db, &llm, &conv_id, memory, &question, &citations, &trace, now).await?;
             clear_agent_state(&db, &conv_id)?;
             let mut hist = history;
@@ -1173,6 +1269,7 @@ pub async fn ask_question(
                 trace,
                 timing,
                 pending: None,
+                cancelled,
             })
         }
         Ok(crate::agent::RunResult::NeedInput {
@@ -1200,6 +1297,7 @@ pub async fn ask_question(
                     options,
                     free_text,
                 }),
+                cancelled: cancel.is_some_and(|c| c.load(Ordering::Relaxed)),
             })
         }
         Err(agent_err) => {
@@ -1212,12 +1310,14 @@ pub async fn ask_question(
                 &history,
                 top_k,
                 selections,
+                cancel,
                 &mut sink,
             )
             .await
             {
                 Ok((answer, citations, timing)) => {
                     batcher.flush();
+                    let cancelled = cancel.is_some_and(|c| c.load(Ordering::Relaxed));
                     let trace = vec![crate::agent::ToolStep {
                         name: "quick_fallback".to_string(),
                         args: serde_json::Value::Null,
@@ -1250,6 +1350,7 @@ pub async fn ask_question(
                         trace,
                         timing,
                         pending: None,
+                        cancelled,
                     })
                 }
                 Err(_) => Err(format!(
@@ -1267,6 +1368,7 @@ pub async fn ask_question_reply(
     conversation_id: String,
     reply: String,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<Answer, String> {
     let reply = reply.trim().to_string();
@@ -1277,6 +1379,10 @@ pub async fn ask_question_reply(
     let run_settings = effective_settings(&settings, web_search.unwrap_or(true));
     let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     // 校验会话与澄清状态（含过期检查）
     let state = load_agent_state(&db, &conversation_id)?
@@ -1313,7 +1419,9 @@ pub async fn ask_question_reply(
     let mut batcher = EventBatcher::new(&on_event);
     let mut sink = |evt: crate::agent::AgentEvent| batcher.push(evt);
 
-    match crate::agent::resume_agent(&llm, &db, &run_settings, state, &reply, &mut sink).await {
+    match crate::agent::resume_agent(&llm, &db, &run_settings, state, &reply, cancel, &mut sink)
+        .await
+    {
         Ok(crate::agent::RunResult::Done {
             answer,
             citations,
@@ -1321,6 +1429,7 @@ pub async fn ask_question_reply(
             timing,
         }) => {
             batcher.flush();
+            let cancelled = cancel.is_some_and(|c| c.load(Ordering::Relaxed));
             // 记忆条目以「原始问题」为主题；trace 含澄清前后全部工具
             let entry_question = hist
                 .iter()
@@ -1358,6 +1467,7 @@ pub async fn ask_question_reply(
                 trace,
                 timing,
                 pending: None,
+                cancelled,
             })
         }
         Ok(crate::agent::RunResult::NeedInput {
@@ -1384,6 +1494,7 @@ pub async fn ask_question_reply(
                     options,
                     free_text,
                 }),
+                cancelled: cancel.is_some_and(|c| c.load(Ordering::Relaxed)),
             })
         }
         Err(e) => Err(format!("深度研究续跑失败: {e}")),
@@ -1640,7 +1751,9 @@ fn append_to_system(messages: &mut [crate::ai::llm::AgentMsg], text: &str) {
 }
 
 /// 费曼阶段的 agent 研读调用：费曼消息 → 工具消息（system 追加工具指引）→ 运行循环。
-/// 返回 (回复, 思考文本, 工具轨迹, 耗时)。费曼场景不注册 ask_user，循环不会澄清中断。
+/// 返回 (回复, 思考文本, 工具轨迹, 耗时, 是否被用户暂停)。费曼场景不注册 ask_user，
+/// 循环不会澄清中断。
+#[allow(clippy::too_many_arguments)]
 async fn feynman_agent_turn(
     llm: &Llm,
     db: &Db,
@@ -1648,6 +1761,7 @@ async fn feynman_agent_turn(
     paper_id: &str,
     messages: Vec<crate::ai::llm::ChatMessage>,
     web_on: bool,
+    cancel: Option<&AtomicBool>,
     on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<
     (
@@ -1655,6 +1769,7 @@ async fn feynman_agent_turn(
         String,
         Vec<crate::agent::ToolStep>,
         crate::agent::Timing,
+        bool,
     ),
     String,
 > {
@@ -1681,6 +1796,7 @@ async fn feynman_agent_turn(
         Some(paper_id),
         &[],
         tools,
+        cancel,
         &mut sink,
     )
     .await
@@ -1692,7 +1808,8 @@ async fn feynman_agent_turn(
             ..
         }) => {
             batcher.flush();
-            Ok((answer, thinking, trace, timing))
+            let cancelled = cancel.is_some_and(|c| c.load(Ordering::Relaxed));
+            Ok((answer, thinking, trace, timing, cancelled))
         }
         Ok(crate::agent::RunResult::NeedInput { question, .. }) => {
             Err(format!("费曼场景不应触发澄清（{question}）"))
@@ -1702,6 +1819,7 @@ async fn feynman_agent_turn(
 }
 
 /// 生成当前概念的引导提问并写入其概念会话行（摘要链注入 system）。
+#[allow(clippy::too_many_arguments)]
 async fn ask_concept_opening(
     db: &Db,
     llm: &Llm,
@@ -1712,9 +1830,10 @@ async fn ask_concept_opening(
     summary_chain: &str,
     now: i64,
     web_on: bool,
+    cancel: Option<&AtomicBool>,
     on_event: &tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<
-    (String, String, Vec<crate::agent::ToolStep>, crate::agent::Timing),
+    (String, String, Vec<crate::agent::ToolStep>, crate::agent::Timing, bool),
     String,
 > {
     let query = format!("{} {}", concept.name, concept.objective);
@@ -1722,7 +1841,7 @@ async fn ask_concept_opening(
         let conn = db.conn();
         retrieve_context(&conn, paper_id, &query)?
     };
-    let (reply, thinking, trace, timing) = feynman_agent_turn(
+    let (reply, thinking, trace, timing, cancelled) = feynman_agent_turn(
         llm,
         db,
         settings,
@@ -1736,6 +1855,7 @@ async fn ask_concept_opening(
             summary_chain,
         ),
         web_on,
+        cancel,
         on_event,
     )
     .await?;
@@ -1753,7 +1873,7 @@ async fn ask_concept_opening(
         }];
         save_concept_session(&conn, concept_session_id, &history, None, now)?;
     }
-    Ok((reply, thinking, trace, timing))
+    Ok((reply, thinking, trace, timing, cancelled))
 }
 
 /// 开始费曼会话：通读论文全文 → 生成概念计划（planning 阶段），创建**主行**并持久化。
@@ -1809,6 +1929,7 @@ pub async fn feynman_start(db: State<'_, Db>, paper_id: String) -> Result<Feynma
         thinking: None,
         trace: vec![],
         timing: crate::agent::Timing::default(),
+        cancelled: false,
     })
 }
 
@@ -1820,12 +1941,17 @@ pub async fn feynman_confirm_plan(
     conversation_id: String,
     plan: Vec<PlanItem>,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     let normalized = crate::feynman::normalize_plan(plan);
     if normalized.is_empty() {
@@ -1863,7 +1989,7 @@ pub async fn feynman_confirm_plan(
         .current_concept()
         .cloned()
         .ok_or_else(|| "教学计划为空".to_string())?;
-    let (reply, thinking, trace, timing) = ask_concept_opening(
+    let (reply, thinking, trace, timing, cancelled) = ask_concept_opening(
         &db,
         &llm,
         &settings,
@@ -1873,6 +1999,7 @@ pub async fn feynman_confirm_plan(
         "",
         now,
         web_on,
+        cancel,
         &on_event,
     )
     .await?;
@@ -1889,6 +2016,7 @@ pub async fn feynman_confirm_plan(
         },
         trace,
         timing,
+        cancelled,
     })
 }
 
@@ -1904,12 +2032,17 @@ pub async fn feynman_turn(
     message: String,
     conversation_id: Option<String>,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     let (conv_id, mut history, concept_summary, idx, mut state);
     let mut full_paper: Option<String> = None;
@@ -1998,6 +2131,7 @@ pub async fn feynman_turn(
             thinking: None,
             trace: vec![],
             timing: crate::agent::Timing::default(),
+            cancelled: false,
         });
     }
     if state.concepts[idx].status == ConceptStatus::Passed {
@@ -2047,7 +2181,7 @@ pub async fn feynman_turn(
 
     // 无锁：组装并调用 LLM（学生可用工具研读论文）
     let stage_note = crate::feynman::build_stage_note(&state, idx);
-    let (reply, thinking, trace, timing) = feynman_agent_turn(
+    let (reply, thinking, trace, timing, cancelled) = feynman_agent_turn(
         &llm,
         &db,
         &settings,
@@ -2063,6 +2197,7 @@ pub async fn feynman_turn(
             &summary_chain,
         ),
         web_on,
+        cancel,
         &on_event,
     )
     .await?;
@@ -2103,6 +2238,7 @@ pub async fn feynman_turn(
         },
         trace,
         timing,
+        cancelled,
     })
 }
 
@@ -2112,12 +2248,17 @@ pub async fn feynman_quiz(
     db: State<'_, Db>,
     conversation_id: String,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     let (paper_id, idx, mut history, concept_summary) = {
         let conn = db.conn();
@@ -2158,7 +2299,7 @@ pub async fn feynman_quiz(
                 .map_err(|e| e.to_string())?,
         )
     };
-    let (reply, thinking, trace, timing) = feynman_agent_turn(
+    let (reply, thinking, trace, timing, cancelled) = feynman_agent_turn(
         &llm,
         &db,
         &settings,
@@ -2174,6 +2315,7 @@ pub async fn feynman_quiz(
             &summary_chain,
         ),
         web_on,
+        cancel,
         &on_event,
     )
     .await?;
@@ -2209,6 +2351,7 @@ pub async fn feynman_quiz(
         },
         trace,
         timing,
+        cancelled,
     })
 }
 
@@ -2220,12 +2363,17 @@ pub async fn feynman_judge(
     db: State<'_, Db>,
     conversation_id: String,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     let (paper_id, idx, mut history, concept_summary) = {
         let conn = db.conn();
@@ -2271,7 +2419,7 @@ pub async fn feynman_judge(
                 .map_err(|e| e.to_string())?,
         )
     };
-    let (reply, _thinking, trace, timing) = feynman_agent_turn(
+    let (reply, _thinking, trace, timing, cancelled) = feynman_agent_turn(
         &llm,
         &db,
         &settings,
@@ -2286,6 +2434,7 @@ pub async fn feynman_judge(
             &summary_chain,
         ),
         web_on,
+        cancel,
         &on_event,
     )
     .await?;
@@ -2357,6 +2506,7 @@ pub async fn feynman_judge(
         thinking: None, // 判定结论不展示思考链
         trace,
         timing,
+        cancelled,
     })
 }
 
@@ -2367,12 +2517,17 @@ pub async fn feynman_next(
     db: State<'_, Db>,
     conversation_id: String,
     web_search: Option<bool>,
+    cancel_token: Option<String>,
     on_event: tauri::ipc::Channel<crate::agent::AgentEvent>,
 ) -> Result<FeynmanTurn, String> {
     let settings = Settings::load().map_err(|e| e.to_string())?;
     let web_on = web_search.unwrap_or(true);
     let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
+
+    // 用户「暂停」支持：注册取消标志（CancelGuard 在命令结束时注销）
+    let cancel_guard = cancel_token.as_deref().map(CancelGuard::new);
+    let cancel: Option<&AtomicBool> = cancel_guard.as_ref().map(CancelGuard::flag);
 
     let (paper_id, idx, _, _) = {
         let conn = db.conn();
@@ -2403,6 +2558,7 @@ pub async fn feynman_next(
             thinking: None,
             trace: vec![],
             timing: crate::agent::Timing::default(),
+            cancelled: false,
         });
     }
 
@@ -2422,7 +2578,7 @@ pub async fn feynman_next(
     // 引导提问（摘要链含刚完成概念的完成摘要）
     let concept = state.plan[next_idx].clone();
     let summary_chain = crate::feynman::build_summary_chain(&state, next_idx);
-    let (reply, thinking, trace, timing) = ask_concept_opening(
+    let (reply, thinking, trace, timing, cancelled) = ask_concept_opening(
         &db,
         &llm,
         &settings,
@@ -2432,6 +2588,7 @@ pub async fn feynman_next(
         &summary_chain,
         now,
         web_on,
+        cancel,
         &on_event,
     )
     .await?;
@@ -2448,6 +2605,7 @@ pub async fn feynman_next(
         },
         trace,
         timing,
+        cancelled,
     })
 }
 
@@ -2898,5 +3056,40 @@ mod tests {
         // 清理后为 None
         clear_agent_state(&db, "c1").unwrap();
         assert!(load_agent_state(&db, "c1").unwrap().is_none());
+    }
+
+    // ---------- 生成取消注册表 ----------
+
+    #[test]
+    fn cancel_registry_request_before_register_pre_sets_flag() {
+        // 先请求（token 未注册）→ 预登记；注册时立即置位
+        request_cancel("tok-pre");
+        let flag = register_cancel("tok-pre");
+        assert!(flag.load(Ordering::Relaxed));
+        unregister_cancel("tok-pre");
+
+        // 注册后请求 → 置位
+        let flag2 = register_cancel("tok2");
+        assert!(!flag2.load(Ordering::Relaxed));
+        request_cancel("tok2");
+        assert!(flag2.load(Ordering::Relaxed));
+        unregister_cancel("tok2");
+
+        // 注销后再次请求 → 重新进预登记集（幂等）
+        request_cancel("tok3");
+        request_cancel("tok3");
+        let flag3 = register_cancel("tok3");
+        assert!(flag3.load(Ordering::Relaxed));
+        unregister_cancel("tok3");
+        assert!(!cancel_flags().lock().unwrap().contains_key("tok3"));
+    }
+
+    #[test]
+    fn cancel_guard_registers_and_unregisters() {
+        let guard = CancelGuard::new("guard-tok");
+        assert!(cancel_flags().lock().unwrap().contains_key("guard-tok"));
+        assert!(!guard.flag().load(Ordering::Relaxed));
+        drop(guard);
+        assert!(!cancel_flags().lock().unwrap().contains_key("guard-tok"));
     }
 }

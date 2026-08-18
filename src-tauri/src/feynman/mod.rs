@@ -103,6 +103,13 @@ pub struct FeynmanTurn {
     /// 本轮研读耗时
     #[serde(default)]
     pub timing: crate::agent::Timing,
+    /// 用户点击「暂停」：reply 为已生成的部分内容（可能为空）
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cancelled: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// 教学计划中的一项（一个概念 + 教学目标）。
@@ -1183,5 +1190,27 @@ mod tests {
         assert!(legacy.concepts[0].session_id.is_none());
         assert!(legacy.concepts[0].summary.is_none());
         assert_eq!(legacy.concepts[0].status, ConceptStatus::Passed);
+    }
+
+    #[test]
+    fn feynman_turn_cancelled_roundtrips_and_defaults_false() {
+        let turn = FeynmanTurn {
+            conversation_id: "c1".into(),
+            reply: "部分回答".into(),
+            state: None,
+            concept_session_id: None,
+            thinking: None,
+            trace: vec![],
+            timing: Default::default(),
+            cancelled: true,
+        };
+        let json = serde_json::to_string(&turn).unwrap();
+        let back: FeynmanTurn = serde_json::from_str(&json).unwrap();
+        assert!(back.cancelled);
+        // 旧 JSON（缺 cancelled 字段）→ false（向后兼容）
+        let old: FeynmanTurn =
+            serde_json::from_str(r#"{"conversation_id":"c1","reply":"旧回复"}"#).unwrap();
+        assert!(!old.cancelled);
+        assert_eq!(old.reply, "旧回复");
     }
 }

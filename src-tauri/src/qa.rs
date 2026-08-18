@@ -90,6 +90,13 @@ pub struct Answer {
     /// 模型请求澄清（answer 为空时携带）；无澄清为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<PendingAsk>,
+    /// 用户点击「暂停」：answer 为已生成的部分内容（可能为空）
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cancelled: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// 按字符数截断（超长补省略号）。`pub(crate)` 供命令层截会话标题复用。

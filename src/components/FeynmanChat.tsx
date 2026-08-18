@@ -11,6 +11,7 @@ import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import { WebToggle } from "@/components/WebToggle";
 import {
+  cancelGeneration,
   feynmanConfirmPlan,
   feynmanJudge,
   feynmanNext,
@@ -43,6 +44,7 @@ import {
   RotateCcw,
   SendHorizonal,
   Sparkles,
+  Square,
   Trash2,
   TriangleAlert,
   X,
@@ -109,6 +111,10 @@ export function FeynmanChat({ paperId }: Props) {
   /** 联网搜索开关（默认开；未配置 provider 时显示「未配置」提示） */
   const [webOn, setWebOn] = useState(true);
   const [webConfigured, setWebConfigured] = useState(true);
+  /** 本次生成操作的取消令牌：「暂停」按钮据此中止（每次生成重新生成） */
+  const cancelTokenRef = useRef<string | null>(null);
+  /** 本轮被用户暂停：显示「已暂停」提示（下次操作清除） */
+  const [pausedNote, setPausedNote] = useState(false);
 
   // 挂载时读取联网搜索配置状态
   useEffect(() => {
@@ -132,6 +138,8 @@ export function FeynmanChat({ paperId }: Props) {
   const [nexting, setNexting] = useState(false);
   const [review, setReview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 任一生成进行中（对话/测验/判定/下一概念/计划确认） */
+  const busy = sending || quizzing || judging || nexting || planning;
   // 计划编辑草稿（planning 阶段）
   const [planDraft, setPlanDraft] = useState<PlanDraftItem[]>([]);
   const [newName, setNewName] = useState("");
@@ -284,14 +292,17 @@ export function FeynmanChat({ paperId }: Props) {
     if (!mainConvId || planDraft.length === 0 || planning) return;
     setPlanning(true);
     setError(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     try {
       const plan: PlanItem[] = planDraft.map(({ id: _id, ...rest }) => rest);
       resetLive();
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanConfirmPlan(mainConvId, plan, webOn, ch);
+      const turn = await feynmanConfirmPlan(mainConvId, plan, webOn, cancelTokenRef.current, ch);
       setLiveText("");
       setFs(turn.state ?? null);
+      if (turn.cancelled && !turn.reply) setPausedNote(true);
       // 创建了概念 0 会话行：初始化其消息（学生引导提问）
       if (turn.concept_session_id) {
         setActiveIndex(0);
@@ -360,6 +371,8 @@ export function FeynmanChat({ paperId }: Props) {
     setSending(true);
     setError(null);
     setReview(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     resetLive();
     setConceptMessages((prev) => ({
       ...prev,
@@ -368,7 +381,15 @@ export function FeynmanChat({ paperId }: Props) {
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanTurn(content, paperId, activeSessionId, webOn, ch);
+      const turn = await feynmanTurn(
+        content,
+        paperId,
+        activeSessionId,
+        webOn,
+        cancelTokenRef.current,
+        ch,
+      );
+      if (turn.cancelled && !turn.reply) setPausedNote(true);
       if (turn.reply) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -399,11 +420,14 @@ export function FeynmanChat({ paperId }: Props) {
     setQuizzing(true);
     setError(null);
     setReview(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     resetLive();
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanQuiz(activeSessionId, webOn, ch);
+      const turn = await feynmanQuiz(activeSessionId, webOn, cancelTokenRef.current, ch);
+      if (turn.cancelled && !turn.reply) setPausedNote(true);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -429,11 +453,14 @@ export function FeynmanChat({ paperId }: Props) {
     setJudging(true);
     setError(null);
     setReview(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     resetLive();
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanJudge(activeSessionId, webOn, ch);
+      const turn = await feynmanJudge(activeSessionId, webOn, cancelTokenRef.current, ch);
+      if (turn.cancelled && !turn.reply) setPausedNote(true);
       if (turn.reply && idx !== null) {
         setConceptMessages((prev) => ({
           ...prev,
@@ -457,13 +484,16 @@ export function FeynmanChat({ paperId }: Props) {
     setNexting(true);
     setError(null);
     setReview(null);
+    setPausedNote(false);
+    cancelTokenRef.current = crypto.randomUUID();
     try {
       resetLive();
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
-      const turn = await feynmanNext(activeSessionId, webOn, ch);
+      const turn = await feynmanNext(activeSessionId, webOn, cancelTokenRef.current, ch);
       setLiveText("");
       setFs(turn.state ?? null);
+      if (turn.cancelled && !turn.reply) setPausedNote(true);
       // 新概念会话行创建：切换到新 Tab 并初始化其消息（学生引导提问）
       if (turn.state && turn.concept_session_id) {
         const nextIdx = turn.state.current_index;
@@ -945,6 +975,12 @@ export function FeynmanChat({ paperId }: Props) {
             )}
           </>
         )}
+        {/* 已暂停提示（本轮被用户暂停且无正文可提交时） */}
+        {pausedNote && !busy && (
+          <div className="flex justify-center">
+            <span className="text-[11px] text-muted-foreground">已暂停</span>
+          </div>
+        )}
 
         {review && (
           <div className="flex justify-start">
@@ -1029,18 +1065,27 @@ export function FeynmanChat({ paperId }: Props) {
             )}
           </Button>
         )}
-        <Button
-          size="icon"
-          onClick={() => void handleSend()}
-          disabled={sending || !input.trim() || legacy || !activeSessionId}
-          className="pressable h-11 w-11"
-        >
-          {sending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
+        {busy ? (
+          <Button
+            size="icon"
+            onClick={() => {
+              if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
+            }}
+            title="暂停生成"
+            className="pressable h-11 w-11"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button
+            size="icon"
+            onClick={() => void handleSend()}
+            disabled={!input.trim() || legacy || !activeSessionId}
+            className="pressable h-11 w-11"
+          >
             <SendHorizonal className="h-4 w-4" />
-          )}
-        </Button>
+          </Button>
+        )}
       </div>
     </div>
   );

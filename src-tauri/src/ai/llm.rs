@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Anthropic Messages API 要求显式 `max_tokens`。
 const ANTHROPIC_MAX_TOKENS: u32 = 8192;
@@ -139,19 +140,39 @@ pub trait LlmChat {
         }
         Ok(resp)
     }
+
+    /// 可中断流式版：`cancel` 为 `Some` 时，SSE 读取循环每收到一个 chunk 检查该标志，
+    /// 置位则立即中断（丢弃响应流 = 断开 HTTP）并返回**已累积的部分响应**
+    /// （正文/思考/工具参数按已收到部分汇总）。默认实现忽略标志（等价于
+    /// [`Self::stream_chat_with_tools`]），供测试假实现与非流式场景复用。
+    async fn stream_chat_with_tools_abortable(
+        &self,
+        messages: &[AgentMsg],
+        tools: &[ToolDef],
+        cancel: Option<&AtomicBool>,
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatResponse> {
+        let _ = cancel;
+        self.stream_chat_with_tools(messages, tools, on_event).await
+    }
 }
 
 /// 无工具调用的流式对话（快速问答用）：返回最终文本。
+///
+/// `cancel`：用户「暂停」标志，置位时中断并返回已生成的部分文本。
 pub async fn stream_plain_chat<L: LlmChat>(
     llm: &L,
     messages: &[ChatMessage],
+    cancel: Option<&AtomicBool>,
     on_event: &mut (dyn FnMut(StreamEvent) + Send),
 ) -> Result<String> {
     let agent_msgs: Vec<AgentMsg> = messages
         .iter()
         .map(|m| AgentMsg::Plain(m.clone()))
         .collect();
-    let resp = llm.stream_chat_with_tools(&agent_msgs, &[], on_event).await?;
+    let resp = llm
+        .stream_chat_with_tools_abortable(&agent_msgs, &[], cancel, on_event)
+        .await?;
     resp.content.ok_or_else(|| anyhow::anyhow!("LLM 响应缺少 content"))
 }
 
@@ -305,16 +326,30 @@ impl LlmChat for Llm {
         tools: &[ToolDef],
         on_event: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ChatResponse> {
+        self.stream_chat_with_tools_abortable(messages, tools, None, on_event)
+            .await
+    }
+
+    /// 可中断流式版：SSE 逐 token 转发思考/正文，每个 chunk 检查取消标志，
+    /// 置位则中断并返回已累积部分；SSE 中途失败回退非流式重试一次。
+    async fn stream_chat_with_tools_abortable(
+        &self,
+        messages: &[AgentMsg],
+        tools: &[ToolDef],
+        cancel: Option<&AtomicBool>,
+        on_event: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ChatResponse> {
         let result = match self {
             Llm::OpenAiCompat {
                 base_url,
                 api_key,
                 model,
             } => {
-                stream_openai_compat(base_url, api_key, model, messages, tools, on_event).await
+                stream_openai_compat(base_url, api_key, model, messages, tools, cancel, on_event)
+                    .await
             }
             Llm::Anthropic { api_key, model } => {
-                stream_anthropic(api_key, model, messages, tools, on_event).await
+                stream_anthropic(api_key, model, messages, tools, cancel, on_event).await
             }
         };
         match result {
@@ -345,12 +380,15 @@ fn drain_lines(buf: &mut Vec<u8>, on_line: &mut dyn FnMut(String)) {
 }
 
 /// OpenAI 兼容端流式调用：`stream: true` + SSE 解析。
+///
+/// `cancel`：用户「暂停」标志，置位时中断读取（断开 HTTP）并返回已累积的部分响应。
 async fn stream_openai_compat(
     base_url: &str,
     api_key: &str,
     model: &str,
     messages: &[AgentMsg],
     tools: &[ToolDef],
+    cancel: Option<&AtomicBool>,
     on_event: &mut (dyn FnMut(StreamEvent) + Send),
 ) -> Result<ChatResponse> {
     let mut body = openai_body_with_tools(model, messages, tools);
@@ -374,6 +412,10 @@ async fn stream_openai_compat(
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            // 用户暂停：丢弃响应流（中断 HTTP），返回已累积的部分响应
+            break;
+        }
         let chunk = chunk.context("读取流失败")?;
         buf.extend_from_slice(&chunk);
         drain_lines(&mut buf, &mut |line| {
@@ -386,11 +428,14 @@ async fn stream_openai_compat(
 }
 
 /// Anthropic 端流式调用：`stream: true` + SSE 事件解析。
+///
+/// `cancel`：用户「暂停」标志，置位时中断读取（断开 HTTP）并返回已累积的部分响应。
 async fn stream_anthropic(
     api_key: &str,
     model: &str,
     messages: &[AgentMsg],
     tools: &[ToolDef],
+    cancel: Option<&AtomicBool>,
     on_event: &mut (dyn FnMut(StreamEvent) + Send),
 ) -> Result<ChatResponse> {
     let mut body = anthropic_body_with_tools(model, messages, tools);
@@ -413,6 +458,10 @@ async fn stream_anthropic(
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            // 用户暂停：丢弃响应流（中断 HTTP），返回已累积的部分响应
+            break;
+        }
         let chunk = chunk.context("读取流失败")?;
         buf.extend_from_slice(&chunk);
         drain_lines(&mut buf, &mut |line| {

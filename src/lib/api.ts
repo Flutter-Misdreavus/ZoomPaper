@@ -128,6 +128,8 @@ export interface Answer {
   timing: Timing;
   /** 模型请求澄清（answer 为空时携带）；无澄清为 null/缺省 */
   pending?: PendingAsk | null;
+  /** 用户点击「暂停」：answer 为已生成的部分内容（可能为空） */
+  cancelled?: boolean;
 }
 
 export interface Conversation {
@@ -204,6 +206,8 @@ export interface FeynmanTurn {
   trace?: ToolStep[];
   /** 本轮研读耗时 */
   timing?: Timing;
+  /** 用户点击「暂停」：reply 为已生成的部分内容（可能为空） */
+  cancelled?: boolean;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -279,6 +283,8 @@ export const askQuestion = (
     mode?: "quick" | "agent";
     /** 联网搜索开关（缺省开） */
     webSearch?: boolean;
+    /** 本次发送生成的取消令牌：「暂停」按钮据此中止生成 */
+    cancelToken?: string | null;
     /** 实时事件流（思考/正文/工具状态） */
     onEvent?: Channel<AgentEvent>;
   },
@@ -291,6 +297,7 @@ export const askQuestion = (
     selections: opts?.selections ?? null,
     mode: opts?.mode ?? "agent",
     webSearch: opts?.webSearch ?? true,
+    cancelToken: opts?.cancelToken ?? null,
     // 后端 Channel 参数必填（null 会导致参数反序列化失败），缺省时创建空通道
     onEvent: opts?.onEvent ?? new Channel<AgentEvent>(),
   });
@@ -300,14 +307,20 @@ export const askQuestionReply = (
   conversationId: string,
   reply: string,
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<Answer>("ask_question_reply", {
     conversationId,
     reply,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
+
+/** 「暂停」：中止指定 cancelToken 对应的生成（幂等） */
+export const cancelGeneration = (cancelToken: string) =>
+  invoke<void>("cancel_generation", { cancelToken });
 
 export const listConversations = () =>
   invoke<Conversation[]>("list_conversations");
@@ -322,12 +335,14 @@ export const feynmanConfirmPlan = (
   conversationId: string,
   plan: PlanItem[],
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_confirm_plan", {
     conversationId,
     plan,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -336,6 +351,7 @@ export const feynmanTurn = (
   paperId: string,
   conversationId?: string | null,
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_turn", {
@@ -343,6 +359,7 @@ export const feynmanTurn = (
     paperId,
     conversationId: conversationId ?? null,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -350,11 +367,13 @@ export const feynmanTurn = (
 export const feynmanQuiz = (
   conversationId: string,
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_quiz", {
     conversationId,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -362,11 +381,13 @@ export const feynmanQuiz = (
 export const feynmanJudge = (
   conversationId: string,
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_judge", {
     conversationId,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
@@ -374,11 +395,13 @@ export const feynmanJudge = (
 export const feynmanNext = (
   conversationId: string,
   webSearch?: boolean,
+  cancelToken?: string | null,
   onEvent?: Channel<AgentEvent>,
 ) =>
   invoke<FeynmanTurn>("feynman_next", {
     conversationId,
     webSearch: webSearch ?? true,
+    cancelToken: cancelToken ?? null,
     onEvent: onEvent ?? new Channel<AgentEvent>(),
   });
 
