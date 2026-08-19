@@ -168,13 +168,33 @@
   --zp-surface-active: #333333;
 }
 
-/* 批量操作栏 slideDown 浮现 */
-@keyframes zp-bulk-slide-down {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
+/* 批量操作栏入场：材质到达（opacity + scale 同步），200ms 强 ease-out */
+@keyframes zp-bulk-enter {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* 减少动态：退化为纯淡入（保留 opacity，去掉位移/缩放） */
+@keyframes zp-bulk-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 .zp-bulk-bar {
-  animation: zp-bulk-slide-down 200ms ease-out;
+  animation: zp-bulk-enter 200ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .zp-bulk-bar {
+    animation-name: zp-bulk-fade;
+  }
+}
+/* 减少透明：磨砂降级为实色 */
+@media (prefers-reduced-transparency: reduce) {
+  .zp-bulk-bar {
+    background: white;
+    backdrop-filter: none;
+  }
+  .dark .zp-bulk-bar {
+    background: #171717;
+  }
 }
 
 @layer base {

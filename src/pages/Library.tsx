@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { AnimatePresence } from "motion/react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -409,17 +410,19 @@ export function Library({ onOpenPaper }: Props) {
 
         <FilterBar value={filter} onChange={handleFilterChange} />
 
-        {/* 批量操作栏：选中 ≥1 篇时浮现 */}
-        {selectedSize > 0 && (
-          <BulkBar
-            count={selectedSize}
-            onMarkRead={() => void handleBulkSetStatus("read")}
-            onSetStatus={(s) => void handleBulkSetStatus(s)}
-            onPickFolder={handleBulkPickFolder}
-            onDelete={() => setDeleteTargets(selectedPapers)}
-            onClose={clear}
-          />
-        )}
+        {/* 批量操作栏：选中 ≥1 篇时浮现（入场/退场动画） */}
+        <AnimatePresence>
+          {selectedSize > 0 && (
+            <BulkBar
+              count={selectedSize}
+              onMarkRead={() => void handleBulkSetStatus("read")}
+              onSetStatus={(s) => void handleBulkSetStatus(s)}
+              onPickFolder={handleBulkPickFolder}
+              onDelete={() => setDeleteTargets(selectedPapers)}
+              onClose={clear}
+            />
+          )}
+        </AnimatePresence>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {error && (

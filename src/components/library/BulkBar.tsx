@@ -1,14 +1,16 @@
 /**
  * 批量操作栏（BulkBar）：选中 ≥1 篇论文时浮现。
- * 深色背景（bg-primary），圆角 10px；左「X 篇已选」，中区操作按钮组
- * （标记已读 / 标记状态菜单 / 添加到文件夹 / 删除），右侧关闭按钮。
+ * 浅色磨砂浮动工具条：材质最轻 → 次级按钮（灰阶）→ 仅「标记已读」一个深色主按钮，
+ * 删除为红字浅红底。入场 200ms ease-out（opacity + scale），退出由外层 AnimatePresence 控制。
  */
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
+import { motion, useReducedMotion } from "motion/react";
 import { ChevronDown, FolderPlus, Trash2, X } from "lucide-react";
 import type { ReadingStatus } from "@/lib/api";
 
+/** 次级按钮：灰阶 ghost，hover 浮起 */
 const BAR_BTN =
-  "flex items-center gap-1.5 rounded-md bg-white/10 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-white/20";
+  "pressable flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-zp-secondary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary";
 
 const MENU_ITEM_CLASS =
   "flex w-full cursor-default select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
@@ -33,12 +35,29 @@ interface Props {
 }
 
 export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete, onClose }: Props) {
+  const reduceMotion = useReducedMotion();
+
   return (
-    <div className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-2 rounded-[10px] bg-zp-primary px-6 py-2.5 shadow-lg">
+    <motion.div
+      initial={{
+        opacity: 0,
+        y: reduceMotion ? 0 : -6,
+        scale: reduceMotion ? 1 : 0.98,
+      }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{
+        opacity: 0,
+        y: reduceMotion ? 0 : -4,
+        transition: { duration: 0.15, ease: [0.23, 1, 0.32, 1] },
+      }}
+      transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-2 rounded-xl border border-zp-border bg-white px-5 py-2 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-white/75 dark:bg-zp-surface/80"
+    >
       {/* 左区：计数 */}
-      <span className="mr-1 shrink-0 text-sm font-medium text-white tabular-nums">
+      <span className="mr-1 shrink-0 text-sm font-medium text-zp-primary tabular-nums">
         {count} 篇已选
       </span>
+      <span className="h-4 w-px shrink-0 bg-zp-border" aria-hidden />
 
       {/* 中区：操作按钮组 */}
       <button type="button" className={BAR_BTN} onClick={onMarkRead}>
@@ -76,9 +95,10 @@ export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete
         添加到文件夹
       </button>
 
+      {/* 删除：红字浅红底（危险可见但不过重） */}
       <button
         type="button"
-        className="flex items-center gap-1.5 rounded-md bg-[rgba(239,68,68,0.2)] px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-[rgba(239,68,68,0.3)]"
+        className="pressable flex items-center gap-1.5 rounded-md bg-red-500/10 px-3 py-1.5 text-[13px] text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400"
         onClick={onDelete}
       >
         <Trash2 className="h-4 w-4" />
@@ -91,10 +111,10 @@ export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete
         title="清空选择"
         aria-label="清空选择"
         onClick={onClose}
-        className="pressable ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+        className="pressable ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-zp-quaternary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary"
       >
         <X className="h-4 w-4" />
       </button>
-    </div>
+    </motion.div>
   );
 }
