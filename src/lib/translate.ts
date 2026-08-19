@@ -119,6 +119,30 @@ export interface PairResult {
   restZh: string[];
 }
 
+/**
+ * 对齐条目（文档顺序）：供渲染与「段落级自动补齐缺失译文」定位。
+ * - `pair`：英文段与译文配对成功；
+ * - `missing`：英文段无中文译文；`zhInsertIdx` 为译文应回填到所属块 zh 段列表的位置；
+ * - `extra`：多余译文段。
+ */
+export type AlignEntry =
+  | {
+      kind: "pair";
+      en: string;
+      zh: string;
+      chunkIdx: number;
+      enIdx: number;
+      zhIdx: number;
+    }
+  | { kind: "missing"; en: string; chunkIdx: number; enIdx: number; zhInsertIdx: number }
+  | { kind: "extra"; zh: string; chunkIdx: number; zhIdx: number };
+
+/** 对齐条目（不含 chunkIdx，由 pairChunksDetailed 统一盖章） */
+type RunEntry =
+  | { kind: "pair"; en: string; zh: string; enIdx: number; zhIdx: number }
+  | { kind: "missing"; en: string; enIdx: number; zhInsertIdx: number }
+  | { kind: "extra"; zh: string; zhIdx: number };
+
 /** 块类型：配对打分时优先同类相配（标题由标题锚定单独处理） */
 type BlockKind =
   | "heading"
@@ -166,15 +190,21 @@ function blockSignature(block: string): BlockSig {
 }
 
 /**
- * 段内单调对齐（DP）：英文块与中文块按顺序做最优点配对。
+ * 段内单调对齐（DP）：英文块与中文块按顺序做最优点配对，产出有序条目。
  * - 允许 1 个英文块吸收连续 1–3 个中文块（LLM 拆段时就近合并）；
  * - 允许单边缺口：英文缺口（无中文译文）惩罚 -0.5、中文缺口（多余译文）惩罚 -1.0；
  * - 配对得分 = kind 匹配（同类 +2、para↔list +1、涉标题 0）+ 3×共享锚点数
  *   + 长度比拟合（0.4–1.3 倍 +2、0.2–2.5 倍 +1）- 合并惩罚（每多合并一段 -0.5）；
  * - 并列时按「小合并 > 大合并 > 英文缺口 > 中文缺口」回溯，保证确定性；
- * - 得分 < 0.5 的候选对不渲染为配对，转为 rest（宁可标「缺译文」，不显示错配）。
+ * - 得分 < 0.5 的候选对不渲染为配对，转为 missing + extra（宁标「缺译文」，不错配）。
+ * - `enOffset` / `zhOffset`：该区间在所属块内的起始索引，用于产出块内全局索引。
  */
-function alignRun(enRun: string[], zhRun: string[]): PairResult {
+function alignRun(
+  enRun: string[],
+  zhRun: string[],
+  enOffset: number,
+  zhOffset: number,
+): RunEntry[] {
   const n = enRun.length;
   const m = zhRun.length;
   const enSigs = enRun.map(blockSignature);
@@ -183,14 +213,25 @@ function alignRun(enRun: string[], zhRun: string[]): PairResult {
   // 若类型不一致（如一侧漏译标题，标题块落入区间），落入下方 DP 按分匹配，
   // 避免出现「标题 ↔ 段落」这类错配。
   if (n === m && enSigs.every((s, i) => s.kind === zhSigs[i].kind)) {
-    return {
-      pairs: enRun.map((en, i) => ({ en, zh: zhRun[i] })),
-      restEn: [],
-      restZh: [],
-    };
+    return enRun.map((en, i) => ({
+      kind: "pair",
+      en,
+      zh: zhRun[i],
+      enIdx: enOffset + i,
+      zhIdx: zhOffset + i,
+    }));
   }
-  if (n === 0) return { pairs: [], restEn: [], restZh: [...zhRun] };
-  if (m === 0) return { pairs: [], restEn: [...enRun], restZh: [] };
+  if (n === 0) {
+    return zhRun.map((zh, i) => ({ kind: "extra", zh, zhIdx: zhOffset + i }));
+  }
+  if (m === 0) {
+    return enRun.map((en, i) => ({
+      kind: "missing",
+      en,
+      enIdx: enOffset + i,
+      zhInsertIdx: zhOffset,
+    }));
+  }
 
   const scoreGroup = (ei: number, zStart: number, zEnd: number): number => {
     const es = enSigs[ei];
@@ -264,41 +305,56 @@ function alignRun(enRun: string[], zhRun: string[]): PairResult {
 
   let i = n;
   let j = m;
-  const pairs: { en: string; zh: string }[] = [];
-  const restEn: string[] = [];
-  const restZh: string[] = [];
+  const entries: RunEntry[] = [];
   while (i > 0 || j > 0) {
     const mv = i > 0 && j > 0 ? back[i][j] : null;
     if (mv && mv.kind === "pair") {
       const zStart = j - mv.mm;
       const s = scoreGroup(i - 1, zStart, j);
       if (s >= 0.5) {
-        pairs.unshift({
+        entries.unshift({
+          kind: "pair",
           en: enRun[i - 1],
           zh: zhRun.slice(zStart, j).join("\n\n"),
+          enIdx: enOffset + i - 1,
+          zhIdx: zhOffset + zStart,
         });
       } else {
-        restEn.unshift(enRun[i - 1]);
-        restZh.unshift(...zhRun.slice(zStart, j));
+        // 得分过低：不渲染为配对，英文段标缺失、原组中文段标多余（均不丢失）
+        for (let k = j - 1; k >= zStart; k--) {
+          entries.unshift({ kind: "extra", zh: zhRun[k], zhIdx: zhOffset + k });
+        }
+        entries.unshift({
+          kind: "missing",
+          en: enRun[i - 1],
+          enIdx: enOffset + i - 1,
+          zhInsertIdx: zhOffset + zStart,
+        });
       }
       i -= 1;
       j = zStart;
     } else if (i > 0 && (mv === null || mv.kind === "engap")) {
-      restEn.unshift(enRun[i - 1]);
+      // 英文缺口：缺译文，回填位 = 该英文段之前已消费的中文段数
+      entries.unshift({
+        kind: "missing",
+        en: enRun[i - 1],
+        enIdx: enOffset + i - 1,
+        zhInsertIdx: zhOffset + j,
+      });
       i -= 1;
     } else {
-      restZh.unshift(zhRun[j - 1]);
+      entries.unshift({ kind: "extra", zh: zhRun[j - 1], zhIdx: zhOffset + j - 1 });
       j -= 1;
     }
   }
-  return { pairs, restEn, restZh };
+  return entries;
 }
 
 /**
  * 块级对齐：标题两两按序锚定后，把标题之间的非标题区间分别做段内单调对齐。
  * 标题对本身直接配对；标题数不一致时，多余标题随所在区间按普通块处理。
  */
-function alignBlocks(enB: string[], zhB: string[]): PairResult {
+function alignBlocks(enB: string[], zhB: string[]): RunEntry[] {
   const enH: number[] = [];
   const zhH: number[] = [];
   enB.forEach((b, i) => {
@@ -308,26 +364,57 @@ function alignBlocks(enB: string[], zhB: string[]): PairResult {
     if (blockSignature(b).kind === "heading") zhH.push(i);
   });
 
-  const pairs: { en: string; zh: string }[] = [];
-  const restEn: string[] = [];
-  const restZh: string[] = [];
-  const consume = (r: PairResult) => {
-    pairs.push(...r.pairs);
-    restEn.push(...r.restEn);
-    restZh.push(...r.restZh);
-  };
-
+  const entries: RunEntry[] = [];
   let es = 0;
   let zs = 0;
   const h = Math.min(enH.length, zhH.length);
   for (let k = 0; k < h; k++) {
-    consume(alignRun(enB.slice(es, enH[k]), zhB.slice(zs, zhH[k])));
-    pairs.push({ en: enB[enH[k]], zh: zhB[zhH[k]] });
+    entries.push(...alignRun(enB.slice(es, enH[k]), zhB.slice(zs, zhH[k]), es, zs));
+    entries.push({
+      kind: "pair",
+      en: enB[enH[k]],
+      zh: zhB[zhH[k]],
+      enIdx: enH[k],
+      zhIdx: zhH[k],
+    });
     es = enH[k] + 1;
     zs = zhH[k] + 1;
   }
-  consume(alignRun(enB.slice(es), zhB.slice(zs)));
-  return { pairs, restEn, restZh };
+  entries.push(...alignRun(enB.slice(es), zhB.slice(zs), es, zs));
+  return entries;
+}
+
+/**
+ * 对照模式全局配对（详细版）：逐块对齐并产出带 chunkIdx 的有序条目，
+ * 供渲染与「自动补齐缺失译文」定位；同时派生扁平的 pairs / restEn / restZh。
+ */
+export function pairChunksDetailed(chunks: TranslationChunk[]): {
+  entries: AlignEntry[];
+  pairs: { en: string; zh: string }[];
+  restEn: string[];
+  restZh: string[];
+  enCount: number;
+  zhCount: number;
+} {
+  const entries: AlignEntry[] = [];
+  const pairs: { en: string; zh: string }[] = [];
+  const restEn: string[] = [];
+  const restZh: string[] = [];
+  let enCount = 0;
+  let zhCount = 0;
+  chunks.forEach((c, chunkIdx) => {
+    const enB = splitBlocks(c.en);
+    const zhB = splitBlocks(c.zh);
+    enCount += enB.length;
+    zhCount += zhB.length;
+    for (const e of alignBlocks(enB, zhB)) {
+      entries.push({ ...e, chunkIdx });
+      if (e.kind === "pair") pairs.push({ en: e.en, zh: e.zh });
+      else if (e.kind === "missing") restEn.push(e.en);
+      else restZh.push(e.zh);
+    }
+  });
+  return { entries, pairs, restEn, restZh, enCount, zhCount };
 }
 
 /**
@@ -338,22 +425,83 @@ function alignBlocks(enB: string[], zhB: string[]): PairResult {
 export function pairChunks(
   chunks: TranslationChunk[],
 ): PairResult & { enCount: number; zhCount: number } {
-  const pairs: { en: string; zh: string }[] = [];
-  const restEn: string[] = [];
-  const restZh: string[] = [];
-  let enCount = 0;
-  let zhCount = 0;
-  for (const c of chunks) {
-    const enB = splitBlocks(c.en);
-    const zhB = splitBlocks(c.zh);
-    enCount += enB.length;
-    zhCount += zhB.length;
-    const r = alignBlocks(enB, zhB);
-    pairs.push(...r.pairs);
-    restEn.push(...r.restEn);
-    restZh.push(...r.restZh);
+  const d = pairChunksDetailed(chunks);
+  return {
+    pairs: d.pairs,
+    restEn: d.restEn,
+    restZh: d.restZh,
+    enCount: d.enCount,
+    zhCount: d.zhCount,
+  };
+}
+
+/**
+ * 在块 zh 的段列表指定位置插入若干新译文段（纯函数）。
+ * `insertIdx` 越界时钳制到 0..length；段间以空行连接。
+ */
+export function insertZhBlocks(
+  zh: string,
+  insertIdx: number,
+  newBlocks: string[],
+): string {
+  const blocks = splitBlocks(zh);
+  const idx = Math.max(0, Math.min(insertIdx, blocks.length));
+  blocks.splice(idx, 0, ...newBlocks);
+  return blocks.join("\n\n");
+}
+
+/**
+ * 自动补齐缺失译文：检查对齐结果，若有「无中文译文」段落，逐个重新要求模型翻译，
+ * 回填到所属块的 zh 并返回更新后的 chunks。
+ *
+ * - 每轮只处理第一个未尝试过的缺失段，回填后重新对齐（保证同块多处缺失时插入位最新）；
+ * - 翻译为空或抛错 → 记失败并加入跳过集（该段最多尝试一次），避免对同一段死循环；
+ * - 每个成功的回填都会让该块中文段数 +1，最终段数相等走 1:1 快路径，缺失清零；
+ * - 轮次上限 = min(100, 初始缺失数 × 2 + 5)，仅作病态情形（如标题译文始终无法配对）兜底；
+ * - translate 由调用方注入（生产 = translateChunk，测试 = 假实现）。
+ */
+export async function fillMissingChunks(
+  chunks: TranslationChunk[],
+  translate: (text: string) => Promise<string>,
+  opts?: { maxRounds?: number },
+): Promise<{ chunks: TranslationChunk[]; filled: number; failed: number }> {
+  const { entries: initial } = pairChunksDetailed(chunks);
+  const initialMissing = initial.filter((e) => e.kind === "missing").length;
+  const maxRounds =
+    opts?.maxRounds ?? Math.min(100, initialMissing * 2 + 5);
+  let cur = chunks;
+  let filled = 0;
+  let failed = 0;
+  const skipped = new Set<string>();
+  for (let round = 0; round < maxRounds; round++) {
+    const { entries } = pairChunksDetailed(cur);
+    const missing = entries.filter(
+      (e): e is Extract<AlignEntry, { kind: "missing" }> => e.kind === "missing",
+    );
+    if (missing.length === 0) break;
+    const target = missing.find(
+      (m) => !skipped.has(`${m.chunkIdx}:${m.enIdx}`),
+    );
+    if (!target) break; // 所有缺失段都已尝试过且失败
+    try {
+      const zh = await translate(target.en);
+      const blocks = splitBlocks(zh);
+      if (blocks.length > 0) {
+        cur = cur.map((c, i) =>
+          i !== target.chunkIdx
+            ? c
+            : { ...c, zh: insertZhBlocks(c.zh, target.zhInsertIdx, blocks) },
+        );
+        filled += 1;
+        continue; // 回填后重新对齐，再找下一个缺失段
+      }
+    } catch {
+      // 翻译抛错：计入失败并跳过该段
+    }
+    skipped.add(`${target.chunkIdx}:${target.enIdx}`);
+    failed += 1;
   }
-  return { pairs, restEn, restZh, enCount, zhCount };
+  return { chunks: cur, filled, failed };
 }
 
 /**

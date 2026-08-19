@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildZhDoc,
   chunkMarkdown,
+  fillMissingChunks,
+  insertZhBlocks,
   pairChunks,
+  pairChunksDetailed,
   splitBlocks,
   splitReferences,
   stripStandaloneImagesAndMath,
@@ -248,5 +251,193 @@ describe("翻译流程基础函数", () => {
     expect(out).not.toContain("$x+y$");
     expect(out).not.toContain("img.png");
     expect(out).toContain("end $y$");
+  });
+});
+
+// ---------- 段落级自动补齐：insertZhBlocks ----------
+
+describe("insertZhBlocks", () => {
+  it("插入到开头 / 中间 / 末尾", () => {
+    expect(insertZhBlocks("a\n\nb", 0, ["x"])).toBe("x\n\na\n\nb");
+    expect(insertZhBlocks("a\n\nb", 1, ["x"])).toBe("a\n\nx\n\nb");
+    expect(insertZhBlocks("a\n\nb", 2, ["x"])).toBe("a\n\nb\n\nx");
+  });
+
+  it("多段插入保持顺序", () => {
+    expect(insertZhBlocks("a", 0, ["x", "y"])).toBe("x\n\ny\n\na");
+  });
+
+  it("空 zh 也可插入", () => {
+    expect(insertZhBlocks("", 0, ["x"])).toBe("x");
+  });
+
+  it("围栏代码块内容不受影响", () => {
+    expect(insertZhBlocks("```\ncode\n```", 1, ["x"])).toBe(
+      "```\ncode\n```\n\nx",
+    );
+  });
+
+  it("越界索引钳制到边界", () => {
+    expect(insertZhBlocks("a", 99, ["x"])).toBe("a\n\nx");
+    expect(insertZhBlocks("a", -3, ["x"])).toBe("x\n\na");
+  });
+});
+
+// ---------- 段落级自动补齐：pairChunksDetailed 结构 ----------
+
+describe("pairChunksDetailed 结构", () => {
+  it("缺段条目带正确的 chunkIdx / enIdx / zhInsertIdx", () => {
+    const chunks: TranslationChunk[] = [
+      { en: "C1A.\n\nC1B.", zh: "T1A。\n\nT1B。" },
+      {
+        en: "Short one.\n\nThis is a considerably longer second paragraph with lots of words to clearly dominate in length.\n\nShort three.",
+        zh: "短一。\n\n短三。",
+      },
+    ];
+    const d = pairChunksDetailed(chunks);
+    const missing = d.entries.filter((e) => e.kind === "missing");
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatchObject({
+      kind: "missing",
+      chunkIdx: 1,
+      enIdx: 1,
+      zhInsertIdx: 1,
+    });
+    expect(d.restEn).toEqual([
+      "This is a considerably longer second paragraph with lots of words to clearly dominate in length.",
+    ]);
+  });
+
+  it("标题对条目与多余译文条目带正确索引", () => {
+    const d = pairChunksDetailed([
+      {
+        en: "## Intro\n\nPara one.",
+        zh: "## 引言\n\n第一段。\n\n额外段很长很长很长很长很长很长很长很长很长很长很长很长。",
+      },
+    ]);
+    const heading = d.entries.find((e) => e.kind === "pair" && e.en === "## Intro");
+    expect(heading).toMatchObject({
+      kind: "pair",
+      en: "## Intro",
+      zh: "## 引言",
+      chunkIdx: 0,
+      enIdx: 0,
+      zhIdx: 0,
+    });
+    const extras = d.entries.filter((e) => e.kind === "extra");
+    expect(extras).toHaveLength(1);
+    expect(extras[0]).toMatchObject({
+      zh: "额外段很长很长很长很长很长很长很长很长很长很长很长很长。",
+      zhIdx: 2,
+    });
+  });
+
+  it("pairChunks 与 pairChunksDetailed 派生一致", () => {
+    const chunks: TranslationChunk[] = [
+      { en: "A1.\n\nA2.", zh: "甲1。" },
+      { en: "B1.\n\nB2.\n\nB3.", zh: "乙1。\n\n乙2。" },
+    ];
+    const d = pairChunksDetailed(chunks);
+    expect(pairChunks(chunks)).toMatchObject({
+      pairs: d.pairs,
+      restEn: d.restEn,
+      restZh: d.restZh,
+      enCount: d.enCount,
+      zhCount: d.zhCount,
+    });
+  });
+});
+
+// ---------- 段落级自动补齐：fillMissingChunks ----------
+
+describe("fillMissingChunks 自动补齐缺失译文", () => {
+  it("锚点明确的缺失段：补齐后正确配对", async () => {
+    const chunks: TranslationChunk[] = [
+      {
+        en: "First paragraph plain.\n\nWe define $f(x)=x^2$ here.\n\nThird paragraph plain.",
+        zh: "第一段。\n\n我们在此定义 $f(x)=x^2$。",
+      },
+    ];
+    const r = await fillMissingChunks(chunks, async (t) => `第三段译文（${t}）`);
+    expect(r.filled).toBe(1);
+    expect(r.failed).toBe(0);
+    const d = pairChunksDetailed(r.chunks);
+    expect(d.restEn).toEqual([]);
+    const p3 = d.entries.find(
+      (e) => e.kind === "pair" && e.en === "Third paragraph plain.",
+    );
+    expect(p3).toBeDefined();
+    expect((p3 as { zh: string }).zh).toBe(
+      "第三段译文（Third paragraph plain.）",
+    );
+  });
+
+  it("整块缺失多段：逐段补齐直至段数相等全部配对", async () => {
+    const chunks: TranslationChunk[] = [{ en: "P1\n\nP2\n\nP3", zh: "" }];
+    let calls = 0;
+    const r = await fillMissingChunks(chunks, async (t) => {
+      calls += 1;
+      return `译${t}`;
+    });
+    expect(calls).toBe(3);
+    expect(r.filled).toBe(3);
+    expect(r.failed).toBe(0);
+    expect(r.chunks[0].zh.split("\n\n")).toHaveLength(3);
+    expect(pairChunksDetailed(r.chunks).restEn).toEqual([]);
+  });
+
+  it("返回空结果：记失败且只尝试一次，不落盘", async () => {
+    const chunks: TranslationChunk[] = [{ en: "P1", zh: "" }];
+    let calls = 0;
+    const r = await fillMissingChunks(chunks, async () => {
+      calls += 1;
+      return "";
+    });
+    expect(calls).toBe(1);
+    expect(r.filled).toBe(0);
+    expect(r.failed).toBe(1);
+    expect(r.chunks).toEqual(chunks);
+  });
+
+  it("翻译抛错：记失败且只尝试一次，继续处理其他段", async () => {
+    const chunks: TranslationChunk[] = [
+      { en: "Bad one.", zh: "" },
+      { en: "Good one.", zh: "" },
+    ];
+    let calls = 0;
+    const r = await fillMissingChunks(chunks, async (t) => {
+      calls += 1;
+      if (t === "Bad one.") throw new Error("boom");
+      return `译：${t}`;
+    });
+    expect(r.filled).toBe(1);
+    expect(r.failed).toBe(1);
+    expect(pairChunksDetailed(r.chunks).restEn).toEqual(["Bad one."]);
+  });
+
+  it("无缺失：不发起任何翻译调用", async () => {
+    let calls = 0;
+    const r = await fillMissingChunks(
+      [{ en: "P1\n\nP2", zh: "T1。\n\nT2。" }],
+      async (t) => {
+        calls += 1;
+        return `译${t}`;
+      },
+    );
+    expect(calls).toBe(0);
+    expect(r.filled).toBe(0);
+    expect(r.failed).toBe(0);
+  });
+
+  it("跨块缺失：互不影响", async () => {
+    const chunks: TranslationChunk[] = [
+      { en: "C1A.\n\nC1B.", zh: "T1A。" },
+      { en: "C2A.\n\nC2B.", zh: "T2A。\n\nT2B。" },
+    ];
+    const r = await fillMissingChunks(chunks, async (t) => `译${t}`);
+    expect(r.filled).toBe(1);
+    expect(r.failed).toBe(0);
+    expect(r.chunks[1].zh).toBe("T2A。\n\nT2B。");
+    expect(pairChunksDetailed(r.chunks).restEn).toEqual([]);
   });
 });

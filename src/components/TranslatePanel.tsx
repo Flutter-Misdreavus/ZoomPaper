@@ -18,7 +18,9 @@ import { copyTextToClipboard } from "@/lib/utils";
 import {
   buildZhDoc,
   chunkMarkdown,
+  fillMissingChunks,
   pairChunks,
+  pairChunksDetailed,
   splitReferences,
   stripStandaloneImagesAndMath,
 } from "@/lib/translate";
@@ -72,6 +74,8 @@ function labelFor(docKey: string): string {
  * 本地缓存为 translation.json（带版本号）。纯英 = 完整原文；纯中 = 正文译文 + 末尾英文原版
  * 参考文献；对照 = 正文按段落逐段配对（英文段黑色 + 中文段浅蓝色）+ 末尾英文原版参考文献；
  * 未配对的英文段（无中文译文）与多余中文段（多余译文）均完整展示并加徽标，绝不静默丢弃。
+ * 翻译完成后（以及加载到已有缓存时）自动检查缺失译文段落，如有缺失则自动重新要求模型
+ * 翻译并回填缓存（fillMissingChunks），无手动触发。
  *
  * 目录：扫描渲染后 DOM 的 h1–h6 构建 MacDown 风格大纲（对照模式跳过 .trans-zh 中文段标题，
  * 避免重复条目），点击平滑滚动 + 高亮闪烁，滚动时当前章节跟随高亮。
@@ -86,6 +90,9 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   const [loadingEn, setLoadingEn] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  /** 自动补齐缺失译文：进行中标志 + 结果统计 */
+  const [fillingMissing, setFillingMissing] = useState(false);
+  const [fillStats, setFillStats] = useState<{ filled: number; failed: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // ---- 划选高亮 / 笔记（与 PDF 阅读一致） ----
@@ -113,7 +120,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   // 英文原文切成「正文 + 参考文献」：参考文献不翻译、不进 LLM，译文末尾附英文原版
   const { body, references } = useMemo(() => splitReferences(enMd ?? ""), [enMd]);
 
-  // 加载英文原文 + 翻译缓存
+  // 加载英文原文 + 翻译缓存；已有缓存时自动检查缺失段落并补齐（每次加载至多一次）
   useEffect(() => {
     let cancelled = false;
     setLoadingEn(true);
@@ -123,6 +130,22 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
         if (cancelled) return;
         setEnMd(md);
         setChunks(t);
+        if (t && t.length > 0) {
+          const { entries } = pairChunksDetailed(t);
+          if (entries.some((e) => e.kind === "missing")) {
+            // 发现未被翻译的段落 → 自动重新要求模型翻译（不阻塞展示，补齐完成后再刷新）
+            setFillingMissing(true);
+            fillMissingChunks(t, translateChunk)
+              .then(async (r) => {
+                if (cancelled) return;
+                setFillStats({ filled: r.filled, failed: r.failed });
+                await saveTranslation(paperId, r.chunks);
+                if (!cancelled) setChunks(r.chunks);
+              })
+              .catch((e) => !cancelled && setError(String(e)))
+              .finally(() => !cancelled && setFillingMissing(false));
+          }
+        }
       })
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoadingEn(false));
@@ -194,8 +217,9 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   }, [sel]);
 
   async function handleTranslate() {
-    if (!enMd || translating) return;
+    if (!enMd || translating || fillingMissing) return;
     setTranslating(true);
+    setFillStats(null);
     setError(null);
     try {
       // 只翻译正文，参考文献不进 LLM（省 token）
@@ -206,12 +230,18 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
         setProgress({ done: i + 1, total: parts.length });
       }
       const result: TranslationChunk[] = parts.map((en, i) => ({ en, zh: zh[i] }));
-      await saveTranslation(paperId, result);
-      setChunks(result);
+      // 翻译完成后自动检查缺失段落：如有缺失，逐个重新要求模型翻译并回填
+      setProgress(null);
+      setFillingMissing(true);
+      const filled = await fillMissingChunks(result, translateChunk);
+      setFillStats({ filled: filled.filled, failed: filled.failed });
+      await saveTranslation(paperId, filled.chunks);
+      setChunks(filled.chunks);
     } catch (e) {
       setError(String(e));
     } finally {
       setTranslating(false);
+      setFillingMissing(false);
       setProgress(null);
     }
   }
@@ -431,7 +461,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
         </div>
         <Button
           onClick={() => void handleTranslate()}
-          disabled={translating || !enMd}
+          disabled={translating || fillingMissing || !enMd}
           size="sm"
         >
           {translating ? (
@@ -460,6 +490,18 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
         {progress && (
           <span className="text-xs text-muted-foreground">
             第 {progress.done}/{progress.total} 段
+          </span>
+        )}
+        {fillingMissing && (
+          <span className="text-xs text-muted-foreground">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+            检查缺失译文并补齐…
+          </span>
+        )}
+        {fillStats && !fillingMissing && (
+          <span className="text-xs text-muted-foreground">
+            补齐完成：新增 {fillStats.filled} 段
+            {fillStats.failed > 0 ? `，失败 ${fillStats.failed} 段` : ""}
           </span>
         )}
       </div>
