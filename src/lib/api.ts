@@ -33,6 +33,8 @@ export interface Paper {
   reading_status: string;
   /** unparsed / parsing / ready / failed */
   parse_status: string;
+  /** 星标 */
+  starred: boolean;
   /** 所属文件夹 id 列表（多归属；空数组 = 未分类） */
   folder_ids: string[];
 }
@@ -265,6 +267,18 @@ export const removePapersFromFolder = (paperIds: string[], folderId: string) =>
   invoke<number>("remove_papers_from_folder", { paperIds, folderId });
 export const renamePaper = (paperId: string, newTitle: string) =>
   invoke<Paper>("rename_paper", { paperId, newTitle });
+
+// ---------- 阅读状态 / 星标（论文库工作台） ----------
+
+export type ReadingStatus = "unread" | "reading" | "read";
+
+/** 更新论文阅读状态，返回更新后的论文 */
+export const setPaperStatus = (paperId: string, status: ReadingStatus) =>
+  invoke<Paper>("set_paper_status", { paperId, status });
+
+/** 设置论文星标，返回更新后的论文 */
+export const setPaperStarred = (paperId: string, starred: boolean) =>
+  invoke<Paper>("set_paper_starred", { paperId, starred });
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
 

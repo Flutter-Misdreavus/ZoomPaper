@@ -101,6 +101,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE conversations ADD COLUMN agent_state TEXT;
     ALTER TABLE conversations ADD COLUMN agent_memory TEXT;
     "#,
+    // v9：论文库工作台 —— 星标字段（阅读状态 reading_status 自 v1 已有）。
+    // 布尔用 INTEGER 0/1 存储；存量论文默认未星标。
+    r#"
+    ALTER TABLE papers ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -143,13 +148,27 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 8);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 9);
 
         // 论文数据无损
         let title: String = conn
             .query_row("SELECT title FROM papers WHERE id = 'paper-1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(title, "Attention Is All You Need");
+
+        // v9：papers 已含 starred 列（存量论文默认未星标）
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(papers)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"starred".to_string()));
+        let starred: i64 = conn
+            .query_row("SELECT starred FROM papers WHERE id = 'paper-1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(starred, 0);
 
         // 新表可用：插入文件夹 + 归属
         conn.execute(

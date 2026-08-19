@@ -115,14 +115,14 @@ pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
 /// 调用方需追加 GROUP BY p.id（及可选 WHERE / ORDER BY）。
 const PAPER_SELECT: &str = "
     SELECT p.id, p.title, p.authors, p.abstract, p.pdf_path, p.md_path, p.blog_md_path,
-           p.created_at, p.last_read_at, p.reading_status, p.parse_status,
+           p.created_at, p.last_read_at, p.reading_status, p.parse_status, p.starred,
            GROUP_CONCAT(pf.folder_id)
     FROM papers p
     LEFT JOIN paper_folders pf ON pf.paper_id = p.id
 ";
 
 fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
-    let folder_ids: Option<String> = row.get(11)?;
+    let folder_ids: Option<String> = row.get(12)?;
     let folder_ids = folder_ids
         .map(|s| {
             s.split(',')
@@ -143,6 +143,7 @@ fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
         last_read_at: row.get(8)?,
         reading_status: row.get(9)?,
         parse_status: row.get(10)?,
+        starred: row.get::<_, i64>(11)? != 0,
         folder_ids,
     })
 }
@@ -228,14 +229,15 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
         last_read_at: None,
         reading_status: "unread".to_string(),
         parse_status: "unparsed".to_string(),
+        starred: false,
         folder_ids: vec![],
     };
 
     let conn = db.conn();
     conn.execute(
         "INSERT INTO papers (id, title, authors, abstract, pdf_path, md_path, \
-         blog_md_path, created_at, last_read_at, reading_status, parse_status) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         blog_md_path, created_at, last_read_at, reading_status, parse_status, starred) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             &paper.id,
             &paper.title,
@@ -247,7 +249,8 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
             &paper.created_at,
             paper.last_read_at,
             &paper.reading_status,
-            &paper.parse_status
+            &paper.parse_status,
+            paper.starred as i64,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -624,6 +627,45 @@ fn rename_paper_inner(db: &Db, paper_id: &str, new_title: &str) -> Result<Paper,
         }
     }
     get_paper_inner(db, paper_id)
+}
+
+/// 更新论文阅读状态（unread / reading / read）。返回更新后的论文。
+#[tauri::command]
+pub fn set_paper_status(db: State<'_, Db>, paper_id: String, status: String) -> Result<Paper, String> {
+    if !matches!(status.as_str(), "unread" | "reading" | "read") {
+        return Err(format!("非法阅读状态：{status}"));
+    }
+    {
+        let conn = db.conn();
+        let n = conn
+            .execute(
+                "UPDATE papers SET reading_status = ?2 WHERE id = ?1",
+                params![&paper_id, &status],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("论文不存在".into());
+        }
+    }
+    get_paper_inner(&db, &paper_id)
+}
+
+/// 设置论文星标（true / false）。返回更新后的论文。
+#[tauri::command]
+pub fn set_paper_starred(db: State<'_, Db>, paper_id: String, starred: bool) -> Result<Paper, String> {
+    {
+        let conn = db.conn();
+        let n = conn
+            .execute(
+                "UPDATE papers SET starred = ?2 WHERE id = ?1",
+                params![&paper_id, starred as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("论文不存在".into());
+        }
+    }
+    get_paper_inner(&db, &paper_id)
 }
 
 // ---------- 检索 / 索引 ----------

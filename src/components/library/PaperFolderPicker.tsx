@@ -89,7 +89,24 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
             className="h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ backgroundColor: c.swatch }}
           />
-          <span className="truncate">{node.folder.name}</span>
+          <span className="min-w-0 flex-1 truncate text-left">{node.folder.name}</span>
+          {node.folder.tags.length > 0 && (
+            <span className="flex shrink-0 items-center gap-1">
+              {node.folder.tags.slice(0, 2).map((t) => (
+                <span
+                  key={t}
+                  className="rounded bg-muted px-1 py-px text-[10px] leading-none text-muted-foreground"
+                >
+                  {t}
+                </span>
+              ))}
+              {node.folder.tags.length > 2 && (
+                <span className="text-[10px] text-muted-foreground">
+                  +{node.folder.tags.length - 2}
+                </span>
+              )}
+            </span>
+          )}
         </button>
         {node.children.map((child) => renderNode(child, depth + 1))}
       </div>

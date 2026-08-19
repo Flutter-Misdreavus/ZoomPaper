@@ -64,6 +64,8 @@ pub fn run() {
             commands::add_papers_to_folder,
             commands::remove_papers_from_folder,
             commands::rename_paper,
+            commands::set_paper_status,
+            commands::set_paper_starred,
             commands::ask_question,
             commands::ask_question_reply,
             commands::cancel_generation,

@@ -15,9 +15,12 @@ pub struct Paper {
     pub blog_md_path: Option<String>,
     pub created_at: i64,
     pub last_read_at: Option<i64>,
+    /// 阅读状态：unread / reading / read
     pub reading_status: String,
     /// 解析状态：unparsed / parsing / ready / failed
     pub parse_status: String,
+    /// 星标（论文库工作台）
+    pub starred: bool,
     /// 所属文件夹 id 列表（多归属；空数组 = 未分类）。由 list/get 聚合填充。
     pub folder_ids: Vec<String>,
 }

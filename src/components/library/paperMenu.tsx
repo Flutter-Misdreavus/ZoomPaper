@@ -10,9 +10,24 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ReadingStatus } from "@/lib/api";
 
 export const MENU_ITEM_CLASS =
   "flex w-full cursor-default select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
+
+/** 状态圆点：未读=实心主色 / 在读=实心灰 / 已读=描边 */
+export function StatusDot({ status }: { status: ReadingStatus }) {
+  return (
+    <span
+      className={cn(
+        "h-2 w-2 shrink-0 rounded-full",
+        status === "unread" && "bg-zp-primary",
+        status === "reading" && "bg-zp-tertiary",
+        status === "read" && "border border-zp-border"
+      )}
+    />
+  );
+}
 
 export interface PaperMenuActions {
   onOpen: () => void;
@@ -21,6 +36,10 @@ export interface PaperMenuActions {
   onPickFolder: () => void;
   /** 仅文件夹视图下出现：从当前文件夹移除归属 */
   onRemoveFromCurrentFolder?: () => void;
+  /** 标记阅读状态 */
+  onSetStatus: (status: ReadingStatus) => void;
+  /** 当前阅读状态（用于高亮菜单项） */
+  currentStatus: ReadingStatus;
   onDelete: () => void;
 }
 
@@ -52,6 +71,28 @@ export function PaperMenuItems({ Item, actions }: { Item: MenuItemLike; actions:
           从当前文件夹移除
         </Item>
       )}
+      <div className="my-1 h-px bg-border" />
+      <Item
+        className={cn(MENU_ITEM_CLASS, actions.currentStatus === "unread" && "font-medium")}
+        onClick={() => actions.onSetStatus("unread")}
+      >
+        <StatusDot status="unread" />
+        标记为未读
+      </Item>
+      <Item
+        className={cn(MENU_ITEM_CLASS, actions.currentStatus === "reading" && "font-medium")}
+        onClick={() => actions.onSetStatus("reading")}
+      >
+        <StatusDot status="reading" />
+        标记为在读
+      </Item>
+      <Item
+        className={cn(MENU_ITEM_CLASS, actions.currentStatus === "read" && "font-medium")}
+        onClick={() => actions.onSetStatus("read")}
+      >
+        <StatusDot status="read" />
+        标记为已读
+      </Item>
       <div className="my-1 h-px bg-border" />
       <Item
         className={cn(

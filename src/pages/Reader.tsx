@@ -7,7 +7,7 @@ import { TranslatePanel } from "@/components/TranslatePanel";
 import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
-import { getPaper, type Paper } from "@/lib/api";
+import { getPaper, setPaperStatus, type Paper } from "@/lib/api";
 import { ArrowLeft } from "lucide-react";
 
 interface Props {
@@ -34,6 +34,12 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
       cancelled = true;
     };
   }, [paperId]);
+
+  // 打开论文即进入「在读」状态（未读 → 在读；已读保持不变）。失败静默，不影响阅读。
+  useEffect(() => {
+    if (!paper || paper.reading_status === "reading" || paper.reading_status === "read") return;
+    setPaperStatus(paper.id, "reading").catch(() => {});
+  }, [paper]);
 
   const ready = paper?.parse_status === "ready";
 
