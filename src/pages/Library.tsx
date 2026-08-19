@@ -56,6 +56,7 @@ export function Library({ onOpenPaper }: Props) {
 
   const [view, setView] = useState<LibraryView>({ type: "all" });
   const [filter, setFilter] = useState<PaperFilter>("all");
+  const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<SortBy>("created");
   const { selected, toggle, clear, isSelected, size: selectedSize } = usePaperSelection();
@@ -88,7 +89,7 @@ export function Library({ onOpenPaper }: Props) {
     void refresh();
   }, [refresh]);
 
-  // ---------- 视图内论文（文件夹 × 状态过滤交集 + 排序，星标置顶） ----------
+  // ---------- 视图内论文（文件夹 × 状态过滤 × 关键词 交集 + 排序，星标置顶） ----------
 
   const visiblePapers = useMemo(() => {
     let list = papers;
@@ -102,6 +103,16 @@ export function Library({ onOpenPaper }: Props) {
     else if (filter === "read") list = list.filter((p) => p.reading_status === "read");
     else if (filter === "starred") list = list.filter((p) => p.starred);
 
+    // 关键词过滤：标题/作者子串，忽略大小写
+    const q = query.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (p) =>
+          p.title.toLowerCase().includes(q) ||
+          (p.authors ?? "").toLowerCase().includes(q)
+      );
+    }
+
     const sorted = [...list];
     if (sortBy === "title") {
       sorted.sort((a, b) => a.title.localeCompare(b.title, "zh-Hans-CN"));
@@ -114,7 +125,7 @@ export function Library({ onOpenPaper }: Props) {
     const starred = sorted.filter((p) => p.starred);
     const rest = sorted.filter((p) => !p.starred);
     return [...starred, ...rest];
-  }, [papers, view, filter, sortBy]);
+  }, [papers, view, filter, query, sortBy]);
 
   const selectedPapers = useMemo(
     () => papers.filter((p) => selected.has(p.id)),
@@ -407,6 +418,8 @@ export function Library({ onOpenPaper }: Props) {
           count={visiblePapers.length}
           sortBy={sortBy}
           onSortChange={setSortBy}
+          query={query}
+          onQueryChange={setQuery}
           onImport={() => void handleImport()}
           importing={importing}
         />
@@ -444,7 +457,9 @@ export function Library({ onOpenPaper }: Props) {
             <Card className="border-dashed">
               <CardContent className="flex flex-col items-center gap-2 py-16 text-muted-foreground">
                 <FileText className="h-10 w-10" />
-                {filter !== "all" ? (
+                {query.trim() ? (
+                  <p>没有匹配「{query.trim()}」的论文</p>
+                ) : filter !== "all" ? (
                   <p>没有符合条件的论文</p>
                 ) : view.type === "uncategorized" ? (
                   <p>没有未分类的论文，拖拽论文到侧栏文件夹完成归类</p>
