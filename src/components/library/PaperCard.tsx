@@ -1,7 +1,8 @@
 /**
  * 论文卡片（PaperCard）：状态驱动极简卡片。
  * 结构：复选框 + 状态圆点 + 标题(2行截断) + 作者(1行) + 解析 pill + 星标 + 更多。
- * 交互：单击 = 切换选择（进入选择模式）；双击 = 打开；星标独立响应不触发选择。
+ * 交互：单击主体无操作（不进入选择）；复选框为选择唯一入口（toggle）；
+ * 双击主体打开；星标独立响应不触发选择；拖拽未选中卡片时自动并入选择。
  */
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
@@ -129,7 +130,7 @@ export function PaperCard(props: PaperCardProps) {
               tabIndex={0}
               role="button"
               aria-label={paper.title}
-              onClick={() => onToggle(paper.id)}
+              // 单击主体无操作：选择只通过复选框进入，打开只通过双击 / Enter
               onDoubleClick={() => onOpen(paper.id)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {

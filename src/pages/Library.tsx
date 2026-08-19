@@ -88,7 +88,7 @@ export function Library({ onOpenPaper }: Props) {
     void refresh();
   }, [refresh]);
 
-  // ---------- 视图内论文（文件夹 × 状态过滤交集 + 排序） ----------
+  // ---------- 视图内论文（文件夹 × 状态过滤交集 + 排序，星标置顶） ----------
 
   const visiblePapers = useMemo(() => {
     let list = papers;
@@ -110,7 +110,10 @@ export function Library({ onOpenPaper }: Props) {
     } else {
       sorted.sort((a, b) => b.created_at - a.created_at);
     }
-    return sorted;
+    // 星标置顶：稳定分区（sort 稳定，分区后星标组内保持当前排序键的相对顺序）
+    const starred = sorted.filter((p) => p.starred);
+    const rest = sorted.filter((p) => !p.starred);
+    return [...starred, ...rest];
   }, [papers, view, filter, sortBy]);
 
   const selectedPapers = useMemo(
