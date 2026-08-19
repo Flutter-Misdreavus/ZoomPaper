@@ -3,6 +3,7 @@ name = "zoompaper"
 version = "0.1.0"
 description = "ZoomPaper - 本地优先的论文阅读与知识管理平台"
 authors = ["ZoomPaper"]
+license = "MIT"
 edition = "2021"
 
 [lib]
