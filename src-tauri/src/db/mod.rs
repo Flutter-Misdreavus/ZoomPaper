@@ -87,12 +87,12 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master \
                  WHERE type IN ('table','view') \
-                 AND name IN ('papers','paper_chunks','vec_chunks','conversations','folders','paper_folders')",
+                 AND name IN ('papers','paper_chunks','vec_chunks','conversations','folders','paper_folders','reading_sessions','reading_plans')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 6, "应建出 6 张表");
+        assert_eq!(table_count, 8, "应建出 8 张表");
 
         // 向量可写入并可做 KNN 检索（384 维与表声明一致）
         let mut v = vec![0.0_f32; 384];

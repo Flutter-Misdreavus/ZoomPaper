@@ -106,6 +106,31 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE papers ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v10：阅读时间线 —— 阅读会话（按天统计时长/读了哪些论文的粒度来源）、
+    // papers.finished_at（最近一次标记已读时间，取消已读时清 NULL）、阅读计划表。
+    // 每篇累计时长由 reading_sessions 聚合得出，不在 papers 上加冗余列。
+    r#"
+    CREATE TABLE IF NOT EXISTS reading_sessions (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        paper_id   TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+        started_at INTEGER NOT NULL,        -- epoch 秒（该段阅读的开始时间）
+        seconds    INTEGER NOT NULL         -- 该段时长
+    );
+    CREATE INDEX IF NOT EXISTS idx_reading_sessions_paper ON reading_sessions(paper_id);
+    CREATE INDEX IF NOT EXISTS idx_reading_sessions_time  ON reading_sessions(started_at);
+
+    ALTER TABLE papers ADD COLUMN finished_at INTEGER;
+
+    CREATE TABLE IF NOT EXISTS reading_plans (
+        id           TEXT PRIMARY KEY,          -- UUID
+        type         TEXT NOT NULL CHECK(type IN ('daily', 'papers')),
+        target_count INTEGER,                   -- type='daily'：每天读完 N 篇
+        paper_ids    TEXT,                      -- type='papers'：JSON 数组，指派的论文 id
+        deadline     INTEGER,                   -- type='papers'：截止日期（epoch 秒）
+        created_at   INTEGER NOT NULL,
+        active       INTEGER NOT NULL DEFAULT 1 -- 完成/停用后置 0
+    );
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -148,7 +173,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 9);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 10);
 
         // 论文数据无损
         let title: String = conn
@@ -169,6 +194,35 @@ mod tests {
             .query_row("SELECT starred FROM papers WHERE id = 'paper-1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(starred, 0);
+
+        // v10：papers 已含 finished_at 列；reading_sessions / reading_plans 新表可用
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(papers)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"finished_at".to_string()));
+        conn.execute(
+            "INSERT INTO reading_sessions (paper_id, started_at, seconds) VALUES ('paper-1', 1700000003, 120)",
+            [],
+        )
+        .unwrap();
+        let secs: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(seconds), 0) FROM reading_sessions WHERE paper_id = 'paper-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(secs, 120);
+        conn.execute(
+            "INSERT INTO reading_plans (id, type, target_count, created_at) \
+             VALUES ('plan-1', 'daily', 2, 1700000004)",
+            [],
+        )
+        .unwrap();
 
         // 新表可用：插入文件夹 + 归属
         conn.execute(

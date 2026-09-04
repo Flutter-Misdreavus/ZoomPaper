@@ -21,8 +21,27 @@ pub struct Paper {
     pub parse_status: String,
     /// 星标（论文库工作台）
     pub starred: bool,
+    /// 最近一次标记已读时间（epoch 秒）；None = 未读完/已取消已读。
+    pub finished_at: Option<i64>,
+    /// 累计阅读时长（秒），由 reading_sessions 聚合填充。
+    pub total_read_seconds: i64,
     /// 所属文件夹 id 列表（多归属；空数组 = 未分类）。由 list/get 聚合填充。
     pub folder_ids: Vec<String>,
+}
+
+/// 阅读计划：daily = 每天读完 N 篇的持续性定量目标；
+/// papers = 指派一组论文 + 截止日期的任务清单。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadingPlan {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub plan_type: String,
+    pub target_count: Option<i64>,
+    /// 指派的论文 id 列表（JSON 数组解析后；daily 计划为空）。
+    pub paper_ids: Vec<String>,
+    pub deadline: Option<i64>,
+    pub created_at: i64,
+    pub active: bool,
 }
 
 /// 虚拟文件夹（多归属集合式，论文库内的整理容器；不对应磁盘目录）。

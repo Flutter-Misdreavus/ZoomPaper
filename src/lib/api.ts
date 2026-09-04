@@ -35,6 +35,10 @@ export interface Paper {
   parse_status: string;
   /** 星标 */
   starred: boolean;
+  /** 最近一次标记已读时间（epoch 秒）；null = 未读完/已取消 */
+  finished_at: number | null;
+  /** 累计阅读时长（秒），由阅读会话聚合 */
+  total_read_seconds: number;
   /** 所属文件夹 id 列表（多归属；空数组 = 未分类） */
   folder_ids: string[];
 }
@@ -279,6 +283,93 @@ export const setPaperStatus = (paperId: string, status: ReadingStatus) =>
 /** 设置论文星标，返回更新后的论文 */
 export const setPaperStarred = (paperId: string, starred: boolean) =>
   invoke<Paper>("set_paper_starred", { paperId, starred });
+
+// ---------- 阅读时间线 ----------
+
+/** 阅读计划：daily = 每天读完 N 篇的持续性目标；papers = 指派论文 + 截止日期的任务清单 */
+export interface ReadingPlan {
+  id: string;
+  type: "daily" | "papers";
+  target_count: number | null;
+  paper_ids: string[];
+  deadline: number | null;
+  created_at: number;
+  active: boolean;
+}
+
+/** 时间线某天的论文明细条目 */
+export interface TimelineDayPaper {
+  paper_id: string;
+  title: string;
+  seconds: number;
+  reading_status: string;
+}
+
+/** 时间线一天的记录（无记录的天不返回） */
+export interface TimelineDay {
+  /** 本地日期 YYYY-MM-DD */
+  date: string;
+  /** 当天阅读总时长（秒） */
+  seconds: number;
+  /** 当天读过的论文数 */
+  paper_count: number;
+  /** 当天标记已读的篇数 */
+  finished_count: number;
+  papers: TimelineDayPaper[];
+}
+
+export interface TimelineStats {
+  days: TimelineDay[];
+  /** 连续有阅读记录的天数（今天未读则从前一天起算） */
+  streak: number;
+}
+
+/** 上报一段阅读时长（秒）；同时刷新 last_read_at */
+export const addReadingTime = (paperId: string, seconds: number) =>
+  invoke<void>("add_reading_time", { paperId, seconds });
+
+/** 标记/取消「已读」（同步维护 finished_at），返回更新后的论文 */
+export const markPaperRead = (paperId: string, read: boolean) =>
+  invoke<Paper>("mark_paper_read", { paperId, read });
+
+export const createReadingPlan = (
+  type: "daily" | "papers",
+  opts?: { targetCount?: number; paperIds?: string[]; deadline?: number },
+) =>
+  invoke<ReadingPlan>("create_reading_plan", {
+    planType: type,
+    targetCount: opts?.targetCount ?? null,
+    paperIds: opts?.paperIds ?? null,
+    deadline: opts?.deadline ?? null,
+  });
+
+export const listReadingPlans = () =>
+  invoke<ReadingPlan[]>("list_reading_plans");
+
+/** 仅更新传入的字段 */
+export const updateReadingPlan = (
+  planId: string,
+  opts: {
+    targetCount?: number;
+    paperIds?: string[];
+    deadline?: number;
+    active?: boolean;
+  },
+) =>
+  invoke<ReadingPlan>("update_reading_plan", {
+    planId,
+    targetCount: opts.targetCount ?? null,
+    paperIds: opts.paperIds ?? null,
+    deadline: opts.deadline ?? null,
+    active: opts.active ?? null,
+  });
+
+export const deleteReadingPlan = (planId: string) =>
+  invoke<void>("delete_reading_plan", { planId });
+
+/** 最近 N 天的阅读统计 + 当前连续天数 */
+export const timelineStats = (days: number) =>
+  invoke<TimelineStats>("timeline_stats", { days });
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
 

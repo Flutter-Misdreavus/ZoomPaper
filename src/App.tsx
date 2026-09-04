@@ -5,10 +5,12 @@ import { Reader } from "@/pages/Reader";
 import { SettingsPage } from "@/pages/Settings";
 import { SearchPage } from "@/pages/SearchPage";
 import { AskPage } from "@/pages/AskPage";
+import { TimelinePage } from "@/pages/TimelinePage";
 import { NavRail, type NavItem } from "@/components/NavRail";
 
 type View =
   | { name: "library" }
+  | { name: "timeline" }
   | { name: "search" }
   | { name: "ask" }
   | { name: "reader"; paperId: string; pageIdx?: number }
@@ -44,6 +46,7 @@ function App() {
             className="flex min-h-0 min-w-0 flex-1 flex-col"
           >
             {view.name === "search" && <SearchPage onOpenPaper={openPaper} />}
+            {view.name === "timeline" && <TimelinePage onOpenPaper={openPaper} />}
             {view.name === "ask" && <AskPage onOpenPaper={openPaper} />}
             {view.name === "reader" && (
               <Reader

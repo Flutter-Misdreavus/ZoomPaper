@@ -55,6 +55,8 @@ export interface PaperCardProps {
   /** 打开归属面板；未选中该论文时以它为目标 */
   onPickFolder: (paper: Paper) => void;
   onSetStatus: (paper: Paper, status: ReadingStatus) => void;
+  /** 加入阅读计划（当前进行中的指派论文计划；无则自动新建） */
+  onAddToPlan: (paper: Paper) => void;
   onToggleStar: (paper: Paper) => void;
   /** 点击文件夹 pill 跳转到对应文件夹视图 */
   onJumpToFolder: (folderId: string) => void;
@@ -80,6 +82,7 @@ export function PaperCard(props: PaperCardProps) {
     onCancelRename,
     onPickFolder,
     onSetStatus,
+    onAddToPlan,
     onToggleStar,
     onJumpToFolder,
     onParse,
@@ -104,6 +107,7 @@ export function PaperCard(props: PaperCardProps) {
       ? () => onRemoveFromCurrentFolder(paper)
       : undefined,
     onSetStatus: (s) => onSetStatus(paper, s),
+    onAddToPlan: () => onAddToPlan(paper),
     currentStatus: status,
     onDelete: () => onDelete(paper),
   };

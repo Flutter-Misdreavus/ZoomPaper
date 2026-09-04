@@ -2,7 +2,7 @@
 
 use crate::ai::llm::{Llm, Role};
 use crate::ai::mineru::MineruClient;
-use crate::db::models::{Conversation, Folder, Paper, SearchHit};
+use crate::db::models::{Conversation, Folder, Paper, ReadingPlan, SearchHit};
 use crate::feynman::{
     ConceptStatus, FeynmanMessage, FeynmanState, FeynmanTurn, PlanItem, StageStatus,
 };
@@ -10,6 +10,7 @@ use crate::qa::{Answer, Citation, QaMessage};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -113,16 +114,19 @@ pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
 
 /// 论文查询公共前缀：LEFT JOIN paper_folders 聚合所属文件夹（多归属）。
 /// 调用方需追加 GROUP BY p.id（及可选 WHERE / ORDER BY）。
+/// total_read_seconds 由 reading_sessions 子查询聚合（非 papers 列）。
 const PAPER_SELECT: &str = "
     SELECT p.id, p.title, p.authors, p.abstract, p.pdf_path, p.md_path, p.blog_md_path,
            p.created_at, p.last_read_at, p.reading_status, p.parse_status, p.starred,
+           p.finished_at,
+           (SELECT COALESCE(SUM(rs.seconds), 0) FROM reading_sessions rs WHERE rs.paper_id = p.id),
            GROUP_CONCAT(pf.folder_id)
     FROM papers p
     LEFT JOIN paper_folders pf ON pf.paper_id = p.id
 ";
 
 fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
-    let folder_ids: Option<String> = row.get(12)?;
+    let folder_ids: Option<String> = row.get(14)?;
     let folder_ids = folder_ids
         .map(|s| {
             s.split(',')
@@ -144,6 +148,8 @@ fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
         reading_status: row.get(9)?,
         parse_status: row.get(10)?,
         starred: row.get::<_, i64>(11)? != 0,
+        finished_at: row.get(12)?,
+        total_read_seconds: row.get(13)?,
         folder_ids,
     })
 }
@@ -230,6 +236,8 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
         reading_status: "unread".to_string(),
         parse_status: "unparsed".to_string(),
         starred: false,
+        finished_at: None,
+        total_read_seconds: 0,
         folder_ids: vec![],
     };
 
@@ -630,19 +638,31 @@ fn rename_paper_inner(db: &Db, paper_id: &str, new_title: &str) -> Result<Paper,
 }
 
 /// 更新论文阅读状态（unread / reading / read）。返回更新后的论文。
+/// 顺带维护时间线字段：reading → 刷新 last_read_at；read → 记 finished_at；unread → 清 finished_at。
+/// 阅读页的「标记已读」请用 mark_paper_read（同时刷新 last_read_at）。
 #[tauri::command]
 pub fn set_paper_status(db: State<'_, Db>, paper_id: String, status: String) -> Result<Paper, String> {
     if !matches!(status.as_str(), "unread" | "reading" | "read") {
         return Err(format!("非法阅读状态：{status}"));
     }
+    let now = chrono::Utc::now().timestamp();
     {
         let conn = db.conn();
-        let n = conn
-            .execute(
-                "UPDATE papers SET reading_status = ?2 WHERE id = ?1",
-                params![&paper_id, &status],
-            )
-            .map_err(|e| e.to_string())?;
+        let n = match status.as_str() {
+            "reading" => conn.execute(
+                "UPDATE papers SET reading_status = 'reading', last_read_at = ?2 WHERE id = ?1",
+                params![&paper_id, now],
+            ),
+            "read" => conn.execute(
+                "UPDATE papers SET reading_status = 'read', finished_at = COALESCE(finished_at, ?2) WHERE id = ?1",
+                params![&paper_id, now],
+            ),
+            _ => conn.execute(
+                "UPDATE papers SET reading_status = 'unread', finished_at = NULL WHERE id = ?1",
+                params![&paper_id],
+            ),
+        }
+        .map_err(|e| e.to_string())?;
         if n == 0 {
             return Err("论文不存在".into());
         }
@@ -666,6 +686,382 @@ pub fn set_paper_starred(db: State<'_, Db>, paper_id: String, starred: bool) -> 
         }
     }
     get_paper_inner(&db, &paper_id)
+}
+
+// ---------- 阅读时间线 ----------
+
+/// 上报一段阅读时长：写入 reading_sessions，并刷新 last_read_at。
+/// seconds ≤ 0 直接忽略（Reader 计时零头防御）。
+#[tauri::command]
+pub fn add_reading_time(db: State<'_, Db>, paper_id: String, seconds: i64) -> Result<(), String> {
+    add_reading_time_inner(&db, &paper_id, seconds)
+}
+
+fn add_reading_time_inner(db: &Db, paper_id: &str, seconds: i64) -> Result<(), String> {
+    if seconds <= 0 {
+        return Ok(());
+    }
+    let now = chrono::Utc::now().timestamp();
+    let conn = db.conn();
+    let n = conn
+        .execute(
+            "UPDATE papers SET last_read_at = ?2 WHERE id = ?1",
+            params![paper_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("论文不存在".into());
+    }
+    conn.execute(
+        "INSERT INTO reading_sessions (paper_id, started_at, seconds) VALUES (?1, ?2, ?3)",
+        params![paper_id, now - seconds, seconds],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 标记/取消「已读」：同步维护 finished_at；标记时刷新 last_read_at。返回更新后的论文。
+/// 取消已读退回 reading（而非 unread），保留「正在读」语义。
+#[tauri::command]
+pub fn mark_paper_read(db: State<'_, Db>, paper_id: String, read: bool) -> Result<Paper, String> {
+    mark_paper_read_inner(&db, &paper_id, read)
+}
+
+fn mark_paper_read_inner(db: &Db, paper_id: &str, read: bool) -> Result<Paper, String> {
+    let now = chrono::Utc::now().timestamp();
+    {
+        let conn = db.conn();
+        let n = if read {
+            conn.execute(
+                "UPDATE papers SET reading_status = 'read', finished_at = ?2, last_read_at = ?2 WHERE id = ?1",
+                params![paper_id, now],
+            )
+        } else {
+            conn.execute(
+                "UPDATE papers SET reading_status = 'reading', finished_at = NULL WHERE id = ?1",
+                params![paper_id],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("论文不存在".into());
+        }
+    }
+    get_paper_inner(db, paper_id)
+}
+
+fn row_to_plan(row: &rusqlite::Row) -> rusqlite::Result<ReadingPlan> {
+    let paper_ids_raw: Option<String> = row.get(3)?;
+    Ok(ReadingPlan {
+        id: row.get(0)?,
+        plan_type: row.get(1)?,
+        target_count: row.get(2)?,
+        paper_ids: paper_ids_raw
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        deadline: row.get(4)?,
+        created_at: row.get(5)?,
+        active: row.get::<_, i64>(6)? != 0,
+    })
+}
+
+const PLAN_SELECT: &str =
+    "SELECT id, type, target_count, paper_ids, deadline, created_at, active FROM reading_plans";
+
+/// 创建阅读计划。type='daily' 需 target_count ≥ 1；type='papers' 需 paper_ids 非空。
+#[tauri::command]
+pub fn create_reading_plan(
+    db: State<'_, Db>,
+    plan_type: String,
+    target_count: Option<i64>,
+    paper_ids: Option<Vec<String>>,
+    deadline: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    create_reading_plan_inner(&db, &plan_type, target_count, paper_ids, deadline)
+}
+
+fn create_reading_plan_inner(
+    db: &Db,
+    plan_type: &str,
+    target_count: Option<i64>,
+    paper_ids: Option<Vec<String>>,
+    deadline: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    let conn = db.conn();
+    if !matches!(plan_type, "daily" | "papers") {
+        return Err(format!("非法计划类型：{plan_type}"));
+    }
+    if plan_type == "daily" && target_count.unwrap_or(0) < 1 {
+        return Err("每日目标至少 1 篇".into());
+    }
+    let ids = paper_ids.unwrap_or_default();
+    if plan_type == "papers" && ids.is_empty() {
+        return Err("请至少指派一篇论文".into());
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        "INSERT INTO reading_plans (id, type, target_count, paper_ids, deadline, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            &id,
+            plan_type,
+            if plan_type == "daily" { target_count } else { None },
+            if plan_type == "papers" {
+                Some(serde_json::to_string(&ids).map_err(|e| e.to_string())?)
+            } else {
+                None
+            },
+            deadline,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(&format!("{PLAN_SELECT} WHERE id = ?1"), [&id], row_to_plan)
+        .map_err(|e| e.to_string())
+}
+
+/// 列出阅读计划：进行中的在前，同组按创建时间倒序。
+#[tauri::command]
+pub fn list_reading_plans(db: State<'_, Db>) -> Result<Vec<ReadingPlan>, String> {
+    list_reading_plans_inner(&db)
+}
+
+fn list_reading_plans_inner(db: &Db) -> Result<Vec<ReadingPlan>, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(&format!("{PLAN_SELECT} ORDER BY active DESC, created_at DESC"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], row_to_plan).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 更新阅读计划：仅更新传入的字段（None = 不动）。
+#[tauri::command]
+pub fn update_reading_plan(
+    db: State<'_, Db>,
+    plan_id: String,
+    target_count: Option<i64>,
+    paper_ids: Option<Vec<String>>,
+    deadline: Option<i64>,
+    active: Option<bool>,
+) -> Result<ReadingPlan, String> {
+    update_reading_plan_inner(&db, &plan_id, target_count, paper_ids, deadline, active)
+}
+
+fn update_reading_plan_inner(
+    db: &Db,
+    plan_id: &str,
+    target_count: Option<i64>,
+    paper_ids: Option<Vec<String>>,
+    deadline: Option<i64>,
+    active: Option<bool>,
+) -> Result<ReadingPlan, String> {
+    let conn = db.conn();
+    if let Some(n) = target_count {
+        if n < 1 {
+            return Err("每日目标至少 1 篇".into());
+        }
+        conn.execute(
+            "UPDATE reading_plans SET target_count = ?2 WHERE id = ?1",
+            params![&plan_id, n],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(ids) = paper_ids {
+        let json = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE reading_plans SET paper_ids = ?2 WHERE id = ?1",
+            params![&plan_id, json],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(dl) = deadline {
+        conn.execute(
+            "UPDATE reading_plans SET deadline = ?2 WHERE id = ?1",
+            params![&plan_id, dl],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(a) = active {
+        conn.execute(
+            "UPDATE reading_plans SET active = ?2 WHERE id = ?1",
+            params![&plan_id, a as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.query_row(
+        &format!("{PLAN_SELECT} WHERE id = ?1"),
+        [&plan_id],
+        row_to_plan,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 删除阅读计划。
+#[tauri::command]
+pub fn delete_reading_plan(db: State<'_, Db>, plan_id: String) -> Result<(), String> {
+    delete_reading_plan_inner(&db, &plan_id)
+}
+
+fn delete_reading_plan_inner(db: &Db, plan_id: &str) -> Result<(), String> {
+    let conn = db.conn();
+    let n = conn
+        .execute("DELETE FROM reading_plans WHERE id = ?1", params![&plan_id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("计划不存在".into());
+    }
+    Ok(())
+}
+
+/// 当天读过的一篇论文（时间线日明细条目）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineDayPaper {
+    pub paper_id: String,
+    pub title: String,
+    pub seconds: i64,
+    pub reading_status: String,
+}
+
+/// 一天的阅读记录（date 为本地日期 YYYY-MM-DD；无记录的天不返回）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineDay {
+    pub date: String,
+    /// 当天阅读总时长（秒）。
+    pub seconds: i64,
+    /// 当天读过的论文数。
+    pub paper_count: i64,
+    /// 当天标记已读的篇数（定量目标完成度口径）。
+    pub finished_count: i64,
+    pub papers: Vec<TimelineDayPaper>,
+}
+
+/// 时间线统计结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineStats {
+    pub days: Vec<TimelineDay>,
+    /// 连续有阅读记录的天数（今天还没读则从前一天起算，不立刻断档）。
+    pub streak: i64,
+}
+
+/// 时间线统计：最近 `days` 天按本地日期聚合阅读时长与论文明细 + 当前连续天数。
+#[tauri::command]
+pub fn timeline_stats(db: State<'_, Db>, days: i64) -> Result<TimelineStats, String> {
+    timeline_stats_inner(&db, days)
+}
+
+fn timeline_stats_inner(db: &Db, days: i64) -> Result<TimelineStats, String> {
+    let conn = db.conn();
+    let days = days.clamp(1, 366);
+    // 覆盖窗口：本地时间 days-1 天前的零点（含今天共 days 天）
+    let today = chrono::Local::now().date_naive();
+    let cutoff_date = today - chrono::Duration::days(days - 1);
+    let cutoff = cutoff_date
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono::Local)
+        .earliest()
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0);
+
+    // 按天 × 论文聚合阅读时长
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(rs.started_at, 'unixepoch', 'localtime') AS d,
+                    p.id, p.title, p.reading_status, SUM(rs.seconds)
+             FROM reading_sessions rs
+             JOIN papers p ON p.id = rs.paper_id
+             WHERE rs.started_at >= ?1
+             GROUP BY d, p.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![cutoff], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                TimelineDayPaper {
+                    paper_id: row.get(1)?,
+                    title: row.get(2)?,
+                    reading_status: row.get(3)?,
+                    seconds: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut by_day: Vec<(String, TimelineDayPaper)> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    // 按天聚合标记已读篇数
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(finished_at, 'unixepoch', 'localtime') AS d, COUNT(*)
+             FROM papers
+             WHERE finished_at IS NOT NULL AND finished_at >= ?1
+             GROUP BY d",
+        )
+        .map_err(|e| e.to_string())?;
+    let finished_rows = stmt
+        .query_map(params![cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let finished_by_day: HashMap<String, i64> = finished_rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+
+    // 组装：日期降序、同一天的论文按时长降序，把同一天的论文归在一起
+    by_day.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.seconds.cmp(&a.1.seconds)));
+    let mut result_days: Vec<TimelineDay> = Vec::new();
+    for (date, paper) in by_day {
+        if result_days.last().map(|d| d.date.as_str()) != Some(date.as_str()) {
+            result_days.push(TimelineDay {
+                finished_count: finished_by_day.get(&date).copied().unwrap_or(0),
+                date,
+                seconds: 0,
+                paper_count: 0,
+                papers: Vec::new(),
+            });
+        }
+        let day = result_days.last_mut().unwrap();
+        day.seconds += paper.seconds;
+        day.paper_count += 1;
+        day.papers.push(paper);
+    }
+    // 只有「标记已读」没有阅读时长的天也要出现
+    for (date, count) in &finished_by_day {
+        if !result_days.iter().any(|d| &d.date == date) {
+            result_days.push(TimelineDay {
+                date: date.clone(),
+                seconds: 0,
+                paper_count: 0,
+                finished_count: *count,
+                papers: Vec::new(),
+            });
+        }
+    }
+    result_days.sort_by(|a, b| b.date.cmp(&a.date));
+
+    // streak：从今天（或昨天，若今天尚无记录）起向前数连续有记录的天数
+    let recorded: HashSet<&str> = result_days.iter().map(|d| d.date.as_str()).collect();
+    let fmt = |d: chrono::NaiveDate| d.format("%Y-%m-%d").to_string();
+    let mut cursor = today;
+    if !recorded.contains(fmt(cursor).as_str()) {
+        cursor -= chrono::Duration::days(1);
+    }
+    let mut streak = 0i64;
+    while recorded.contains(fmt(cursor).as_str()) {
+        streak += 1;
+        cursor -= chrono::Duration::days(1);
+    }
+
+    Ok(TimelineStats {
+        days: result_days,
+        streak,
+    })
 }
 
 // ---------- 检索 / 索引 ----------
@@ -3262,5 +3658,157 @@ mod tests {
         // 删掉剩余会话后可删空
         delete_conversation_inner(&db, &id2).unwrap();
         assert_eq!(qa_count(&db), 0);
+    }
+
+    // ---------- 阅读时间线 ----------
+
+    fn timeline_test_db() -> db::Db {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        db::Db::from_connection(conn)
+    }
+
+    fn insert_test_paper(db: &db::Db, id: &str) {
+        db.conn()
+            .execute(
+                "INSERT INTO papers (id, title, pdf_path, md_path, created_at) \
+                 VALUES (?1, ?2, '/p.pdf', '/p.md', 1700000000)",
+                params![id, format!("Paper {id}")],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn reading_time_aggregates_per_paper_and_per_day() {
+        let db = timeline_test_db();
+        insert_test_paper(&db, "p1");
+        insert_test_paper(&db, "p2");
+
+        add_reading_time_inner(&db, "p1", 300).unwrap();
+        add_reading_time_inner(&db, "p1", 120).unwrap();
+        add_reading_time_inner(&db, "p2", 60).unwrap();
+        // 零头/负值防御：不写入
+        add_reading_time_inner(&db, "p1", 0).unwrap();
+        assert!(add_reading_time_inner(&db, "ghost", 10).is_err());
+
+        // 每篇累计时长由 sessions 聚合
+        let p1 = get_paper_inner(&db, "p1").unwrap();
+        assert_eq!(p1.total_read_seconds, 420);
+        assert!(p1.last_read_at.is_some(), "上报时长应刷新 last_read_at");
+
+        // 按天聚合：今天 2 篇、480 秒
+        let stats = timeline_stats_inner(&db, 30).unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let day = stats.days.iter().find(|d| d.date == today).unwrap();
+        assert_eq!(day.seconds, 480);
+        assert_eq!(day.paper_count, 2);
+        assert_eq!(day.papers[0].paper_id, "p1", "当天论文按时长降序");
+        assert_eq!(stats.streak, 1);
+    }
+
+    #[test]
+    fn timeline_streak_counts_consecutive_days() {
+        let db = timeline_test_db();
+        insert_test_paper(&db, "p1");
+
+        let local_midnight = |days_ago: i64| {
+            (chrono::Local::now().date_naive() - chrono::Duration::days(days_ago))
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .earliest()
+                .unwrap()
+                .timestamp()
+        };
+        // 昨天、前天有记录，今天没有 → streak 从昨天起算 = 2
+        for ago in [1i64, 2] {
+            db.conn()
+                .execute(
+                    "INSERT INTO reading_sessions (paper_id, started_at, seconds) VALUES ('p1', ?1, 60)",
+                    [local_midnight(ago)],
+                )
+                .unwrap();
+        }
+        assert_eq!(timeline_stats_inner(&db, 30).unwrap().streak, 2);
+
+        // 今天补一条 → streak 变 3
+        db.conn()
+            .execute(
+                "INSERT INTO reading_sessions (paper_id, started_at, seconds) VALUES ('p1', ?1, 60)",
+                [chrono::Utc::now().timestamp()],
+            )
+            .unwrap();
+        assert_eq!(timeline_stats_inner(&db, 30).unwrap().streak, 3);
+    }
+
+    #[test]
+    fn mark_paper_read_toggles_finished_at() {
+        let db = timeline_test_db();
+        insert_test_paper(&db, "p1");
+
+        let p = mark_paper_read_inner(&db, "p1", true).unwrap();
+        assert_eq!(p.reading_status, "read");
+        assert!(p.finished_at.is_some());
+        assert!(p.last_read_at.is_some());
+
+        // 当天的 finished_count 计入时间线
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let stats = timeline_stats_inner(&db, 7).unwrap();
+        let day = stats.days.iter().find(|d| d.date == today).unwrap();
+        assert_eq!(day.finished_count, 1);
+
+        // 取消已读：退回 reading、清 finished_at
+        let p = mark_paper_read_inner(&db, "p1", false).unwrap();
+        assert_eq!(p.reading_status, "reading");
+        assert_eq!(p.finished_at, None);
+        let stats = timeline_stats_inner(&db, 7).unwrap();
+        assert!(!stats.days.iter().any(|d| d.finished_count > 0));
+
+        assert!(mark_paper_read_inner(&db, "ghost", true).is_err());
+    }
+
+    #[test]
+    fn reading_plan_crud() {
+        let db = timeline_test_db();
+        insert_test_paper(&db, "p1");
+        insert_test_paper(&db, "p2");
+
+        // 校验
+        assert!(create_reading_plan_inner(&db, "daily", Some(0), None, None).is_err());
+        assert!(create_reading_plan_inner(&db, "papers", None, Some(vec![]), None).is_err());
+        assert!(create_reading_plan_inner(&db, "bogus", None, None, None).is_err());
+
+        // daily 计划
+        let daily = create_reading_plan_inner(&db, "daily", Some(2), None, None).unwrap();
+        assert_eq!(daily.plan_type, "daily");
+        assert_eq!(daily.target_count, Some(2));
+        assert!(daily.active);
+
+        // papers 计划（带截止日期）
+        let dl = chrono::Utc::now().timestamp() + 7 * 86400;
+        let papers_plan =
+            create_reading_plan_inner(&db, "papers", None, Some(vec!["p1".into(), "p2".into()]), Some(dl))
+                .unwrap();
+        assert_eq!(papers_plan.paper_ids, vec!["p1", "p2"]);
+        assert_eq!(papers_plan.deadline, Some(dl));
+        assert_eq!(papers_plan.target_count, None, "papers 计划不应存 target_count");
+
+        // 更新：改目标、停用
+        let updated = update_reading_plan_inner(&db, &daily.id, Some(3), None, None, None).unwrap();
+        assert_eq!(updated.target_count, Some(3));
+        let updated = update_reading_plan_inner(&db, &daily.id, None, None, None, Some(false)).unwrap();
+        assert!(!updated.active);
+
+        // 列表：active 在前
+        let plans = list_reading_plans_inner(&db).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert!(plans[0].active && !plans[1].active);
+
+        // 删除
+        delete_reading_plan_inner(&db, &daily.id).unwrap();
+        assert_eq!(list_reading_plans_inner(&db).unwrap().len(), 1);
+        assert!(delete_reading_plan_inner(&db, &daily.id).is_err());
     }
 }

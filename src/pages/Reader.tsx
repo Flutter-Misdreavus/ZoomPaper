@@ -7,8 +7,9 @@ import { TranslatePanel } from "@/components/TranslatePanel";
 import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
-import { getPaper, setPaperStatus, type Paper } from "@/lib/api";
-import { ArrowLeft } from "lucide-react";
+import { getPaper, markPaperRead, setPaperStatus, addReadingTime, type Paper } from "@/lib/api";
+import { formatDuration } from "@/lib/utils";
+import { ArrowLeft, BookCheck, Clock } from "lucide-react";
 
 interface Props {
   paperId: string;
@@ -41,6 +42,48 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
     setPaperStatus(paper.id, "reading").catch(() => {});
   }, [paper]);
 
+  // 阅读时长累计：仅页面可见时计时，每 30s 上报一次，卸载/换论文时上报零头。失败静默。
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+  useEffect(() => {
+    if (!paper) return;
+    const pid = paper.id;
+    setSessionSeconds(0);
+    let pending = 0;
+    let visible = document.visibilityState === "visible";
+    const onVis = () => {
+      visible = document.visibilityState === "visible";
+    };
+    const flush = () => {
+      if (pending <= 0) return;
+      const s = pending;
+      pending = 0;
+      addReadingTime(pid, s).catch(() => {
+        pending += s; // 上报失败则留待下次
+      });
+    };
+    document.addEventListener("visibilitychange", onVis);
+    const timer = setInterval(() => {
+      if (!visible) return;
+      pending += 5;
+      setSessionSeconds((v) => v + 5);
+      if (pending >= 30) flush();
+    }, 5000);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      flush();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 为计时边界
+  }, [paper?.id]);
+
+  // 标记/取消已读（时间线统计口径）
+  const toggleRead = () => {
+    if (!paper) return;
+    markPaperRead(paper.id, paper.reading_status !== "read")
+      .then(setPaper)
+      .catch(() => {});
+  };
+
   const ready = paper?.parse_status === "ready";
 
   return (
@@ -57,6 +100,26 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
             <p className="text-sm text-muted-foreground">{paper.authors}</p>
           )}
         </div>
+        {paper && (
+          <div className="ml-auto flex shrink-0 items-center gap-3">
+            <span
+              className="flex items-center gap-1.5 text-sm text-muted-foreground"
+              title="本篇累计阅读时长"
+            >
+              <Clock className="h-4 w-4" strokeWidth={1.8} />
+              已阅读 {formatDuration(paper.total_read_seconds + sessionSeconds)}
+            </span>
+            <Button
+              variant={paper.reading_status === "read" ? "secondary" : "outline"}
+              size="sm"
+              onClick={toggleRead}
+              className="pressable"
+            >
+              <BookCheck className="h-4 w-4" strokeWidth={1.8} />
+              {paper.reading_status === "read" ? "取消已读" : "标记已读"}
+            </Button>
+          </div>
+        )}
       </div>
 
       {loading ? (

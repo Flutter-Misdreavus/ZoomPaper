@@ -16,17 +16,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { FileText, Loader2 } from "lucide-react";
 import {
   addPapersToFolder,
+  createReadingPlan,
   deleteFolder,
   deletePaper,
   importPdf,
   listFolders,
   listPapers,
+  listReadingPlans,
   parsePdf,
   removePapersFromFolder,
   renamePaper,
   setPaperStarred,
   setPaperStatus,
   updateFolder,
+  updateReadingPlan,
   type Folder,
   type Paper,
   type ReadingStatus,
@@ -180,6 +183,24 @@ export function Library({ onOpenPaper }: Props) {
     } catch (e) {
       setError(String(e));
       await refresh();
+    }
+  }
+
+  // 加入阅读计划：追加到当前进行中的指派论文计划；无则自动新建一个。
+  async function handleAddToPlan(paper: Paper) {
+    try {
+      const plans = await listReadingPlans();
+      const active = plans.find((pl) => pl.active && pl.type === "papers");
+      if (active) {
+        if (active.paper_ids.includes(paper.id)) return; // 已在计划中
+        await updateReadingPlan(active.id, {
+          paperIds: [...active.paper_ids, paper.id],
+        });
+      } else {
+        await createReadingPlan("papers", { paperIds: [paper.id] });
+      }
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -490,6 +511,7 @@ export function Library({ onOpenPaper }: Props) {
                   onCancelRename={() => setRenaming(null)}
                   onPickFolder={handlePickFolder}
                   onSetStatus={(p, s) => void handleSetStatus(p, s)}
+                  onAddToPlan={(p) => void handleAddToPlan(p)}
                   onToggleStar={(p) => void handleToggleStar(p)}
                   onJumpToFolder={(folderId) => {
                     setView({ type: "folder", folderId });

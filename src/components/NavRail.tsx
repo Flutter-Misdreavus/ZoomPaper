@@ -4,16 +4,18 @@
  */
 import {
   BookOpen,
+  CalendarDays,
   MessageSquare,
   Search,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type NavItem = "library" | "search" | "ask" | "settings";
+export type NavItem = "library" | "timeline" | "search" | "ask" | "settings";
 
 const NAV_ITEMS: { name: NavItem; label: string; icon: typeof BookOpen }[] = [
   { name: "library", label: "论文库", icon: BookOpen },
+  { name: "timeline", label: "时间线", icon: CalendarDays },
   { name: "search", label: "搜索", icon: Search },
   { name: "ask", label: "问答", icon: MessageSquare },
   { name: "settings", label: "设置", icon: SettingsIcon },

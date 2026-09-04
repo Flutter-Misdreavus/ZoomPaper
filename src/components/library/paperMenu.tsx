@@ -6,6 +6,7 @@ import {
   BookOpen,
   FolderMinus,
   FolderPlus,
+  ListPlus,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -38,6 +39,8 @@ export interface PaperMenuActions {
   onRemoveFromCurrentFolder?: () => void;
   /** 标记阅读状态 */
   onSetStatus: (status: ReadingStatus) => void;
+  /** 加入当前进行中的指派论文计划（无则自动新建） */
+  onAddToPlan?: () => void;
   /** 当前阅读状态（用于高亮菜单项） */
   currentStatus: ReadingStatus;
   onDelete: () => void;
@@ -72,6 +75,12 @@ export function PaperMenuItems({ Item, actions }: { Item: MenuItemLike; actions:
         </Item>
       )}
       <div className="my-1 h-px bg-border" />
+      {actions.onAddToPlan && (
+        <Item className={MENU_ITEM_CLASS} onClick={actions.onAddToPlan}>
+          <ListPlus className="h-4 w-4 text-muted-foreground" />
+          加入阅读计划
+        </Item>
+      )}
       <Item
         className={cn(MENU_ITEM_CLASS, actions.currentStatus === "unread" && "font-medium")}
         onClick={() => actions.onSetStatus("unread")}
