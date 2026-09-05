@@ -6,14 +6,19 @@
  */
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
-import { useMemo } from "react";
-import { Check, MoreHorizontal, Star } from "lucide-react";
+import { useMemo, useState } from "react";
+import { CalendarClock, Check, MoreHorizontal, Star } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { PAPER_DRAG_MIME } from "@/lib/folders";
-import type { Folder, Paper, ReadingStatus } from "@/lib/api";
+import type { Folder, Paper, ReadingPlan, ReadingStatus } from "@/lib/api";
 import { PaperMenuItems, type PaperMenuActions } from "./paperMenu";
+import {
+  PlanSubmenu,
+  dueBadge,
+  type PlanMenuPrimitives,
+} from "./planMenu";
 import { RenameInput } from "./RenameInput";
 
 /** 解析状态 pill：已解析深色填充，其余弱化 */
@@ -55,8 +60,13 @@ export interface PaperCardProps {
   /** 打开归属面板；未选中该论文时以它为目标 */
   onPickFolder: (paper: Paper) => void;
   onSetStatus: (paper: Paper, status: ReadingStatus) => void;
-  /** 加入阅读计划（当前进行中的指派论文计划；无则自动新建） */
-  onAddToPlan: (paper: Paper) => void;
+  /** 全部阅读计划（卡片据此计算所在计划与目标计划） */
+  plans: ReadingPlan[];
+  /** 快捷加入/更新日期：planId 为 null 时由 Library 自动新建计划 */
+  onPlanQuickAdd: (paper: Paper, planId: string | null, dueTs: number | null) => void;
+  onPlanRemove: (paper: Paper, planId: string) => void;
+  /** 打开自定义日期浮层（Library 层） */
+  onPlanCustomDate: (paper: Paper, planId: string | null) => void;
   onToggleStar: (paper: Paper) => void;
   /** 点击文件夹 pill 跳转到对应文件夹视图 */
   onJumpToFolder: (folderId: string) => void;
@@ -82,7 +92,10 @@ export function PaperCard(props: PaperCardProps) {
     onCancelRename,
     onPickFolder,
     onSetStatus,
-    onAddToPlan,
+    plans,
+    onPlanQuickAdd,
+    onPlanRemove,
+    onPlanCustomDate,
     onToggleStar,
     onJumpToFolder,
     onParse,
@@ -107,10 +120,44 @@ export function PaperCard(props: PaperCardProps) {
       ? () => onRemoveFromCurrentFolder(paper)
       : undefined,
     onSetStatus: (s) => onSetStatus(paper, s),
-    onAddToPlan: () => onAddToPlan(paper),
     currentStatus: status,
     onDelete: () => onDelete(paper),
   };
+
+  // ---------- 阅读计划子菜单（提醒事项式快捷定日期） ----------
+  const papersPlans = plans.filter((p) => p.type === "papers");
+  const activePapersPlans = papersPlans.filter((p) => p.active);
+  const containingPlan =
+    papersPlans.find((p) => p.items.some((i) => i.paper_id === paper.id)) ?? null;
+  const currentDue =
+    containingPlan?.items.find((i) => i.paper_id === paper.id)?.due_date ?? null;
+  const [targetPlanId, setTargetPlanId] = useState<string | null>(null);
+  // 目标计划：已加入的 > 手动选择的 > 最新的进行中计划
+  const effectiveTarget =
+    containingPlan ??
+    activePapersPlans.find((p) => p.id === targetPlanId) ??
+    activePapersPlans[0] ??
+    null;
+
+  const renderPlanSubmenu = (P: PlanMenuPrimitives) => (
+    <PlanSubmenu
+      P={P}
+      activePlans={activePapersPlans}
+      containingPlan={containingPlan}
+      currentDue={currentDue}
+      targetPlanId={effectiveTarget?.id ?? null}
+      onSelectTarget={setTargetPlanId}
+      onQuickDate={(due) => onPlanQuickAdd(paper, effectiveTarget?.id ?? null, due)}
+      onCustomDate={() => onPlanCustomDate(paper, effectiveTarget?.id ?? null)}
+      onRemove={
+        containingPlan ? () => onPlanRemove(paper, containingPlan.id) : null
+      }
+    />
+  );
+
+  // 卡片 footer 的截止日期 pill（未读完且在计划中带日期时）
+  const duePill =
+    status !== "read" && currentDue != null ? dueBadge(currentDue, false) : null;
 
   function handleDragStart(e: React.DragEvent) {
     const ids = selected ? [...selectedIds] : [paper.id];
@@ -236,7 +283,13 @@ export function PaperCard(props: PaperCardProps) {
                         className="isolate z-50"
                       >
                         <MenuPrimitive.Popup className="z-50 min-w-44 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
-                          <PaperMenuItems Item={MenuPrimitive.Item} actions={menuActions} />
+                          <PaperMenuItems
+                            Item={MenuPrimitive.Item}
+                            actions={menuActions}
+                            planMenuSlot={renderPlanSubmenu(
+                              MenuPrimitive as unknown as PlanMenuPrimitives,
+                            )}
+                          />
                         </MenuPrimitive.Popup>
                       </MenuPrimitive.Positioner>
                     </MenuPrimitive.Portal>
@@ -261,6 +314,22 @@ export function PaperCard(props: PaperCardProps) {
                 >
                   {st.label}
                 </span>
+                {/* 阅读计划截止日期 pill：逾期未读标红 */}
+                {duePill && (
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-[1.3] font-medium",
+                      duePill.tone === "red"
+                        ? "bg-red-500/10 text-red-600"
+                        : duePill.tone === "amber"
+                          ? "bg-amber-500/10 text-amber-600"
+                          : "bg-zp-surface-hover text-zp-tertiary"
+                    )}
+                  >
+                    <CalendarClock className="h-3 w-3" strokeWidth={1.8} />
+                    {duePill.text}
+                  </span>
+                )}
                 {paper.parse_status !== "ready" && (
                   <button
                     type="button"
@@ -312,7 +381,13 @@ export function PaperCard(props: PaperCardProps) {
       <ContextMenuPrimitive.Portal>
         <ContextMenuPrimitive.Positioner alignOffset={4} className="isolate z-50">
           <ContextMenuPrimitive.Popup className="z-50 min-w-44 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
-            <PaperMenuItems Item={ContextMenuPrimitive.Item} actions={menuActions} />
+            <PaperMenuItems
+              Item={ContextMenuPrimitive.Item}
+              actions={menuActions}
+              planMenuSlot={renderPlanSubmenu(
+                ContextMenuPrimitive as unknown as PlanMenuPrimitives,
+              )}
+            />
           </ContextMenuPrimitive.Popup>
         </ContextMenuPrimitive.Positioner>
       </ContextMenuPrimitive.Portal>

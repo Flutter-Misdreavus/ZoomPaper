@@ -12,9 +12,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FileText, Loader2 } from "lucide-react";
 import {
+  addPaperToPlan,
   addPapersToFolder,
   createReadingPlan,
   deleteFolder,
@@ -24,14 +26,15 @@ import {
   listPapers,
   listReadingPlans,
   parsePdf,
+  removePaperFromPlan,
   removePapersFromFolder,
   renamePaper,
   setPaperStarred,
   setPaperStatus,
   updateFolder,
-  updateReadingPlan,
   type Folder,
   type Paper,
+  type ReadingPlan,
   type ReadingStatus,
 } from "@/lib/api";
 import type { LibraryView } from "@/lib/folders";
@@ -54,6 +57,12 @@ interface Props {
 export function Library({ onOpenPaper }: Props) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
+  const [plans, setPlans] = useState<ReadingPlan[]>([]);
+  const [customDateTarget, setCustomDateTarget] = useState<{
+    paper: Paper;
+    planId: string | null;
+  } | null>(null);
+  const [customDate, setCustomDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,9 +86,10 @@ export function Library({ onOpenPaper }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      const [ps, fs] = await Promise.all([listPapers(), listFolders()]);
+      const [ps, fs, pls] = await Promise.all([listPapers(), listFolders(), listReadingPlans()]);
       setPapers(ps);
       setFolders(fs);
+      setPlans(pls);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -186,22 +196,56 @@ export function Library({ onOpenPaper }: Props) {
     }
   }
 
-  // 加入阅读计划：追加到当前进行中的指派论文计划；无则自动新建一个。
-  async function handleAddToPlan(paper: Paper) {
+  // ---------- 阅读计划（提醒事项式快捷加入/定日期） ----------
+
+  async function refreshPlans() {
     try {
-      const plans = await listReadingPlans();
-      const active = plans.find((pl) => pl.active && pl.type === "papers");
-      if (active) {
-        if (active.paper_ids.includes(paper.id)) return; // 已在计划中
-        await updateReadingPlan(active.id, {
-          paperIds: [...active.paper_ids, paper.id],
-        });
+      setPlans(await listReadingPlans());
+    } catch {
+      /* 静默：不阻塞论文库主流程 */
+    }
+  }
+
+  /** 快捷加入/更新日期：planId 为 null 时自动新建一个指派计划 */
+  async function handlePlanQuickAdd(paper: Paper, planId: string | null, dueTs: number | null) {
+    try {
+      if (planId) {
+        await addPaperToPlan(planId, paper.id, dueTs);
       } else {
-        await createReadingPlan("papers", { paperIds: [paper.id] });
+        await createReadingPlan("papers", {
+          paperIds: [paper.id],
+          deadline: dueTs ?? undefined,
+        });
       }
+      await refreshPlans();
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  async function handlePlanRemove(paper: Paper, planId: string) {
+    try {
+      await removePaperFromPlan(planId, paper.id);
+      await refreshPlans();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function handlePlanCustomDate(paper: Paper, planId: string | null) {
+    setCustomDate("");
+    setCustomDateTarget({ paper, planId });
+  }
+
+  /** 自定义日期浮层确认：date 串（YYYY-MM-DD）或 null（无日期） */
+  async function commitCustomDate(date: string | null) {
+    const target = customDateTarget;
+    setCustomDateTarget(null);
+    if (!target) return;
+    const ts = date
+      ? Math.floor(new Date(`${date}T23:59:59`).getTime() / 1000)
+      : null;
+    await handlePlanQuickAdd(target.paper, target.planId, ts);
   }
 
   async function handleToggleStar(paper: Paper) {
@@ -511,7 +555,10 @@ export function Library({ onOpenPaper }: Props) {
                   onCancelRename={() => setRenaming(null)}
                   onPickFolder={handlePickFolder}
                   onSetStatus={(p, s) => void handleSetStatus(p, s)}
-                  onAddToPlan={(p) => void handleAddToPlan(p)}
+                  plans={plans}
+                  onPlanQuickAdd={(p, planId, due) => void handlePlanQuickAdd(p, planId, due)}
+                  onPlanRemove={(p, planId) => void handlePlanRemove(p, planId)}
+                  onPlanCustomDate={handlePlanCustomDate}
                   onToggleStar={(p) => void handleToggleStar(p)}
                   onJumpToFolder={(folderId) => {
                     setView({ type: "folder", folderId });
@@ -572,6 +619,43 @@ export function Library({ onOpenPaper }: Props) {
             >
               {deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 自定义截止日期（阅读计划快捷加入） */}
+      <AlertDialog
+        open={customDateTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCustomDateTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>自定义截止日期</AlertDialogTitle>
+            <AlertDialogDescription className="line-clamp-2">
+              《{customDateTarget?.paper.title}》
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            type="date"
+            value={customDate}
+            onChange={(e) => setCustomDate(e.target.value)}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              variant="outline"
+              onClick={() => void commitCustomDate(null)}
+            >
+              无日期
+            </AlertDialogAction>
+            <AlertDialogAction
+              disabled={!customDate}
+              onClick={() => void commitCustomDate(customDate)}
+            >
+              确定
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -29,16 +29,25 @@ pub struct Paper {
     pub folder_ids: Vec<String>,
 }
 
+/// 计划条目：指派论文清单中的一篇论文，带条目级截止日期（提醒事项式）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadingPlanItem {
+    pub paper_id: String,
+    /// 条目级截止（epoch 秒）；None = 无日期。
+    pub due_date: Option<i64>,
+}
+
 /// 阅读计划：daily = 每天读完 N 篇的持续性定量目标；
-/// papers = 指派一组论文 + 截止日期的任务清单。
+/// papers = 指派论文清单（条目各自带截止日期）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadingPlan {
     pub id: String,
     #[serde(rename = "type")]
     pub plan_type: String,
     pub target_count: Option<i64>,
-    /// 指派的论文 id 列表（JSON 数组解析后；daily 计划为空）。
-    pub paper_ids: Vec<String>,
+    /// 指派论文条目（daily 计划为空）。由 reading_plan_items 聚合填充。
+    pub items: Vec<ReadingPlanItem>,
+    /// 遗留：v10 及以前的计划级截止日期；v11 起不再写入（仅存量计划可能有值）。
     pub deadline: Option<i64>,
     pub created_at: i64,
     pub active: bool,

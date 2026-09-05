@@ -131,6 +131,25 @@ const MIGRATIONS: &[&str] = &[
         active       INTEGER NOT NULL DEFAULT 1 -- 完成/停用后置 0
     );
     "#,
+    // v11：计划条目表 —— 指派论文从「计划级 paper_ids JSON + 单一 deadline」
+    // 演进为「条目级 due date」（参考提醒事项：每条目各自定日期）。
+    // 存量 paper_ids JSON 用 json_each 搬运进条目表，due 取计划原 deadline。
+    // reading_plans.paper_ids / deadline 旧列保留但不再写入（向后兼容）。
+    r#"
+    CREATE TABLE IF NOT EXISTS reading_plan_items (
+        plan_id    TEXT NOT NULL REFERENCES reading_plans(id) ON DELETE CASCADE,
+        paper_id   TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+        due_date   INTEGER,               -- 条目级截止（epoch 秒）；NULL = 无日期
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (plan_id, paper_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_plan_items_paper ON reading_plan_items(paper_id);
+
+    INSERT INTO reading_plan_items (plan_id, paper_id, due_date, created_at)
+    SELECT rp.id, je.value, rp.deadline, rp.created_at
+    FROM reading_plans rp, json_each(rp.paper_ids) je
+    WHERE rp.type = 'papers' AND rp.paper_ids IS NOT NULL;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -173,7 +192,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 10);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 11);
 
         // 论文数据无损
         let title: String = conn
@@ -266,6 +285,71 @@ mod tests {
             .optional()
             .unwrap();
         assert!(legacy_state.is_none());
+    }
+
+    /// v10 → v11：存量计划的 paper_ids JSON + 计划级 deadline 搬运为条目级 due date。
+    #[test]
+    fn v10_plans_migrate_to_items_with_plan_deadline() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+
+        // 手工执行 v1..v10，造一个 v10 库
+        for sql in &MIGRATIONS[..10] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+
+        conn.execute(
+            "INSERT INTO papers (id, title, pdf_path, md_path, created_at) \
+             VALUES ('p1', 'A', '/a.pdf', '/a.md', 1700000000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO papers (id, title, pdf_path, md_path, created_at) \
+             VALUES ('p2', 'B', '/b.pdf', '/b.md', 1700000000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reading_plans (id, type, paper_ids, deadline, created_at) \
+             VALUES ('plan-1', 'papers', '[\"p1\",\"p2\"]', 1700100000, 1700000001)",
+            [],
+        )
+        .unwrap();
+        // daily 计划无 paper_ids，不应产生条目
+        conn.execute(
+            "INSERT INTO reading_plans (id, type, target_count, created_at) \
+             VALUES ('plan-2', 'daily', 2, 1700000002)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 11);
+
+        let items: Vec<(String, Option<i64>)> = conn
+            .prepare(
+                "SELECT paper_id, due_date FROM reading_plan_items WHERE plan_id = 'plan-1' ORDER BY paper_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            items,
+            vec![("p1".to_string(), Some(1700100000)), ("p2".to_string(), Some(1700100000))],
+            "存量条目应继承计划级 deadline"
+        );
+        let daily_items: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reading_plan_items WHERE plan_id = 'plan-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(daily_items, 0);
     }
 
     /// 迁移幂等：重复执行不报错。

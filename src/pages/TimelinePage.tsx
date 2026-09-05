@@ -26,6 +26,7 @@ import {
   deleteReadingPlan,
   listPapers,
   listReadingPlans,
+  removePaperFromPlan,
   timelineStats,
   updateReadingPlan,
   type Paper,
@@ -34,6 +35,7 @@ import {
   type TimelineStats,
 } from "@/lib/api";
 import { cn, formatDuration, formatTime } from "@/lib/utils";
+import { dueBadge } from "@/components/library/planMenu";
 import {
   BookCheck,
   CalendarClock,
@@ -41,6 +43,7 @@ import {
   Flame,
   Plus,
   Trash2,
+  X,
 } from "lucide-react";
 
 /** 最近 N 天统计（覆盖热力图 17 周 ≈ 119 天） */
@@ -506,16 +509,30 @@ function PlanCard({
     );
   }
 
-  // papers 计划：指派论文 + 截止日期
-  const total = plan.paper_ids.length;
-  const doneCount = plan.paper_ids.filter(
-    (id) => paperMap.get(id)?.reading_status === "read",
+  // papers 计划：指派论文清单（条目级截止日期）
+  const total = plan.items.length;
+  const doneCount = plan.items.filter(
+    (it) => paperMap.get(it.paper_id)?.reading_status === "read",
   ).length;
   const allDone = total > 0 && doneCount >= total;
+  // 汇总徽章由未读条目的最近 due 驱动
   const now = Date.now() / 1000;
-  const overdue = plan.deadline != null && !allDone && plan.deadline < now;
-  const daysLeft =
-    plan.deadline != null ? Math.ceil((plan.deadline - now) / 86400) : null;
+  const unreadDues = plan.items
+    .filter(
+      (it) =>
+        it.due_date != null &&
+        paperMap.get(it.paper_id)?.reading_status !== "read",
+    )
+    .map((it) => it.due_date as number)
+    .sort((a, b) => a - b);
+  const hasOverdue = unreadDues.some((d) => d < now);
+  const nearestDue = unreadDues[0] ?? null;
+
+  const removeItem = (paperId: string) => {
+    removePaperFromPlan(plan.id, paperId)
+      .then(onChanged)
+      .catch(() => {});
+  };
 
   return (
     <Card>
@@ -526,20 +543,18 @@ function PlanCard({
           </span>
           {allDone ? (
             <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">已完成</Badge>
-          ) : overdue ? (
+          ) : hasOverdue ? (
             <Badge variant="destructive">
               <CalendarClock className="mr-1 h-3 w-3" />
-              已逾期
+              有逾期
             </Badge>
-          ) : daysLeft != null && daysLeft <= 3 ? (
+          ) : nearestDue != null && nearestDue - now <= 3 * 86400 ? (
             <Badge className="bg-amber-500 text-white hover:bg-amber-500">
               <CalendarClock className="mr-1 h-3 w-3" />
-              还剩 {daysLeft} 天
+              还剩 {Math.max(1, Math.ceil((nearestDue - now) / 86400))} 天
             </Badge>
-          ) : plan.deadline != null ? (
-            <Badge variant="secondary">
-              截止 {formatTime(plan.deadline)}
-            </Badge>
+          ) : nearestDue != null ? (
+            <Badge variant="secondary">最近截止 {formatTime(nearestDue)}</Badge>
           ) : null}
           {!plan.active && <Badge variant="secondary">已停用</Badge>}
           <div className="ml-auto flex shrink-0 items-center">
@@ -568,15 +583,16 @@ function PlanCard({
           />
         </div>
         <ul className="flex flex-col">
-          {plan.paper_ids.map((id) => {
-            const p = paperMap.get(id);
+          {plan.items.map((item) => {
+            const p = paperMap.get(item.paper_id);
             const read = p?.reading_status === "read";
+            const due = dueBadge(item.due_date, read);
             return (
-              <li key={id}>
+              <li key={item.paper_id} className="group/item flex items-center">
                 <button
                   type="button"
-                  onClick={() => onOpenPaper(id)}
-                  className="pressable flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zp-surface-hover"
+                  onClick={() => onOpenPaper(item.paper_id)}
+                  className="pressable flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zp-surface-hover"
                 >
                   <BookCheck
                     className={cn(
@@ -593,6 +609,29 @@ function PlanCard({
                   >
                     {p?.title ?? "（论文已删除）"}
                   </span>
+                  {due && (
+                    <span
+                      className={cn(
+                        "shrink-0 text-xs",
+                        due.tone === "red"
+                          ? "text-red-600"
+                          : due.tone === "amber"
+                            ? "text-amber-600"
+                            : "text-muted-foreground",
+                      )}
+                    >
+                      {due.text}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  title="从计划移除"
+                  aria-label="从计划移除"
+                  onClick={() => removeItem(item.paper_id)}
+                  className="pressable ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-zp-quaternary opacity-0 transition-opacity group-hover/item:opacity-100 hover:bg-zp-surface-hover hover:text-destructive"
+                >
+                  <X className="h-3.5 w-3.5" strokeWidth={1.8} />
                 </button>
               </li>
             );

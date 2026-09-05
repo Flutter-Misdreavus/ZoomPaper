@@ -2,7 +2,7 @@
 
 use crate::ai::llm::{Llm, Role};
 use crate::ai::mineru::MineruClient;
-use crate::db::models::{Conversation, Folder, Paper, ReadingPlan, SearchHit};
+use crate::db::models::{Conversation, Folder, Paper, ReadingPlan, ReadingPlanItem, SearchHit};
 use crate::feynman::{
     ConceptStatus, FeynmanMessage, FeynmanState, FeynmanTurn, PlanItem, StageStatus,
 };
@@ -751,24 +751,50 @@ fn mark_paper_read_inner(db: &Db, paper_id: &str, read: bool) -> Result<Paper, S
 }
 
 fn row_to_plan(row: &rusqlite::Row) -> rusqlite::Result<ReadingPlan> {
-    let paper_ids_raw: Option<String> = row.get(3)?;
     Ok(ReadingPlan {
         id: row.get(0)?,
         plan_type: row.get(1)?,
         target_count: row.get(2)?,
-        paper_ids: paper_ids_raw
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default(),
-        deadline: row.get(4)?,
-        created_at: row.get(5)?,
-        active: row.get::<_, i64>(6)? != 0,
+        items: Vec::new(), // 由 load_plan / list 填充
+        deadline: row.get(3)?,
+        created_at: row.get(4)?,
+        active: row.get::<_, i64>(5)? != 0,
     })
 }
 
 const PLAN_SELECT: &str =
-    "SELECT id, type, target_count, paper_ids, deadline, created_at, active FROM reading_plans";
+    "SELECT id, type, target_count, deadline, created_at, active FROM reading_plans";
 
-/// 创建阅读计划。type='daily' 需 target_count ≥ 1；type='papers' 需 paper_ids 非空。
+/// 某计划的条目（papers 类型）：按 due_date 升序，无日期的排最后。
+fn plan_items(conn: &rusqlite::Connection, plan_id: &str) -> Result<Vec<ReadingPlanItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT paper_id, due_date FROM reading_plan_items \
+             WHERE plan_id = ?1 ORDER BY due_date IS NULL, due_date ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([plan_id], |row| {
+            Ok(ReadingPlanItem {
+                paper_id: row.get(0)?,
+                due_date: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 读单个计划并填充条目。
+fn load_plan(conn: &rusqlite::Connection, plan_id: &str) -> Result<ReadingPlan, String> {
+    let mut plan = conn
+        .query_row(&format!("{PLAN_SELECT} WHERE id = ?1"), [plan_id], row_to_plan)
+        .map_err(|e| e.to_string())?;
+    plan.items = plan_items(conn, plan_id)?;
+    Ok(plan)
+}
+
+/// 创建阅读计划。type='daily' 需 target_count ≥ 1；
+/// type='papers' 需 paper_ids 非空，deadline 作为所有条目的初始 due（可为空）。
 #[tauri::command]
 pub fn create_reading_plan(
     db: State<'_, Db>,
@@ -801,27 +827,23 @@ fn create_reading_plan_inner(
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
     conn.execute(
-        "INSERT INTO reading_plans (id, type, target_count, paper_ids, deadline, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            &id,
-            plan_type,
-            if plan_type == "daily" { target_count } else { None },
-            if plan_type == "papers" {
-                Some(serde_json::to_string(&ids).map_err(|e| e.to_string())?)
-            } else {
-                None
-            },
-            deadline,
-            now
-        ],
+        "INSERT INTO reading_plans (id, type, target_count, created_at) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&id, plan_type, if plan_type == "daily" { target_count } else { None }, now],
     )
     .map_err(|e| e.to_string())?;
-    conn.query_row(&format!("{PLAN_SELECT} WHERE id = ?1"), [&id], row_to_plan)
-        .map_err(|e| e.to_string())
+    for pid in &ids {
+        conn.execute(
+            "INSERT INTO reading_plan_items (plan_id, paper_id, due_date, created_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&id, pid, deadline, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    load_plan(&conn, &id)
 }
 
-/// 列出阅读计划：进行中的在前，同组按创建时间倒序。
+/// 列出阅读计划：进行中的在前，同组按创建时间倒序；papers 计划带条目。
 #[tauri::command]
 pub fn list_reading_plans(db: State<'_, Db>) -> Result<Vec<ReadingPlan>, String> {
     list_reading_plans_inner(&db)
@@ -833,10 +855,122 @@ fn list_reading_plans_inner(db: &Db) -> Result<Vec<ReadingPlan>, String> {
         .prepare(&format!("{PLAN_SELECT} ORDER BY active DESC, created_at DESC"))
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], row_to_plan).map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let mut plans = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    for plan in &mut plans {
+        plan.items = plan_items(&conn, &plan.id)?;
+    }
+    Ok(plans)
+}
+
+/// 把一篇论文加入指派计划（已存在则更新其 due）。返回更新后的计划。
+#[tauri::command]
+pub fn add_paper_to_plan(
+    db: State<'_, Db>,
+    plan_id: String,
+    paper_id: String,
+    due_date: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    add_paper_to_plan_inner(&db, &plan_id, &paper_id, due_date)
+}
+
+fn add_paper_to_plan_inner(
+    db: &Db,
+    plan_id: &str,
+    paper_id: &str,
+    due_date: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    let conn = db.conn();
+    let plan_type: String = conn
+        .query_row(
+            "SELECT type FROM reading_plans WHERE id = ?1",
+            [plan_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "计划不存在".to_string())?;
+    if plan_type != "papers" {
+        return Err("只有指派论文计划可以添加论文".into());
+    }
+    let paper_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM papers WHERE id = ?1)",
+            [paper_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !paper_exists {
+        return Err("论文不存在".into());
+    }
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        "INSERT INTO reading_plan_items (plan_id, paper_id, due_date, created_at) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(plan_id, paper_id) DO UPDATE SET due_date = excluded.due_date",
+        params![plan_id, paper_id, due_date, now],
+    )
+    .map_err(|e| e.to_string())?;
+    load_plan(&conn, plan_id)
+}
+
+/// 从指派计划移除一篇论文。返回更新后的计划。
+#[tauri::command]
+pub fn remove_paper_from_plan(
+    db: State<'_, Db>,
+    plan_id: String,
+    paper_id: String,
+) -> Result<ReadingPlan, String> {
+    remove_paper_from_plan_inner(&db, &plan_id, &paper_id)
+}
+
+fn remove_paper_from_plan_inner(
+    db: &Db,
+    plan_id: &str,
+    paper_id: &str,
+) -> Result<ReadingPlan, String> {
+    let conn = db.conn();
+    let n = conn
+        .execute(
+            "DELETE FROM reading_plan_items WHERE plan_id = ?1 AND paper_id = ?2",
+            params![plan_id, paper_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("该论文不在此计划中".into());
+    }
+    load_plan(&conn, plan_id)
+}
+
+/// 设置/清除计划条目的截止日期（due_date 为 None = 无日期）。返回更新后的计划。
+#[tauri::command]
+pub fn set_plan_item_due(
+    db: State<'_, Db>,
+    plan_id: String,
+    paper_id: String,
+    due_date: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    set_plan_item_due_inner(&db, &plan_id, &paper_id, due_date)
+}
+
+fn set_plan_item_due_inner(
+    db: &Db,
+    plan_id: &str,
+    paper_id: &str,
+    due_date: Option<i64>,
+) -> Result<ReadingPlan, String> {
+    let conn = db.conn();
+    let n = conn
+        .execute(
+            "UPDATE reading_plan_items SET due_date = ?3 WHERE plan_id = ?1 AND paper_id = ?2",
+            params![plan_id, paper_id, due_date],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("该论文不在此计划中".into());
+    }
+    load_plan(&conn, plan_id)
 }
 
 /// 更新阅读计划：仅更新传入的字段（None = 不动）。
+/// paper_ids 参数为兼容入口：同步条目集（已有条目保留各自 due，新增条目 due 取计划遗留 deadline）。
 #[tauri::command]
 pub fn update_reading_plan(
     db: State<'_, Db>,
@@ -864,38 +998,64 @@ fn update_reading_plan_inner(
         }
         conn.execute(
             "UPDATE reading_plans SET target_count = ?2 WHERE id = ?1",
-            params![&plan_id, n],
+            params![plan_id, n],
         )
         .map_err(|e| e.to_string())?;
     }
     if let Some(ids) = paper_ids {
-        let json = serde_json::to_string(&ids).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE reading_plans SET paper_ids = ?2 WHERE id = ?1",
-            params![&plan_id, json],
-        )
-        .map_err(|e| e.to_string())?;
+        // 同步条目集：删掉不在列表里的，补上新增的（due 取计划遗留 deadline）
+        let legacy_deadline: Option<i64> = conn
+            .query_row(
+                "SELECT deadline FROM reading_plans WHERE id = ?1",
+                [plan_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let existing: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT paper_id FROM reading_plan_items WHERE plan_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([plan_id], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        let now = chrono::Utc::now().timestamp();
+        for pid in &existing {
+            if !ids.contains(pid) {
+                conn.execute(
+                    "DELETE FROM reading_plan_items WHERE plan_id = ?1 AND paper_id = ?2",
+                    params![plan_id, pid],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        for pid in &ids {
+            if !existing.contains(pid) {
+                conn.execute(
+                    "INSERT INTO reading_plan_items (plan_id, paper_id, due_date, created_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![plan_id, pid, legacy_deadline, now],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
     }
     if let Some(dl) = deadline {
         conn.execute(
             "UPDATE reading_plans SET deadline = ?2 WHERE id = ?1",
-            params![&plan_id, dl],
+            params![plan_id, dl],
         )
         .map_err(|e| e.to_string())?;
     }
     if let Some(a) = active {
         conn.execute(
             "UPDATE reading_plans SET active = ?2 WHERE id = ?1",
-            params![&plan_id, a as i64],
+            params![plan_id, a as i64],
         )
         .map_err(|e| e.to_string())?;
     }
-    conn.query_row(
-        &format!("{PLAN_SELECT} WHERE id = ?1"),
-        [&plan_id],
-        row_to_plan,
-    )
-    .map_err(|e| e.to_string())
+    load_plan(&conn, plan_id)
 }
 
 /// 删除阅读计划。
@@ -3786,13 +3946,16 @@ mod tests {
         assert_eq!(daily.target_count, Some(2));
         assert!(daily.active);
 
-        // papers 计划（带截止日期）
+        // papers 计划（deadline 作为所有条目的初始 due）
         let dl = chrono::Utc::now().timestamp() + 7 * 86400;
         let papers_plan =
             create_reading_plan_inner(&db, "papers", None, Some(vec!["p1".into(), "p2".into()]), Some(dl))
                 .unwrap();
-        assert_eq!(papers_plan.paper_ids, vec!["p1", "p2"]);
-        assert_eq!(papers_plan.deadline, Some(dl));
+        assert_eq!(papers_plan.items.len(), 2);
+        assert!(
+            papers_plan.items.iter().all(|i| i.due_date == Some(dl)),
+            "新建条目应继承传入的 deadline 作为初始 due"
+        );
         assert_eq!(papers_plan.target_count, None, "papers 计划不应存 target_count");
 
         // 更新：改目标、停用
@@ -3810,5 +3973,51 @@ mod tests {
         delete_reading_plan_inner(&db, &daily.id).unwrap();
         assert_eq!(list_reading_plans_inner(&db).unwrap().len(), 1);
         assert!(delete_reading_plan_inner(&db, &daily.id).is_err());
+    }
+
+    #[test]
+    fn plan_item_add_remove_and_due() {
+        let db = timeline_test_db();
+        insert_test_paper(&db, "p1");
+        insert_test_paper(&db, "p2");
+        insert_test_paper(&db, "p3");
+
+        let plan = create_reading_plan_inner(&db, "papers", None, Some(vec!["p1".into()]), None).unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].due_date, None);
+
+        // 加入新论文（带 due）
+        let due = chrono::Utc::now().timestamp() + 86400;
+        let plan = add_paper_to_plan_inner(&db, &plan.id, "p2", Some(due)).unwrap();
+        assert_eq!(plan.items.len(), 2);
+        // 重复加入 = 更新 due，不产生重复条目
+        let plan = add_paper_to_plan_inner(&db, &plan.id, "p2", None).unwrap();
+        assert_eq!(plan.items.len(), 2);
+        let p2 = plan.items.iter().find(|i| i.paper_id == "p2").unwrap();
+        assert_eq!(p2.due_date, None);
+
+        // 校验：计划/论文不存在、daily 计划不可加
+        let daily = create_reading_plan_inner(&db, "daily", Some(1), None, None).unwrap();
+        assert!(add_paper_to_plan_inner(&db, &daily.id, "p3", None).is_err());
+        assert!(add_paper_to_plan_inner(&db, "ghost", "p3", None).is_err());
+        assert!(add_paper_to_plan_inner(&db, &plan.id, "ghost", None).is_err());
+
+        // 设置/清除条目 due
+        let plan = set_plan_item_due_inner(&db, &plan.id, "p1", Some(due)).unwrap();
+        assert_eq!(plan.items[0].paper_id, "p1", "有条目带 due 后应排在无日期条目前");
+        assert_eq!(plan.items[0].due_date, Some(due));
+        let plan = set_plan_item_due_inner(&db, &plan.id, "p1", None).unwrap();
+        assert_eq!(plan.items.iter().find(|i| i.paper_id == "p1").unwrap().due_date, None);
+        assert!(set_plan_item_due_inner(&db, &plan.id, "p3", Some(due)).is_err());
+
+        // 移除条目
+        let plan = remove_paper_from_plan_inner(&db, &plan.id, "p2").unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert!(remove_paper_from_plan_inner(&db, &plan.id, "p2").is_err());
+
+        // update_reading_plan 的 paper_ids 兼容入口：同步条目集
+        let plan = update_reading_plan_inner(&db, &plan.id, None, Some(vec!["p1".into(), "p3".into()]), None, None).unwrap();
+        assert_eq!(plan.items.len(), 2);
+        assert!(plan.items.iter().any(|i| i.paper_id == "p3"));
     }
 }

@@ -286,12 +286,20 @@ export const setPaperStarred = (paperId: string, starred: boolean) =>
 
 // ---------- 阅读时间线 ----------
 
-/** 阅读计划：daily = 每天读完 N 篇的持续性目标；papers = 指派论文 + 截止日期的任务清单 */
+/** 阅读计划条目：指派清单中的一篇论文，带条目级截止日期 */
+export interface ReadingPlanItem {
+  paper_id: string;
+  /** 条目级截止（epoch 秒）；null = 无日期 */
+  due_date: number | null;
+}
+
+/** 阅读计划：daily = 每天读完 N 篇的持续性目标；papers = 指派论文清单（条目各自带截止日期） */
 export interface ReadingPlan {
   id: string;
   type: "daily" | "papers";
   target_count: number | null;
-  paper_ids: string[];
+  items: ReadingPlanItem[];
+  /** 遗留：v10 及以前的计划级截止日期（新 papers 计划恒为 null） */
   deadline: number | null;
   created_at: number;
   active: boolean;
@@ -366,6 +374,24 @@ export const updateReadingPlan = (
 
 export const deleteReadingPlan = (planId: string) =>
   invoke<void>("delete_reading_plan", { planId });
+
+/** 把论文加入指派计划（已存在则更新其 due），返回更新后的计划 */
+export const addPaperToPlan = (
+  planId: string,
+  paperId: string,
+  dueDate?: number | null,
+) => invoke<ReadingPlan>("add_paper_to_plan", { planId, paperId, dueDate: dueDate ?? null });
+
+/** 从指派计划移除论文，返回更新后的计划 */
+export const removePaperFromPlan = (planId: string, paperId: string) =>
+  invoke<ReadingPlan>("remove_paper_from_plan", { planId, paperId });
+
+/** 设置/清除计划条目的截止日期（null = 无日期），返回更新后的计划 */
+export const setPlanItemDue = (
+  planId: string,
+  paperId: string,
+  dueDate: number | null,
+) => invoke<ReadingPlan>("set_plan_item_due", { planId, paperId, dueDate });
 
 /** 最近 N 天的阅读统计 + 当前连续天数 */
 export const timelineStats = (days: number) =>
