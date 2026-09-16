@@ -1,3 +1,8 @@
+/**
+ * 文件夹侧边栏（FolderSidebar）：220px，黑白灰体系。
+ * 顶部「文件夹」小标题 + 全部论文 / 文件夹树 / 未分类 + 底部新建文件夹。
+ * 保留右键菜单、内联重命名、拖拽归类；数量 badge 等宽数字右对齐。
+ */
 import { useRef, useState } from "react";
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { motion, useReducedMotion } from "motion/react";
@@ -25,7 +30,7 @@ import {
 import type { Folder, Paper } from "@/lib/api";
 import { RenameInput } from "./RenameInput";
 
-export interface SidebarProps {
+export interface FolderSidebarProps {
   folders: Folder[];
   papers: Paper[];
   view: LibraryView;
@@ -77,6 +82,17 @@ function useDropHighlight(onDrop: (ids: string[]) => void) {
   };
 }
 
+/** 文件夹行样式：active 加粗 + 同色系柔和底色；hover 变 primary（灰阶） */
+function folderRowClass(isActive: boolean, dropActive: boolean) {
+  return cn(
+    "group flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-[14px] transition-colors",
+    isActive
+      ? "font-medium text-zp-primary"
+      : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary",
+    dropActive && "bg-zp-surface-hover ring-2 ring-zp-primary/40"
+  );
+}
+
 interface FolderRowProps {
   node: FolderNode;
   depth: number;
@@ -121,6 +137,7 @@ function FolderRow({
   const isRenaming = renaming?.kind === "folder" && renaming.id === f.id;
   const reduceMotion = useReducedMotion();
   const drop = useDropHighlight((ids) => onDropPapers(ids, f.id));
+  const tagTitle = f.tags.length > 0 ? f.tags.join(" · ") : undefined;
 
   return (
     <div>
@@ -129,15 +146,14 @@ function FolderRow({
           render={
             <div
               {...drop.handlers}
+              title={tagTitle}
               onClick={() => onSelectView({ type: "folder", folderId: f.id })}
-              className={cn(
-                "group flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-sm transition-colors",
-                isActive
-                  ? "bg-accent text-accent-foreground"
-                  : "text-foreground/85 hover:bg-accent/60",
-                drop.active && "bg-accent ring-2 ring-primary/50"
-              )}
-              style={{ paddingLeft: 6 + depth * 14 }}
+              className={folderRowClass(isActive, drop.active)}
+              style={{
+                paddingLeft: 6 + depth * 14,
+                // 选中行：同色系柔和底色（softLight，10% 透明度）
+                backgroundColor: isActive ? c.softLight : undefined,
+              }}
             >
               {hasChildren ? (
                 <button
@@ -147,7 +163,7 @@ function FolderRow({
                     e.stopPropagation();
                     onToggleExpand(f.id);
                   }}
-                  className="pressable flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
+                  className="pressable flex h-4 w-4 shrink-0 items-center justify-center text-zp-quaternary"
                 >
                   <motion.span
                     animate={{ rotate: isOpen ? 90 : 0 }}
@@ -182,7 +198,7 @@ function FolderRow({
                   </span>
                   <span className="min-w-0 flex-1 truncate">{f.name}</span>
                   {count > 0 && (
-                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    <span className="shrink-0 text-xs tabular-nums text-zp-quaternary">
                       {count}
                     </span>
                   )}
@@ -256,7 +272,54 @@ function FolderRow({
   );
 }
 
-export function LibrarySidebar(props: SidebarProps) {
+/** 通用侧栏条目（全部论文 / 未分类） */
+interface DropHandlers {
+  onDragEnter: React.DragEventHandler<HTMLButtonElement>;
+  onDragLeave: React.DragEventHandler<HTMLButtonElement>;
+  onDragOver: React.DragEventHandler<HTMLButtonElement>;
+  onDrop: React.DragEventHandler<HTMLButtonElement>;
+}
+
+function SidebarEntry({
+  icon,
+  label,
+  count,
+  active,
+  dropActive,
+  onClick,
+  handlers,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  active: boolean;
+  dropActive?: boolean;
+  onClick: () => void;
+  handlers?: DropHandlers;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      {...handlers}
+      className={cn(
+        "pressable flex w-full items-center gap-2 rounded-md px-2.5 py-1 text-[14px] transition-colors",
+        active
+          ? "font-medium text-zp-primary"
+          : "text-zp-secondary hover:text-zp-primary",
+        dropActive && "bg-zp-surface-hover ring-2 ring-zp-primary/40"
+      )}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-zp-quaternary">
+        {icon}
+      </span>
+      <span className="flex-1 text-left">{label}</span>
+      <span className="text-xs tabular-nums text-zp-quaternary">{count}</span>
+    </button>
+  );
+}
+
+export function FolderSidebar(props: FolderSidebarProps) {
   const {
     folders,
     papers,
@@ -279,73 +342,64 @@ export function LibrarySidebar(props: SidebarProps) {
   const allDrop = useDropHighlight((ids) => onDropPapers(ids, null));
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar">
-      <div className="flex-1 overflow-y-auto px-2 py-3">
-        {/* 全部论文 */}
-        <button
-          type="button"
-          onClick={() => onSelectView({ type: "all" })}
-          className={cn(
-            "pressable flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors",
-            view.type === "all"
-              ? "bg-accent text-accent-foreground"
-              : "text-foreground/85 hover:bg-accent/60"
-          )}
-        >
-          <LibraryIcon className="h-4 w-4 text-muted-foreground" />
-          <span className="flex-1 text-left">全部论文</span>
-          <span className="text-xs tabular-nums text-muted-foreground">{papers.length}</span>
-        </button>
-
-        {/* 文件夹树 */}
-        <div className="mt-1 flex flex-col">
-          {tree.map((node) => (
-            <FolderRow
-              key={node.folder.id}
-              node={node}
-              depth={0}
-              papers={papers}
-              view={view}
-              onSelectView={onSelectView}
-              expanded={expanded}
-              onToggleExpand={onToggleExpand}
-              renaming={renaming}
-              onStartRename={onStartRename}
-              onCommitRename={onCommitRename}
-              onCancelRename={onCancelRename}
-              onCreateSubfolder={onCreateSubfolder}
-              onEditFolder={onEditFolder}
-              onDeleteFolder={onDeleteFolder}
-              onDropPapers={onDropPapers}
-            />
-          ))}
-        </div>
-
-        {/* 未分类 */}
-        <button
-          type="button"
-          onClick={() => onSelectView({ type: "uncategorized" })}
-          {...allDrop.handlers}
-          className={cn(
-            "pressable mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors",
-            view.type === "uncategorized"
-              ? "bg-accent text-accent-foreground"
-              : "text-foreground/85 hover:bg-accent/60",
-            allDrop.active && "bg-accent ring-2 ring-primary/50"
-          )}
-        >
-          <FileText className="h-4 w-4 text-muted-foreground" />
-          <span className="flex-1 text-left">未分类</span>
-          <span className="text-xs tabular-nums text-muted-foreground">{uncategorizedCount}</span>
-        </button>
+    <aside className="flex w-[220px] shrink-0 flex-col border-r border-zp-border">
+      {/* 文件夹小标题：12px uppercase，quaternary */}
+      <div className="px-3 pt-5 pb-2 text-[12px] font-medium tracking-[0.05em] text-zp-quaternary uppercase">
+        文件夹
       </div>
 
-      {/* 新建文件夹 */}
-      <div className="border-t p-2">
+      <div className="flex-1 overflow-y-auto px-2">
+        <div className="flex flex-col gap-0.5">
+          <SidebarEntry
+            icon={<LibraryIcon className="h-4 w-4" />}
+            label="全部论文"
+            count={papers.length}
+            active={view.type === "all"}
+            onClick={() => onSelectView({ type: "all" })}
+          />
+
+          {/* 文件夹树 */}
+          <div className="mt-1 flex flex-col">
+            {tree.map((node) => (
+              <FolderRow
+                key={node.folder.id}
+                node={node}
+                depth={0}
+                papers={papers}
+                view={view}
+                onSelectView={onSelectView}
+                expanded={expanded}
+                onToggleExpand={onToggleExpand}
+                renaming={renaming}
+                onStartRename={onStartRename}
+                onCommitRename={onCommitRename}
+                onCancelRename={onCancelRename}
+                onCreateSubfolder={onCreateSubfolder}
+                onEditFolder={onEditFolder}
+                onDeleteFolder={onDeleteFolder}
+                onDropPapers={onDropPapers}
+              />
+            ))}
+          </div>
+
+          <SidebarEntry
+            icon={<FileText className="h-4 w-4" />}
+            label="未分类"
+            count={uncategorizedCount}
+            active={view.type === "uncategorized"}
+            dropActive={allDrop.active}
+            onClick={() => onSelectView({ type: "uncategorized" })}
+            handlers={allDrop.handlers}
+          />
+        </div>
+      </div>
+
+      {/* 新建文件夹：底部弱操作，留白区隔（无显式分割线） */}
+      <div className="px-2 pb-4 pt-3">
         <button
           type="button"
           onClick={() => onCreateSubfolder("__root__")}
-          className="pressable flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="pressable flex w-full items-center gap-2 rounded-md px-2.5 py-1 text-[13px] text-zp-quaternary transition-colors hover:text-zp-primary"
         >
           <Plus className="h-4 w-4" />
           新建文件夹

@@ -33,4 +33,15 @@ export function formatTime(ts: number): string {
   });
 }
 
+/** 秒 → 紧凑时长：「45 秒」「12 分钟」「1 小时 5 分钟」 */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} 分钟`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest > 0 ? `${h} 小时 ${rest} 分钟` : `${h} 小时`;
+}
+
 

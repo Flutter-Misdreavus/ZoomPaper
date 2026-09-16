@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/%E6%8A%80%E6%9C%AF-Tauri%20v2%20%2B%20Rust-orange?style=flat-square&logo=rust" alt="Tauri + Rust" />
   <img src="https://img.shields.io/badge/%E5%89%8D%E7%AB%AF-React%2019%20%2B%20TypeScript-61dafb?style=flat-square" alt="React + TypeScript" />
   <img src="https://img.shields.io/badge/%E5%AD%98%E5%82%A8-SQLite%20%2B%20sqlite--vec-003b57?style=flat-square&logo=sqlite" alt="SQLite" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
 </p>
 
 <p align="center">
@@ -248,7 +249,12 @@ embedding 模型，首次使用自动下载。
 
 ## 协议
 
-本项目为**私有项目，保留所有权利**。未获作者许可，请勿分发或用于商业用途。
+本项目基于 [MIT License](LICENSE) 开源。
+
+Copyright © 2025 Flutter-Misdreavus
+
+你可以自由地**使用、修改、分发**（含商业用途），只需在副本中保留上述版权声明与许可声明。
+本项目按「现状」提供，不附带任何明示或默示的担保。
 
 ---
 
