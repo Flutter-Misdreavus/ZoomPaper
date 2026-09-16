@@ -8,6 +8,7 @@ mod db;
 mod feynman;
 mod fs;
 mod qa;
+mod quiz;
 mod rag;
 mod settings;
 mod translate;
@@ -90,6 +91,13 @@ pub fn run() {
             commands::feynman_next,
             commands::feynman_review,
             commands::get_feynman_conversation,
+            commands::quiz_sections,
+            commands::quiz_generate,
+            commands::quiz_submit_answer,
+            commands::quiz_grade_all,
+            commands::quiz_list,
+            commands::quiz_get,
+            commands::quiz_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

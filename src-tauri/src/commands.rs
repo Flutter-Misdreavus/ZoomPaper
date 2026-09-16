@@ -2,11 +2,16 @@
 
 use crate::ai::llm::{Llm, Role};
 use crate::ai::mineru::MineruClient;
-use crate::db::models::{Conversation, Folder, Paper, ReadingPlan, ReadingPlanItem, SearchHit};
+use crate::db::models::{
+    Conversation, Folder, Paper, QuizRow, ReadingPlan, ReadingPlanItem, SearchHit,
+};
 use crate::feynman::{
     ConceptStatus, FeynmanMessage, FeynmanState, FeynmanTurn, PlanItem, StageStatus,
 };
 use crate::qa::{Answer, Citation, QaMessage};
+use crate::quiz::{
+    QuestionGrade, QuestionType, Quiz, QuizConfig, QuizQuestion, QuizSummary, UserAnswer,
+};
 use crate::db::Db;
 use crate::settings::Settings;
 use rusqlite::{params, OptionalExtension};
@@ -3343,6 +3348,486 @@ pub fn get_feynman_conversation(
     .optional()
     .map_err(|e| e.to_string())
 }
+// ---------- 论文阅读理解测验 ----------
+//
+// 一次测验 = quizzes 表一行：config/questions 出题时写入，answers 作答中增量更新，
+// grading/report/score 批改后写入。选择题本地判分，主观题走 LLM（练习模式逐题、
+// 考试模式整卷一次调用）。LLM 调用全部非流式（结构化结果，与费曼计划生成一致）。
+
+/// 批改时喂给 LLM 的相关原文总长度上限（字符）。
+const QUIZ_GRADING_CTX_MAX: usize = 12000;
+
+/// 取选中章节的拼接内容（按章节名逐节查 paper_chunks，块按 id 序，带 `### 章节名` 标题）。
+/// sections 为空返回空串；总量超过 cap 时截断。
+fn fetch_sections_content(
+    conn: &rusqlite::Connection,
+    paper_id: &str,
+    sections: &[String],
+    cap: usize,
+) -> Result<String, String> {
+    let mut out = String::new();
+    for sec in sections {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content FROM paper_chunks \
+                 WHERE paper_id = ?1 AND section = ?2 ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let texts = stmt
+            .query_map(params![paper_id, sec], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if texts.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("### {sec}\n"));
+        for t in texts {
+            out.push_str(&t);
+            out.push_str("\n\n");
+        }
+    }
+    if out.chars().count() > cap {
+        out = out.chars().take(cap).collect();
+        out.push_str("\n\n……（内容过长，已截断）");
+    }
+    Ok(out)
+}
+
+/// 读 quizzes 表行。
+fn load_quiz_row(conn: &rusqlite::Connection, quiz_id: &str) -> Result<QuizRow, String> {
+    conn.query_row(
+        "SELECT id, paper_id, mode, config, questions, answers, grading, report, score, status, created_at, updated_at \
+         FROM quizzes WHERE id = ?1",
+        [quiz_id],
+        |r| {
+            Ok(QuizRow {
+                id: r.get(0)?,
+                paper_id: r.get(1)?,
+                mode: r.get(2)?,
+                config: r.get(3)?,
+                questions: r.get(4)?,
+                answers: r.get(5)?,
+                grading: r.get(6)?,
+                report: r.get(7)?,
+                score: r.get(8)?,
+                status: r.get(9)?,
+                created_at: r.get(10)?,
+                updated_at: r.get(11)?,
+            })
+        },
+    )
+    .map_err(|e| format!("测验不存在: {e}"))
+}
+
+/// 解析可空 JSON 列（NULL / 空串 → Default）。
+fn parse_json_column<T: serde::de::DeserializeOwned + Default>(
+    raw: Option<String>,
+) -> Result<T, String> {
+    match raw {
+        None => Ok(T::default()),
+        Some(s) if s.trim().is_empty() => Ok(T::default()),
+        Some(s) => serde_json::from_str(&s).map_err(|e| format!("测验数据解析失败: {e}")),
+    }
+}
+
+/// 表行 → 前端-facing 的 Quiz（JSON 列逐个解析）。
+fn quiz_row_to_quiz(row: QuizRow) -> Result<Quiz, String> {
+    Ok(Quiz {
+        id: row.id,
+        paper_id: row.paper_id,
+        mode: row.mode,
+        config: serde_json::from_str(&row.config).map_err(|e| e.to_string())?,
+        questions: serde_json::from_str(&row.questions).map_err(|e| e.to_string())?,
+        answers: parse_json_column(row.answers)?,
+        grading: parse_json_column(row.grading)?,
+        report: row.report,
+        score: row.score,
+        status: row.status,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+/// 论文的章节列表（出题配置的章节多选数据源）。
+#[tauri::command]
+pub fn quiz_sections(db: State<'_, Db>, paper_id: String) -> Result<Vec<String>, String> {
+    let conn = db.conn();
+    crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())
+}
+
+/// 出题：取论文内容（全文或选中章节）→ LLM 出题（失败重试一次）→ 建行并返回。
+#[tauri::command]
+pub async fn quiz_generate(
+    db: State<'_, Db>,
+    paper_id: String,
+    mode: String,
+    config: QuizConfig,
+) -> Result<Quiz, String> {
+    if mode != "exam" && mode != "practice" {
+        return Err(format!("未知答题模式: {mode}"));
+    }
+    let mut config = config;
+    config.choice_count = config.choice_count.min(10);
+    config.subjective_count = config.subjective_count.min(5);
+    if config.choice_count + config.subjective_count == 0 {
+        return Err("请至少选择一道题".to_string());
+    }
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+
+    // 锁内：md 路径 + 章节地图 +（按章节模式）章节内容
+    let (md_path, toc, section_content) = {
+        let conn = db.conn();
+        let md_path: String = conn
+            .query_row(
+                "SELECT md_path FROM papers WHERE id = ?1",
+                [&paper_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let sections =
+            crate::rag::sections_for_paper(&conn, &paper_id).map_err(|e| e.to_string())?;
+        let toc = crate::feynman::build_toc(&sections);
+        let content = if config.sections.is_empty() {
+            String::new()
+        } else {
+            fetch_sections_content(&conn, &paper_id, &config.sections, crate::quiz::CONTENT_MAX_CHARS)?
+        };
+        (md_path, toc, content)
+    };
+    // 无锁：全文模式读 md 文件
+    let content = if config.sections.is_empty() {
+        let md = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
+        crate::quiz::truncate_content(&md)
+    } else {
+        section_content
+    };
+    if content.trim().is_empty() {
+        return Err("没有可用于出题的论文内容（若按章节出题，请检查所选章节）".to_string());
+    }
+
+    // 无锁：LLM 出题，输出无法解析时重试一次
+    let messages = crate::quiz::build_generate_messages(&config, &toc, &content);
+    let mut questions = None;
+    for _ in 0..2 {
+        match llm.chat(&messages).await {
+            Ok(raw) => {
+                if let Some(qs) = crate::quiz::parse_questions(&raw) {
+                    questions = Some(qs);
+                    break;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    let questions =
+        questions.ok_or_else(|| "出题失败：模型输出无法解析，请重试".to_string())?;
+
+    // 锁内：建行（answering 状态）
+    let id = Uuid::new_v4().to_string();
+    let config_json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    let questions_json = serde_json::to_string(&questions).map_err(|e| e.to_string())?;
+    {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO quizzes (id, paper_id, mode, config, questions, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'answering', ?6, ?6)",
+            params![&id, &paper_id, &mode, &config_json, &questions_json, now],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(Quiz {
+        id,
+        paper_id,
+        mode,
+        config,
+        questions,
+        answers: vec![],
+        grading: vec![],
+        report: None,
+        score: None,
+        status: "answering".to_string(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// 练习模式：提交一道题的作答并即时批改（选择题本地判分，主观题 LLM 批改）。
+/// 全部题目作答完毕后测验置 done 并写入总分。返回该题批改结果。
+#[tauri::command]
+pub async fn quiz_submit_answer(
+    db: State<'_, Db>,
+    quiz_id: String,
+    question_id: i64,
+    answer: String,
+) -> Result<QuestionGrade, String> {
+    // 锁内：读测验与目标题
+    let (paper_id, question) = {
+        let conn = db.conn();
+        let row = load_quiz_row(&conn, &quiz_id)?;
+        if row.status != "answering" {
+            return Err("该测验已批改完成".to_string());
+        }
+        let questions: Vec<QuizQuestion> =
+            serde_json::from_str(&row.questions).map_err(|e| e.to_string())?;
+        let q = questions
+            .into_iter()
+            .find(|q| q.id == question_id as usize)
+            .ok_or_else(|| "题目不存在".to_string())?;
+        (row.paper_id, q)
+    };
+
+    let grade = if question.qtype == QuestionType::Choice {
+        crate::quiz::grade_choice(&question, &answer)
+    } else {
+        // 无锁：LLM 批改主观题（附题目出处章节的原文）
+        let settings = Settings::load().map_err(|e| e.to_string())?;
+        let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+        let context = {
+            let conn = db.conn();
+            if question.section.is_empty() {
+                String::new()
+            } else {
+                fetch_sections_content(
+                    &conn,
+                    &paper_id,
+                    std::slice::from_ref(&question.section),
+                    QUIZ_GRADING_CTX_MAX,
+                )?
+            }
+        };
+        let messages = crate::quiz::build_judge_one_messages(&question, &answer, &context);
+        let mut grade = None;
+        for _ in 0..2 {
+            match llm.chat(&messages).await {
+                Ok(raw) => {
+                    if let Some(g) = crate::quiz::parse_judge_one(&raw, question.id) {
+                        grade = Some(g);
+                        break;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        grade.ok_or_else(|| "批改失败：模型输出无法解析，请重试".to_string())?
+    };
+
+    // 锁内：upsert answers/grading；全部作答 → done + 总分
+    let now = chrono::Utc::now().timestamp();
+    {
+        let conn = db.conn();
+        let row = load_quiz_row(&conn, &quiz_id)?;
+        let total: Vec<QuizQuestion> =
+            serde_json::from_str(&row.questions).map_err(|e| e.to_string())?;
+        let mut answers: Vec<UserAnswer> = parse_json_column(row.answers)?;
+        answers.retain(|a| a.question_id != question.id);
+        answers.push(UserAnswer {
+            question_id: question.id,
+            answer,
+        });
+        let mut grading: Vec<QuestionGrade> = parse_json_column(row.grading)?;
+        grading.retain(|g| g.question_id != question.id);
+        grading.push(grade.clone());
+        let done = grading.len() >= total.len();
+        let score = if done {
+            crate::quiz::compute_score(&grading)
+        } else {
+            None
+        };
+        conn.execute(
+            "UPDATE quizzes SET answers = ?2, grading = ?3, score = ?4, status = ?5, updated_at = ?6 \
+             WHERE id = ?1",
+            params![
+                quiz_id,
+                serde_json::to_string(&answers).map_err(|e| e.to_string())?,
+                serde_json::to_string(&grading).map_err(|e| e.to_string())?,
+                score,
+                if done { "done" } else { "answering" },
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(grade)
+}
+
+/// 考试模式：整卷交卷。选择题本地判分；主观题一次 LLM 调用批改并生成总评报告；
+/// 写入 answers/grading/report/score，置 done，返回完整测验。
+#[tauri::command]
+pub async fn quiz_grade_all(
+    db: State<'_, Db>,
+    quiz_id: String,
+    answers: Vec<UserAnswer>,
+) -> Result<Quiz, String> {
+    // 锁内：读测验
+    let (paper_id, questions) = {
+        let conn = db.conn();
+        let row = load_quiz_row(&conn, &quiz_id)?;
+        if row.status != "answering" {
+            return Err("该测验已批改完成".to_string());
+        }
+        let questions: Vec<QuizQuestion> =
+            serde_json::from_str(&row.questions).map_err(|e| e.to_string())?;
+        (row.paper_id, questions)
+    };
+
+    // 选择题本地判分（未作答按答错计）
+    let choice_grades: Vec<QuestionGrade> = questions
+        .iter()
+        .filter(|q| q.qtype == QuestionType::Choice)
+        .map(|q| {
+            let ans = answers
+                .iter()
+                .find(|a| a.question_id == q.id)
+                .map(|a| a.answer.as_str())
+                .unwrap_or("");
+            crate::quiz::grade_choice(q, ans)
+        })
+        .collect();
+
+    let subjective: Vec<&QuizQuestion> = questions
+        .iter()
+        .filter(|q| q.qtype == QuestionType::Subjective)
+        .collect();
+
+    let mut grading = choice_grades.clone();
+    let mut report = None;
+    if !subjective.is_empty() {
+        // 无锁：LLM 整卷批改（附全部主观题出处章节的原文）
+        let settings = Settings::load().map_err(|e| e.to_string())?;
+        let llm = Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+        let sections: Vec<String> = subjective
+            .iter()
+            .map(|q| q.section.clone())
+            .filter(|s| !s.is_empty())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let context = {
+            let conn = db.conn();
+            fetch_sections_content(&conn, &paper_id, &sections, QUIZ_GRADING_CTX_MAX)?
+        };
+        let messages =
+            crate::quiz::build_grade_all_messages(&questions, &answers, &choice_grades, &context);
+        let mut parsed = None;
+        for _ in 0..2 {
+            match llm.chat(&messages).await {
+                Ok(raw) => {
+                    if let Some(p) = crate::quiz::parse_grade_all(&raw) {
+                        parsed = Some(p);
+                        break;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        let (mut subj_grades, rep) =
+            parsed.ok_or_else(|| "批改失败：模型输出无法解析，请重试".to_string())?;
+        // LLM 漏批的主观题给兜底结果（不阻塞整卷交卷）
+        for q in &subjective {
+            if !subj_grades.iter().any(|g| g.question_id == q.id) {
+                subj_grades.push(QuestionGrade {
+                    question_id: q.id,
+                    correct: None,
+                    score: 0.0,
+                    max_score: crate::quiz::QUESTION_MAX_SCORE,
+                    feedback: "该题未能批改，请对照参考答案自查。".to_string(),
+                    gaps: vec![],
+                });
+            }
+        }
+        report = Some(rep);
+        grading.extend(subj_grades);
+    }
+    let score = crate::quiz::compute_score(&grading);
+
+    // 锁内：写回并返回完整测验
+    let now = chrono::Utc::now().timestamp();
+    {
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE quizzes SET answers = ?2, grading = ?3, report = ?4, score = ?5, status = 'done', updated_at = ?6 \
+             WHERE id = ?1",
+            params![
+                quiz_id,
+                serde_json::to_string(&answers).map_err(|e| e.to_string())?,
+                serde_json::to_string(&grading).map_err(|e| e.to_string())?,
+                report,
+                score,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let row = load_quiz_row(&conn, &quiz_id)?;
+        quiz_row_to_quiz(row)
+    }
+}
+
+/// 某篇论文的测验历史列表（新的在前，不含题目与批改详情）。
+#[tauri::command]
+pub fn quiz_list(db: State<'_, Db>, paper_id: String) -> Result<Vec<QuizSummary>, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, mode, config, questions, score, status, created_at, updated_at \
+             FROM quizzes WHERE paper_id = ?1 ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([&paper_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<f64>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (id, mode, config, questions, score, status, created_at, updated_at) in rows {
+        let config: QuizConfig = serde_json::from_str(&config).map_err(|e| e.to_string())?;
+        let questions: Vec<QuizQuestion> =
+            serde_json::from_str(&questions).map_err(|e| e.to_string())?;
+        out.push(QuizSummary {
+            id,
+            mode,
+            difficulty: config.difficulty,
+            focus: config.focus,
+            question_count: questions.len(),
+            score,
+            status,
+            created_at,
+            updated_at,
+        });
+    }
+    Ok(out)
+}
+
+/// 取一份测验的完整内容（恢复进行中的测验或查看历史详情）。
+#[tauri::command]
+pub fn quiz_get(db: State<'_, Db>, quiz_id: String) -> Result<Quiz, String> {
+    let conn = db.conn();
+    quiz_row_to_quiz(load_quiz_row(&conn, &quiz_id)?)
+}
+
+/// 删除一份测验记录。
+#[tauri::command]
+pub fn quiz_delete(db: State<'_, Db>, quiz_id: String) -> Result<(), String> {
+    let conn = db.conn();
+    conn.execute("DELETE FROM quizzes WHERE id = ?1", [&quiz_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------
 
 fn extract_metadata(md: &str) -> (String, Option<String>, Option<String>) {

@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { QaChat } from "@/components/QaChat";
+import { QuizPanel } from "@/components/QuizPanel";
 import { ConversationDeleteDialog } from "@/components/ConversationDeleteDialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
@@ -25,6 +26,11 @@ function loadWidth(): number {
 /** 每篇论文「上次打开的会话」localStorage key */
 function lastConvKey(paperId: string): string {
   return `zoompaper.lastConv.${paperId}`;
+}
+
+/** 每篇论文「问答/测验」当前页的 localStorage key */
+function qaTabKey(paperId: string): string {
+  return `zoompaper.qaTab.${paperId}`;
 }
 
 /** PDF 选中段落（上下文引用条目；rects 为归一化矩形，用于「跳转到原文」精确定位） */
@@ -59,12 +65,14 @@ interface Props {
 const MAX_SELECTIONS = 5;
 
 /**
- * 阅读页右侧问答栏：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
+ * 阅读页右侧面板：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
  * 可收纳为 40px 竖条（宽度过渡 240ms ease-drawer）。
- * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
- * 头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
+ * 面板内含「问答 | 测验」两页（头部分段切换，localStorage 按论文记住）；
+ * QaChat 与 QuizPanel 均始终挂载（display:none 切换），切换/收纳都不丢状态。
+ * 问答页头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
  * 用 localStorage 记住每篇论文上次打开的会话，重新进入自动恢复。
- * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答。
+ * 划选文字（acceptSelection）时自动切回问答页。
+ * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答与测验。
  */
 export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   { paperId, onJumpPage, onJumpToSelection },
@@ -73,6 +81,10 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   const [width, setWidth] = useState(loadWidth);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSED_KEY) === "1",
+  );
+  // 面板内当前页：问答 / 测验（localStorage 按论文记住，paperId 变化时恢复）
+  const [tab, setTab] = useState<"qa" | "quiz">(() =>
+    localStorage.getItem(qaTabKey(paperId)) === "quiz" ? "quiz" : "qa",
   );
   const [dragging, setDragging] = useState(false);
   // PDF 选中的段落列表（上下文引用区，可多条；发送成功后由 QaChat 回调清空）
@@ -101,6 +113,8 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
       location?: string,
     ) {
       setCollapsed(false);
+      // 划选文字是要提问：切回问答页
+      switchTab("qa");
       setSelections((prev) => {
         // 同页同文本去重；达到上限后忽略
         if (prev.some((s) => s.text === text && s.pageIdx === pageIdx)) return prev;
@@ -109,6 +123,17 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
       });
     },
   }));
+
+  /** 切换问答/测验页并持久化 */
+  function switchTab(next: "qa" | "quiz") {
+    setTab(next);
+    localStorage.setItem(qaTabKey(paperId), next);
+  }
+
+  // 论文切换时恢复该论文记住的页签
+  useEffect(() => {
+    setTab(localStorage.getItem(qaTabKey(paperId)) === "quiz" ? "quiz" : "qa");
+  }, [paperId]);
 
   // 当前允许的最大宽度：行容器宽 − 左列最小宽 − 分隔条宽，且不超过 MAX_WIDTH
   function currentMaxWidth(): number {
@@ -290,9 +315,25 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
         {/* 展开态：display:none 保持挂载，不丢会话状态 */}
         <div className={`min-h-0 flex-1 flex-col ${collapsed ? "hidden" : "flex"}`}>
           <div className="flex items-center justify-between border-b px-2 py-1.5">
-            <span className="px-1 text-xs font-medium text-muted-foreground">问答</span>
+            {/* 问答 / 测验 分段切换 */}
+            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+              {(["qa", "quiz"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => switchTab(t)}
+                  className={`pressable rounded px-2 py-0.5 text-xs transition-colors ${
+                    tab === t
+                      ? "bg-accent font-medium text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t === "qa" ? "问答" : "测验"}
+                </button>
+              ))}
+            </div>
             <div className="flex items-center gap-0.5">
-              {/* 历史会话下拉：新对话 / 当前论文历史会话选择 / 删除 */}
+              {/* 历史会话下拉：新对话 / 当前论文历史会话选择 / 删除（仅问答页） */}
+              {tab === "qa" && (
               <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
                 <PopoverTrigger
                   disabled={sending}
@@ -355,6 +396,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
                   )}
                 </PopoverContent>
               </Popover>
+              )}
               <button
                 onClick={() => toggleCollapsed(true)}
                 title="收起对话"
@@ -365,21 +407,27 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col p-3">
-            <QaChat
-              key={activeConvId ?? "new"}
-              paperId={paperId}
-              conversationId={activeConvId}
-              onJumpPage={onJumpPage}
-              onJumpToSelection={onJumpToSelection}
-              selections={selections}
-              maxSelections={MAX_SELECTIONS}
-              onClearSelections={() => setSelections([])}
-              onRemoveSelection={(i) =>
-                setSelections((prev) => prev.filter((_, idx) => idx !== i))
-              }
-              onConversationCreated={handleConversationCreated}
-              onSendingChange={setSending}
-            />
+            {/* 两页均始终挂载（display:none 保活），切换不丢状态 */}
+            <div className={`min-h-0 flex-1 flex-col ${tab === "qa" ? "flex" : "hidden"}`}>
+              <QaChat
+                key={activeConvId ?? "new"}
+                paperId={paperId}
+                conversationId={activeConvId}
+                onJumpPage={onJumpPage}
+                onJumpToSelection={onJumpToSelection}
+                selections={selections}
+                maxSelections={MAX_SELECTIONS}
+                onClearSelections={() => setSelections([])}
+                onRemoveSelection={(i) =>
+                  setSelections((prev) => prev.filter((_, idx) => idx !== i))
+                }
+                onConversationCreated={handleConversationCreated}
+                onSendingChange={setSending}
+              />
+            </div>
+            <div className={`min-h-0 flex-1 flex-col ${tab === "quiz" ? "flex" : "hidden"}`}>
+              <QuizPanel paperId={paperId} />
+            </div>
           </div>
         </div>
       </aside>

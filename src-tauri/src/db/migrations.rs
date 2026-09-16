@@ -150,6 +150,25 @@ const MIGRATIONS: &[&str] = &[
     FROM reading_plans rp, json_each(rp.paper_ids) je
     WHERE rp.type = 'papers' AND rp.paper_ids IS NOT NULL;
     "#,
+    // v12：论文阅读理解测验 —— quizzes 表。一次测验一行：出题配置 / 题目（含答案）/
+    // 用户作答 / 批改结果各为 JSON 列，作答中增量更新 answers，批改后写 grading/report/score。
+    r#"
+    CREATE TABLE IF NOT EXISTS quizzes (
+        id         TEXT PRIMARY KEY,          -- UUID
+        paper_id   TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+        mode       TEXT NOT NULL CHECK(mode IN ('exam', 'practice')),
+        config     TEXT NOT NULL,             -- QuizConfig JSON（题数/难度/侧重点/章节）
+        questions  TEXT NOT NULL,             -- Vec<QuizQuestion> JSON（含答案与解析）
+        answers    TEXT,                      -- Vec<UserAnswer> JSON，作答中增量更新
+        grading    TEXT,                      -- Vec<QuestionGrade> JSON，批改后写入
+        report     TEXT,                      -- 考试模式的总评报告 Markdown
+        score      REAL,                      -- 总得分（百分制），批改后写入
+        status     TEXT NOT NULL DEFAULT 'answering',  -- answering / done
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_quizzes_paper ON quizzes(paper_id);
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -192,7 +211,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 11);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
 
         // 论文数据无损
         let title: String = conn
@@ -285,6 +304,20 @@ mod tests {
             .optional()
             .unwrap();
         assert!(legacy_state.is_none());
+
+        // v12：quizzes 新表可用（测验记录随论文级联删除）
+        conn.execute(
+            "INSERT INTO quizzes (id, paper_id, mode, config, questions, status, created_at, updated_at) \
+             VALUES ('q-1', 'paper-1', 'exam', '{}', '[]', 'answering', 1700000005, 1700000005)",
+            [],
+        )
+        .unwrap();
+        let quiz_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quizzes WHERE paper_id = 'paper-1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(quiz_count, 1);
     }
 
     /// v10 → v11：存量计划的 paper_ids JSON + 计划级 deadline 搬运为条目级 due date。
@@ -326,7 +359,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 11);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
 
         let items: Vec<(String, Option<i64>)> = conn
             .prepare(
