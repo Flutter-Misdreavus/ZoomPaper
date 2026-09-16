@@ -1,14 +1,17 @@
 # ZoomPaper 发布工作流
 #
 # 触发方式（二选一）：
-#   1. 推送 v* 标签（推荐）：git tag v0.1.0 && git push origin v0.1.0
+#   1. 推送 v* 标签（推荐）：git tag v0.2.0 && git push origin v0.2.0
 #   2. 手动触发：Actions 页面 → Release → Run workflow → 填写版本号（如 0.2.0）
 #
-# 产物：macOS 通用版安装包 ZoomPaper_<ver>_universal.dmg
-#       （Apple Silicon 与 Intel 通用，上传为草稿 Release，审核后手动发布）
+# 产物：macOS Apple Silicon 安装包 ZoomPaper_<ver>_aarch64.dmg
+#       （上传为草稿 Release，审核后手动发布）
 #
-# 说明：macos-13（Intel）runner 已被 GitHub 弃用，故统一在 Apple Silicon
-#       runner 上构建 universal 二进制，避免依赖已下线的 x64 runner。
+# 说明：只构建 aarch64-apple-darwin（Apple Silicon）。fastembed 依赖的 ort-sys
+#       没有 x86_64-apple-darwin 预编译二进制（ONNX Runtime 已不再提供 macOS
+#       Intel 产物），universal 构建会在 x86_64 阶段报
+#       "no prebuilt binaries available for target x86_64-apple-darwin" 而失败；
+#       macos-13（Intel）runner 也已被 GitHub 弃用。v0.1.0/v0.1.1 的 dmg 同样是 arm64。
 
 name: Release
 
@@ -44,7 +47,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -73,7 +76,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
           grep -n '"version"' src-tauri/tauri.conf.json
 
-      - name: Build & publish universal .dmg
+      - name: Build & publish .dmg (Apple Silicon)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -83,4 +86,4 @@ jobs:
           releaseDraft: true
           # 如需推送 tag 后自动发布（无需手动确认），把 releaseDraft 改为 false
           prerelease: false
-          args: --bundles dmg --target universal-apple-darwin
+          args: --bundles dmg --target aarch64-apple-darwin
