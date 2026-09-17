@@ -1289,6 +1289,34 @@ pub fn index_paper(db: State<'_, Db>, paper_id: String) -> Result<usize, String>
     crate::rag::index_paper(&conn, &paper_id).map_err(|e| e.to_string())
 }
 
+/// 重建所有已解析论文的向量索引（分块逻辑变更后迁移存量数据用）。
+/// 单篇失败跳过并记日志；返回 (成功篇数, 失败篇数)。
+#[tauri::command]
+pub fn reindex_all_papers(db: State<'_, Db>) -> Result<(usize, usize), String> {
+    let conn = db.conn();
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM papers WHERE parse_status = 'ready'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    let mut ok = 0;
+    let mut failed = 0;
+    for id in ids {
+        match crate::rag::index_paper(&conn, &id) {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                eprintln!("重建索引 {id} 失败: {e}");
+                failed += 1;
+            }
+        }
+    }
+    Ok((ok, failed))
+}
+
 /// 向量检索。`paper_id` 为 `Some` 时只在该论文内检索。
 #[tauri::command]
 pub fn search(

@@ -418,6 +418,9 @@ export const timelineStats = (days: number) =>
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
 
+/** 重建所有已解析论文的向量索引；返回 [成功篇数, 失败篇数] */
+export const reindexAllPapers = () => invoke<[number, number]>("reindex_all_papers");
+
 export const search = (query: string, topK: number, paperId?: string | null) =>
   invoke<SearchHit[]>("search", { query, topK, paperId: paperId ?? null });
 

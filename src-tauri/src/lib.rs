@@ -51,6 +51,7 @@ pub fn run() {
             commands::parse_pdf,
             commands::delete_paper,
             commands::index_paper,
+            commands::reindex_all_papers,
             commands::search,
             commands::generate_blog,
             commands::translate_chunk,

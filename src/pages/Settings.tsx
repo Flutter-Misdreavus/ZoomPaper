@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Loader2, Save } from "lucide-react";
-import { getSettings, updateSettings, type Settings } from "@/lib/api";
+import { getSettings, reindexAllPapers, updateSettings, type Settings } from "@/lib/api";
 
 const API_KEY_FIELDS: { key: keyof Settings["api_keys"]; label: string; hint: string }[] = [
   { key: "mineru", label: "MinerU", hint: "PDF 解析（mineru.net，免费额度）" },
@@ -22,6 +22,8 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexResult, setReindexResult] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -67,6 +69,22 @@ export function SettingsPage() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir === "string") {
       setSettings({ ...current, paper_library_path: dir });
+    }
+  }
+
+  async function handleReindex() {
+    setReindexing(true);
+    setReindexResult(null);
+    setError(null);
+    try {
+      const [ok, failed] = await reindexAllPapers();
+      setReindexResult(
+        failed > 0 ? `重建完成：成功 ${ok} 篇，失败 ${failed} 篇` : `重建完成：共 ${ok} 篇`,
+      );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setReindexing(false);
     }
   }
 
@@ -121,6 +139,21 @@ export function SettingsPage() {
                 选择…
               </Button>
             </div>
+          </div>
+          <div className="grid gap-1.5">
+            <Label>向量索引</Label>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" onClick={handleReindex} disabled={reindexing}>
+                {reindexing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                重建全部索引
+              </Button>
+              {reindexResult && (
+                <span className="text-sm text-muted-foreground">{reindexResult}</span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              对已解析的论文重新分块并生成向量。升级后若 AI 问答缺少公式等内容，可点此重建（耗时取决于论文数量）。
+            </p>
           </div>
         </CardContent>
       </Card>

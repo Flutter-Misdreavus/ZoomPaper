@@ -40,7 +40,8 @@ pub struct ChunkDraft {
 }
 
 /// 按阅读顺序分块。标题（`text_level >= 1`）处断开并更新 section。
-/// `image`/`table`/`equation` 等非文本块跳过（embedding 模型是文本模型）。
+/// `text` 与 `equation` 块并入正文（MinerU 的 equation `text` 字段即 `$$...$$`
+/// 包裹的 LaTeX 纯文本，文本 embedding 模型可直接消化）；`image`/`table` 等跳过。
 pub fn chunk_content_list(blocks: &[ContentBlock]) -> Vec<ChunkDraft> {
     let mut chunks = Vec::new();
     let mut section = String::new();
@@ -96,8 +97,8 @@ pub fn chunk_content_list(blocks: &[ContentBlock]) -> Vec<ChunkDraft> {
             continue;
         }
 
-        // 只处理正文文本块
-        if block.block_type != "text" || text.is_empty() {
+        // 只处理正文与公式块（公式以 $$...$$ LaTeX 形式并入，保证问答上下文包含公式）
+        if text.is_empty() || (block.block_type != "text" && block.block_type != "equation") {
             continue;
         }
 
@@ -404,7 +405,7 @@ mod tests {
             block("text", "Second sentence.", 0, 0),
             block("title", "Method", 1, 1),
             block("text", "Third sentence.", 0, 1),
-            block("image", "", 0, 1), // 非文本块应跳过
+            block("image", "", 0, 1), // 图片块应跳过
         ];
         let chunks = chunk_content_list(&blocks);
 
@@ -417,6 +418,30 @@ mod tests {
         assert_eq!(chunks[1].section, "Method");
         assert_eq!(chunks[1].content, "Third sentence.");
         assert_eq!(chunks[1].page_idx, Some(1));
+    }
+
+    #[test]
+    fn chunking_includes_equation_blocks_in_reading_order() {
+        let blocks = vec![
+            block("text", "The reward is defined as", 0, 0),
+            block(
+                "equation",
+                "$$\nR (\\tau) = \\sum_ {i} w _ {i} \\cdot R _ {i} (\\tau)\\tag{1}\n$$",
+                0,
+                0,
+            ),
+            block("text", "where w_i denotes the weight.", 0, 0),
+        ];
+        let chunks = chunk_content_list(&blocks);
+
+        // 展示公式按阅读顺序并入前后文，AI 问答才能检索到公式
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].content,
+            "The reward is defined as\n\
+             $$\nR (\\tau) = \\sum_ {i} w _ {i} \\cdot R _ {i} (\\tau)\\tag{1}\n$$\n\
+             where w_i denotes the weight."
+        );
     }
 
     #[test]
