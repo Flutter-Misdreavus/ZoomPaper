@@ -125,7 +125,8 @@ const PAPER_SELECT: &str = "
            p.created_at, p.last_read_at, p.reading_status, p.parse_status, p.starred,
            p.finished_at,
            (SELECT COALESCE(SUM(rs.seconds), 0) FROM reading_sessions rs WHERE rs.paper_id = p.id),
-           GROUP_CONCAT(pf.folder_id)
+           GROUP_CONCAT(pf.folder_id),
+           p.github_url
     FROM papers p
     LEFT JOIN paper_folders pf ON pf.paper_id = p.id
 ";
@@ -156,6 +157,7 @@ fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
         finished_at: row.get(12)?,
         total_read_seconds: row.get(13)?,
         folder_ids,
+        github_url: row.get(15)?,
     })
 }
 
@@ -182,8 +184,24 @@ pub fn get_paper(db: State<'_, Db>, paper_id: String) -> Result<Paper, String> {
 fn get_paper_inner(db: &Db, paper_id: &str) -> Result<Paper, String> {
     let conn = db.conn();
     let sql = format!("{PAPER_SELECT} WHERE p.id = ?1 GROUP BY p.id");
-    conn.query_row(&sql, [paper_id], row_to_paper)
-        .map_err(|e| e.to_string())
+    let mut paper = conn
+        .query_row(&sql, [paper_id], row_to_paper)
+        .map_err(|e| e.to_string())?;
+
+    // 惰性回填：存量论文（github_url 为 NULL）已解析时，扫描一次 Markdown 提取 GitHub 链接。
+    // 找不到写空串标记「已扫描」；读文件失败静默跳过，下次打开再试。
+    if paper.parse_status == "ready" && paper.github_url.is_none() {
+        if let Ok(md) = std::fs::read_to_string(&paper.md_path) {
+            let url = extract_github_url(&md).unwrap_or_default();
+            conn.execute(
+                "UPDATE papers SET github_url = ?2 WHERE id = ?1",
+                params![paper_id, &url],
+            )
+            .map_err(|e| e.to_string())?;
+            paper.github_url = Some(url);
+        }
+    }
+    Ok(paper)
 }
 
 #[tauri::command]
@@ -244,6 +262,7 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
         finished_at: None,
         total_read_seconds: 0,
         folder_ids: vec![],
+        github_url: None,
     };
 
     let conn = db.conn();
@@ -314,14 +333,15 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
     let paper_dir = Path::new(&md_path).parent().unwrap_or_else(|| Path::new("."));
     crate::fs::write_extracted_files(paper_dir, &output.files).map_err(|e| e.to_string())?;
 
-    // 提取元数据并更新状态
+    // 提取元数据并更新状态（github_url：找不到写空串，标记已扫描）
     let (title, authors, abstract_text) = extract_metadata(&output.markdown);
+    let github_url = extract_github_url(&output.markdown).unwrap_or_default();
     {
         let conn = db.conn();
         conn.execute(
-            "UPDATE papers SET parse_status = 'ready', title = ?2, authors = ?3, abstract = ?4 \
-             WHERE id = ?1",
-            params![&paper_id, title, authors, abstract_text],
+            "UPDATE papers SET parse_status = 'ready', title = ?2, authors = ?3, abstract = ?4, \
+             github_url = ?5 WHERE id = ?1",
+            params![&paper_id, title, authors, abstract_text, github_url],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -3830,6 +3850,52 @@ pub fn quiz_delete(db: State<'_, Db>, quiz_id: String) -> Result<(), String> {
 
 // ---------- 元数据提取（轻量启发式，Phase 2 再增强） ----------
 
+/// GitHub 站点保留路径（非仓库 owner 名），命中则跳过该链接继续找下一个
+const GITHUB_RESERVED: &[&str] = &[
+    "about", "apps", "collections", "contact", "enterprise", "events", "explore", "features",
+    "login", "logout", "marketplace", "notifications", "orgs", "pricing", "search", "security",
+    "settings", "signup", "sponsors", "topics", "trending", "users",
+];
+
+/// 从 Markdown 全文提取第一个 GitHub 仓库链接（`github.com/{owner}/{repo}`）。
+/// 找不到返回 None。
+fn extract_github_url(md: &str) -> Option<String> {
+    let mut rest = md;
+    while let Some(pos) = rest.find("github.com/") {
+        let after = &rest[pos + "github.com/".len()..];
+        // 取连续的 URL 路径字符（含 / 分隔的段落），遇空白、括号、引号等停止
+        let path_len = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '~')))
+            .unwrap_or(after.len());
+        let path = &after[..path_len];
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if segs.len() >= 2 {
+            let owner = segs[0];
+            let mut repo = segs[1];
+            // 去掉句末标点与 .git 后缀
+            while repo.ends_with('.') {
+                repo = &repo[..repo.len() - 1];
+            }
+            if let Some(r) = repo.strip_suffix(".git") {
+                repo = r;
+            }
+            let owner_ok = !owner.is_empty()
+                && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && !GITHUB_RESERVED.contains(&owner.to_lowercase().as_str());
+            let repo_ok = !repo.is_empty()
+                && repo
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            if owner_ok && repo_ok {
+                return Some(format!("https://github.com/{owner}/{repo}"));
+            }
+        }
+        // 当前命中不合格，从其后继续找
+        rest = &after[path_len.min(after.len())..];
+    }
+    None
+}
+
 fn extract_metadata(md: &str) -> (String, Option<String>, Option<String>) {
     let mut title = None;
     let mut abstract_lines = Vec::new();
@@ -3884,6 +3950,48 @@ mod tests {
     use crate::db;
     use rusqlite::Connection;
     use std::fs;
+
+    #[test]
+    fn extract_github_url_finds_repo_links() {
+        // 普通文本中的链接
+        assert_eq!(
+            extract_github_url("Code is available at https://github.com/foo/bar for details."),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        // markdown 链接
+        assert_eq!(
+            extract_github_url("[code](https://github.com/foo/bar)"),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        // 句末标点与 .git 后缀
+        assert_eq!(
+            extract_github_url("see github.com/foo/bar."),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        assert_eq!(
+            extract_github_url("https://github.com/foo/bar.git"),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        // 保留路径跳过，继续找下一个
+        assert_eq!(
+            extract_github_url("github.com/topics/ml and https://github.com/foo/bar"),
+            Some("https://github.com/foo/bar".to_string())
+        );
+        // 多个仓库链接取第一个
+        assert_eq!(
+            extract_github_url("github.com/a/b github.com/c/d"),
+            Some("https://github.com/a/b".to_string())
+        );
+        // 无链接
+        assert_eq!(extract_github_url("no links here"), None);
+        // 只有一层路径不算仓库
+        assert_eq!(extract_github_url("https://github.com/foo"), None);
+        // owner 含非法字符跳过
+        assert_eq!(
+            extract_github_url("github.com/foo_bar/baz github.com/ok/rep"),
+            Some("https://github.com/ok/rep".to_string())
+        );
+    }
 
     #[test]
     fn import_copies_pdf_and_inserts_row() {

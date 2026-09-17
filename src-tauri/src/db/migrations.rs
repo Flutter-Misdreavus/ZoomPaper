@@ -169,6 +169,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_quizzes_paper ON quizzes(paper_id);
     "#,
+    // v13：papers 增加 github_url 列（解析时从 Markdown 提取的 GitHub 仓库链接）。
+    // NULL = 尚未扫描（存量论文，打开时惰性回填）；'' = 已扫描但没有；非空 = 仓库 URL。
+    r#"
+    ALTER TABLE papers ADD COLUMN github_url TEXT;
+    "#,
 ];
 
 /// 按版本顺序执行未应用的迁移。
@@ -211,7 +216,7 @@ mod tests {
 
         // 升级
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 13);
 
         // 论文数据无损
         let title: String = conn
@@ -359,7 +364,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 13);
 
         let items: Vec<(String, Option<i64>)> = conn
             .prepare(

@@ -41,6 +41,8 @@ export interface Paper {
   total_read_seconds: number;
   /** 所属文件夹 id 列表（多归属；空数组 = 未分类） */
   folder_ids: string[];
+  /** 论文中的 GitHub 仓库链接；null/空串 = 无 */
+  github_url: string | null;
 }
 
 /** 虚拟文件夹（多归属集合式整理容器；不对应磁盘目录） */
