@@ -291,8 +291,13 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
 }
 
 /// 调用 MinerU 解析论文 Markdown 并更新状态。
+/// `on_progress`：解析各阶段进度（上传/排队/页数/下载/建索引），供前端进度条展示。
 #[tauri::command]
-pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, String> {
+pub async fn parse_pdf(
+    db: State<'_, Db>,
+    paper_id: String,
+    on_progress: tauri::ipc::Channel<crate::ai::mineru::ParseProgress>,
+) -> Result<Paper, String> {
     // 标记为解析中（不放锁跨 await）
     {
         let conn = db.conn();
@@ -303,12 +308,31 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
         .map_err(|e| e.to_string())?;
     }
 
+    // 失败时把状态复位为 failed，否则论文会永远卡在「解析中」
+    if let Err(e) = parse_pdf_run(&db, &paper_id, &on_progress).await {
+        let conn = db.conn();
+        let _ = conn.execute(
+            "UPDATE papers SET parse_status = 'failed' WHERE id = ?1",
+            [&paper_id],
+        );
+        return Err(e);
+    }
+
+    get_paper(db, paper_id)
+}
+
+/// parse_pdf 的解析主体：任一环节失败由调用方负责复位 parse_status。
+async fn parse_pdf_run(
+    db: &Db,
+    paper_id: &str,
+    on_progress: &tauri::ipc::Channel<crate::ai::mineru::ParseProgress>,
+) -> Result<(), String> {
     // 读取路径与 API Key
     let (pdf_path, md_path) = {
         let conn = db.conn();
         conn.query_row(
             "SELECT pdf_path, md_path FROM papers WHERE id = ?1",
-            [&paper_id],
+            [paper_id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )
         .map_err(|e| e.to_string())?
@@ -321,10 +345,12 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
         return Err("未配置 MinerU API Key，请先在设置页填写".into());
     }
 
-    // 网络调用（await 期间不持有数据库锁）
+    // 网络调用（await 期间不持有数据库锁）；进度发送失败忽略，不打断解析
     let client = MineruClient::new(api_key);
     let output = client
-        .extract_pdf(Path::new(&pdf_path))
+        .extract_pdf(Path::new(&pdf_path), &|p| {
+            let _ = on_progress.send(p);
+        })
         .await
         .map_err(|e| format!("MinerU 解析失败: {e}"))?;
 
@@ -341,20 +367,25 @@ pub async fn parse_pdf(db: State<'_, Db>, paper_id: String) -> Result<Paper, Str
         conn.execute(
             "UPDATE papers SET parse_status = 'ready', title = ?2, authors = ?3, abstract = ?4, \
              github_url = ?5 WHERE id = ?1",
-            params![&paper_id, title, authors, abstract_text, github_url],
+            params![paper_id, title, authors, abstract_text, github_url],
         )
         .map_err(|e| e.to_string())?;
     }
 
     // 自动建立向量索引（失败不影响解析结果，仅记日志）
     {
+        let _ = on_progress.send(crate::ai::mineru::ParseProgress {
+            stage: "indexing".to_string(),
+            extracted_pages: None,
+            total_pages: None,
+        });
         let conn = db.conn();
-        if let Err(e) = crate::rag::index_paper(&conn, &paper_id) {
+        if let Err(e) = crate::rag::index_paper(&conn, paper_id) {
             eprintln!("索引论文 {paper_id} 失败: {e}");
         }
     }
 
-    get_paper(db, paper_id)
+    Ok(())
 }
 
 /// 删除论文：级联清库（向量/分块/会话/论文行），再删磁盘目录。

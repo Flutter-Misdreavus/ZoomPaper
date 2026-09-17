@@ -34,6 +34,7 @@ import {
   updateFolder,
   type Folder,
   type Paper,
+  type ParseProgress,
   type ReadingPlan,
   type ReadingStatus,
 } from "@/lib/api";
@@ -82,7 +83,8 @@ export function Library({ onOpenPaper }: Props) {
 
   const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [parsingId, setParsingId] = useState<string | null>(null);
+  /** 解析中论文的实时进度（按论文 id），解析完成/失败后移除条目 */
+  const [parseProgress, setParseProgress] = useState<Record<string, ParseProgress>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -272,11 +274,13 @@ export function Library({ onOpenPaper }: Props) {
 
     setImporting(true);
     setError(null);
+    let importedId: string | null = null;
     try {
       const paper = await importPdf(file);
-      setParsingId(paper.id);
+      importedId = paper.id;
+      trackParse(paper.id);
       try {
-        await parsePdf(paper.id);
+        await parsePdf(paper.id, (p) => updateParseProgress(paper.id, p));
       } catch (e) {
         setError(`导入成功，但解析失败：${e}`);
       }
@@ -285,20 +289,39 @@ export function Library({ onOpenPaper }: Props) {
       setError(`导入失败：${e}`);
     } finally {
       setImporting(false);
-      setParsingId(null);
+      if (importedId) untrackParse(importedId);
     }
   }
 
+  function trackParse(paperId: string) {
+    setParseProgress((m) => ({
+      ...m,
+      [paperId]: { stage: "uploading", extracted_pages: null, total_pages: null },
+    }));
+  }
+
+  function updateParseProgress(paperId: string, p: ParseProgress) {
+    setParseProgress((m) => ({ ...m, [paperId]: p }));
+  }
+
+  function untrackParse(paperId: string) {
+    setParseProgress((m) => {
+      const next = { ...m };
+      delete next[paperId];
+      return next;
+    });
+  }
+
   async function handleParse(paperId: string) {
-    setParsingId(paperId);
+    trackParse(paperId);
     setError(null);
     try {
-      await parsePdf(paperId);
+      await parsePdf(paperId, (p) => updateParseProgress(paperId, p));
       await refresh();
     } catch (e) {
       setError(String(e));
     } finally {
-      setParsingId(null);
+      untrackParse(paperId);
     }
   }
 
@@ -546,7 +569,7 @@ export function Library({ onOpenPaper }: Props) {
                   selectedIds={selected}
                   selectionMode={selectedSize > 0}
                   isRenaming={renaming?.kind === "paper" && renaming.id === paper.id}
-                  parsing={parsingId === paper.id}
+                  progress={parseProgress[paper.id] ?? null}
                   currentFolderId={currentFolderId}
                   onToggle={toggle}
                   onOpen={onOpenPaper}

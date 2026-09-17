@@ -234,12 +234,29 @@ export const generateBlog = (paperId: string) =>
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
+/** 解析进度（后端 parse_pdf 通过 Channel 推送） */
+export interface ParseProgress {
+  /** uploading / pending / converting / running / downloading / indexing */
+  stage: string;
+  /** 仅 stage=running 且 MinerU 返回了页数进度时有值 */
+  extracted_pages: number | null;
+  total_pages: number | null;
+}
+
 export const listPapers = () => invoke<Paper[]>("list_papers");
 export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
-export const parsePdf = (paperId: string) => invoke<Paper>("parse_pdf", { paperId });
+export const parsePdf = (
+  paperId: string,
+  onProgress?: (p: ParseProgress) => void,
+) => {
+  // 后端 Channel 参数必填，缺省时创建空通道
+  const ch = new Channel<ParseProgress>();
+  ch.onmessage = (p) => onProgress?.(p);
+  return invoke<Paper>("parse_pdf", { paperId, onProgress: ch });
+};
 export const deletePaper = (paperId: string) => invoke<void>("delete_paper", { paperId });
 
 // ---------- 论文整理（虚拟文件夹） ----------

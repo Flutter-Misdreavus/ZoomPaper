@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
+import type { ParseProgress } from "@/lib/api"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -42,6 +43,31 @@ export function formatDuration(seconds: number): string {
   const h = Math.floor(m / 60);
   const rest = m % 60;
   return rest > 0 ? `${h} 小时 ${rest} 分钟` : `${h} 小时`;
+}
+
+/** 解析进度 → 进度条百分比（0~100）。running 阶段按页数换算到 15~85 区间。 */
+export function parseProgressPercent(p: ParseProgress): number {
+  switch (p.stage) {
+    case "uploading":
+      return 5;
+    case "pending":
+      return 10;
+    case "converting":
+      return 15;
+    case "running": {
+      const { extracted_pages: done, total_pages: total } = p;
+      if (done != null && total != null && total > 0) {
+        return 15 + Math.min(1, done / total) * 70;
+      }
+      return 15;
+    }
+    case "downloading":
+      return 90;
+    case "indexing":
+      return 95;
+    default:
+      return 0;
+  }
 }
 
 

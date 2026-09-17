@@ -22,6 +22,26 @@ pub struct ExtractedOutput {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
+/// 解析进度事件（推送给前端进度条）。
+/// stage：uploading / pending / converting / running / downloading / indexing
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ParseProgress {
+    pub stage: String,
+    /// 仅 stage=running 且 MinerU 返回了 extract_progress 时有值
+    pub extracted_pages: Option<u32>,
+    pub total_pages: Option<u32>,
+}
+
+impl ParseProgress {
+    fn stage(stage: &str) -> Self {
+        Self {
+            stage: stage.to_string(),
+            extracted_pages: None,
+            total_pages: None,
+        }
+    }
+}
+
 /// MinerU 云 API 客户端。
 pub struct MineruClient {
     http: Client,
@@ -37,7 +57,12 @@ impl MineruClient {
     }
 
     /// 上传 PDF 并轮询直到解析完成，返回完整解析结果。
-    pub async fn extract_pdf(&self, pdf_path: &Path) -> Result<ExtractedOutput> {
+    /// `progress` 在各阶段被回调（上传/排队/解析页数/下载），用于前端进度条。
+    pub async fn extract_pdf(
+        &self,
+        pdf_path: &Path,
+        progress: &(dyn Fn(ParseProgress) + Send + Sync),
+    ) -> Result<ExtractedOutput> {
         let bytes = tokio::fs::read(pdf_path).await.context("读取 PDF 失败")?;
         let file_name = pdf_path
             .file_name()
@@ -71,6 +96,7 @@ impl MineruClient {
             .to_string();
 
         // 2. PUT 上传文件到签名 URL
+        progress(ParseProgress::stage("uploading"));
         let up = self
             .http
             .put(&upload_url)
@@ -103,13 +129,29 @@ impl MineruClient {
                     let zip_url = result["full_zip_url"]
                         .as_str()
                         .context("MinerU 结果缺少 full_zip_url")?;
+                    progress(ParseProgress::stage("downloading"));
                     return self.download_and_extract(zip_url).await;
                 }
                 "failed" => {
                     let msg = result["err_msg"].as_str().unwrap_or("未知原因");
                     anyhow::bail!("MinerU 解析失败: {msg}");
                 }
-                _ => continue, // waiting-file / pending / running / converting
+                state => {
+                    let mut p = ParseProgress::stage(match state {
+                        "converting" => "converting",
+                        "running" => "running",
+                        _ => "pending", // waiting-file / pending
+                    });
+                    if state == "running" {
+                        p.extracted_pages = result["extract_progress"]["extracted_pages"]
+                            .as_u64()
+                            .map(|v| v as u32);
+                        p.total_pages =
+                            result["extract_progress"]["total_pages"].as_u64().map(|v| v as u32);
+                    }
+                    progress(p);
+                    continue;
+                }
             }
         }
     }

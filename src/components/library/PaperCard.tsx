@@ -6,13 +6,13 @@
  */
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { CalendarClock, Check, MoreHorizontal, Star } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { cn } from "@/lib/utils";
+import { cn, parseProgressPercent } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { PAPER_DRAG_MIME } from "@/lib/folders";
-import type { Folder, Paper, ReadingPlan, ReadingStatus } from "@/lib/api";
+import type { Folder, Paper, ParseProgress, ReadingPlan, ReadingStatus } from "@/lib/api";
 import { PaperMenuItems, type PaperMenuActions } from "./paperMenu";
 import {
   PlanSubmenu,
@@ -49,7 +49,8 @@ export interface PaperCardProps {
   /** 选择模式：任意卡片被选中时，所有复选框常驻可见 */
   selectionMode: boolean;
   isRenaming: boolean;
-  parsing: boolean;
+  /** 解析进度；非 null 表示该论文正在解析（用于进度条与按钮禁用） */
+  progress: ParseProgress | null;
   /** 当前处于某文件夹视图时的 folderId；null = 全部/未分类视图 */
   currentFolderId: string | null;
   onToggle: (paperId: string) => void;
@@ -83,7 +84,7 @@ export function PaperCard(props: PaperCardProps) {
     selectedIds,
     selectionMode,
     isRenaming,
-    parsing,
+    progress,
     currentFolderId,
     onToggle,
     onOpen,
@@ -106,6 +107,14 @@ export function PaperCard(props: PaperCardProps) {
   const st = PARSE_STYLE[paper.parse_status] ?? PARSE_STYLE.unparsed;
   const status = readingStatusOf(paper.reading_status);
   const reduceMotion = useReducedMotion();
+  // 进度条百分比：阶段推进单调不回退；progress 清空（解析结束）时归零
+  const percentRef = useRef(0);
+  if (progress == null) {
+    percentRef.current = 0;
+  } else {
+    percentRef.current = Math.max(percentRef.current, parseProgressPercent(progress));
+  }
+  const parsePercent = percentRef.current;
   // 归属文件夹（多归属；按 id 解析，脏数据过滤）
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const paperFolders = paper.folder_ids
@@ -333,14 +342,14 @@ export function PaperCard(props: PaperCardProps) {
                 {paper.parse_status !== "ready" && (
                   <button
                     type="button"
-                    disabled={parsing}
+                    disabled={progress != null}
                     onClick={(e) => {
                       e.stopPropagation();
                       void onParse(paper.id);
                     }}
                     className="text-[11px] text-zp-quaternary underline-offset-2 transition-colors hover:text-zp-primary hover:underline disabled:opacity-50"
                   >
-                    {parsing
+                    {progress != null
                       ? "解析中…"
                       : paper.parse_status === "failed"
                         ? "重新解析"
@@ -374,6 +383,16 @@ export function PaperCard(props: PaperCardProps) {
                   </span>
                 )}
               </div>
+
+              {/* 解析进度条：阶段推进单调前进，解析结束随 progress 清空而消失 */}
+              {progress && (
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-zp-surface-hover">
+                  <div
+                    className="h-full rounded-full bg-zp-primary transition-[width] duration-500"
+                    style={{ width: `${parsePercent}%` }}
+                  />
+                </div>
+              )}
             </div>
           </motion.div>
         }
