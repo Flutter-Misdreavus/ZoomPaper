@@ -1692,6 +1692,15 @@ impl<'a> EventBatcher<'a> {
 /// agent 澄清状态过期时间（秒）：30 分钟。
 const AGENT_STATE_TTL_SECS: i64 = 30 * 60;
 
+/// 用户消息携带的引用段落（空列表归一为 None，不写入消息 JSON）。
+fn user_selections(selections: &[crate::qa::SelectionInput]) -> Option<Vec<crate::qa::SelectionInput>> {
+    if selections.is_empty() {
+        None
+    } else {
+        Some(selections.to_vec())
+    }
+}
+
 fn write_messages(
     conn: &rusqlite::Connection,
     conv_id: &str,
@@ -1887,6 +1896,7 @@ pub async fn ask_question(
             citations: None,
             trace: None,
             timing: None,
+            selections: user_selections(selections),
         });
         hist.push(QaMessage {
             role: Role::Assistant,
@@ -1894,6 +1904,7 @@ pub async fn ask_question(
             citations: Some(citations.clone()),
             trace: None,
             timing: Some(timing),
+            selections: None,
         });
         write_messages(&db.conn(), &conv_id, &hist, now)?;
         return Ok(Answer {
@@ -1917,6 +1928,7 @@ pub async fn ask_question(
             citations: None,
             trace: None,
             timing: None,
+            selections: user_selections(selections),
         });
         write_messages(&db.conn(), &conv_id, &hist, now)?;
     }
@@ -1953,6 +1965,7 @@ pub async fn ask_question(
                 citations: None,
                 trace: None,
                 timing: None,
+                selections: user_selections(selections),
             });
             hist.push(QaMessage {
                 role: Role::Assistant,
@@ -1964,6 +1977,7 @@ pub async fn ask_question(
                     Some(trace.clone())
                 },
                 timing: Some(timing),
+                selections: None,
             });
             write_messages(&db.conn(), &conv_id, &hist, now)?;
             Ok(Answer {
@@ -2038,6 +2052,7 @@ pub async fn ask_question(
                         citations: None,
                         trace: None,
                         timing: None,
+                        selections: user_selections(selections),
                     });
                     hist.push(QaMessage {
                         role: Role::Assistant,
@@ -2045,6 +2060,7 @@ pub async fn ask_question(
                         citations: Some(citations.clone()),
                         trace: Some(trace.clone()),
                         timing: Some(timing),
+                        selections: None,
                     });
                     write_messages(&db.conn(), &conv_id, &hist, now)?;
                     Ok(Answer {
@@ -2115,6 +2131,7 @@ pub async fn ask_question_reply(
         citations: None,
         trace: None,
         timing: None,
+        selections: None,
     });
     write_messages(&db.conn(), &conversation_id, &hist, now)?;
     let memory = load_memory(&db, &conversation_id)?;
@@ -2162,6 +2179,7 @@ pub async fn ask_question_reply(
                     Some(trace.clone())
                 },
                 timing: Some(timing),
+                selections: None,
             });
             write_messages(&db.conn(), &conversation_id, &hist, now)?;
             Ok(Answer {

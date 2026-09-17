@@ -45,7 +45,7 @@ interface Props {
   onJumpPage?: (pageIdx: number) => void;
   /** 新会话第一次提问成功后回调（AskPage 刷新会话列表） */
   onConversationCreated?: (conversationId: string) => void;
-  /** 阅读页选中的段落列表（上下文引用区，可多条；发送成功后自动清空） */
+  /** 阅读页选中的段落列表（上下文引用区，可多条；提交后立即清空并附着到消息气泡） */
   selections?: {
     text: string;
     /** 0-based 页码；博客/译文划选为 null */
@@ -57,6 +57,16 @@ interface Props {
   onClearSelections?: () => void;
   /** 移除第 i 条引用 */
   onRemoveSelection?: (index: number) => void;
+  /** 点击历史消息上的引用：重新加回输入框引用区 */
+  onRequoteSelection?: (sel: {
+    text: string;
+    pageIdx: number | null;
+    location?: string;
+  }) => void;
+  /** 发送失败时把已捕获的引用批量恢复到输入框引用区 */
+  onRestoreSelections?: (
+    sels: { text: string; pageIdx: number | null; location?: string }[],
+  ) => void;
   /** 引用条数上限（达到时在头部提示） */
   maxSelections?: number;
   /** 引用悬停层「跳转到原文」：跳回 PDF 选中段落所在位置 */
@@ -112,7 +122,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPap
   );
 }
 
-export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRemoveSelection, maxSelections, onJumpToSelection, onSendingChange }: Props) {
+export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRemoveSelection, onRequoteSelection, onRestoreSelections, maxSelections, onJumpToSelection, onSendingChange }: Props) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
   const [input, setInput] = useState("");
@@ -158,11 +168,6 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const cancelTokenRef = useRef<string | null>(null);
   /** 本轮被用户暂停：显示「已暂停」提示（下次发送清除） */
   const [pausedNote, setPausedNote] = useState(false);
-  // 镜像最新 selections，用于发送完成时判断用户是否已增删引用（避免误清新列表）
-  const selectionsRef = useRef(selections);
-  useEffect(() => {
-    selectionsRef.current = selections;
-  }, [selections]);
 
   /** 关闭悬停层（清理延迟关闭定时器） */
   const closeHover = () => {
@@ -355,8 +360,8 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       void submitReply(question);
       return;
     }
-    // 发送时捕获当前引用列表；仅成功后清空（且用户未增删引用）
-    const sentSelections = selections;
+    // 发送时捕获当前引用列表：附着到用户消息气泡，并立即清空输入框引用区
+    const sentSelections = selections?.length ? selections : null;
     setInput("");
     setSending(true);
     setError(null);
@@ -366,7 +371,11 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     setThinkingText("");
     setStreamingText("");
     setLiveTrace([]);
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: question, selections: sentSelections },
+    ]);
+    if (sentSelections) onClearSelections?.();
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -385,10 +394,6 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         if (!convId) {
           setConvId(ans.conversation_id);
           onConversationCreated?.(ans.conversation_id);
-        }
-        // 发送成功且引用区未被用户改动 → 自动清空（选中段落已随运行现场持久化）
-        if (sentSelections?.length && selectionsRef.current === sentSelections) {
-          onClearSelections?.();
         }
         return;
       }
@@ -410,11 +415,9 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         setConvId(ans.conversation_id);
         onConversationCreated?.(ans.conversation_id);
       }
-      // 发送成功且引用区未被用户改动 → 自动清空
-      if (sentSelections?.length && selectionsRef.current === sentSelections) {
-        onClearSelections?.();
-      }
     } catch (e) {
+      // 发送失败：引用恢复到输入框引用区，避免用户丢失上下文
+      if (sentSelections) onRestoreSelections?.(sentSelections);
       setError(String(e));
     } finally {
       setSending(false);
@@ -443,6 +446,30 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
                 <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
+                  {/* 提交时携带的引用：附着展示，点击重新加回输入框引用区 */}
+                  {m.selections && m.selections.length > 0 && (
+                    <div className="mb-1.5 flex flex-col gap-1">
+                      {m.selections.map((sel, si) => (
+                        <button
+                          key={si}
+                          type="button"
+                          title="点击重新引用"
+                          onClick={() =>
+                            onRequoteSelection?.({
+                              text: sel.text,
+                              pageIdx: sel.pageIdx,
+                              location: sel.location,
+                            })
+                          }
+                          className="pressable rounded-md bg-primary-foreground/10 px-2 py-1 text-left transition-colors hover:bg-primary-foreground/20"
+                        >
+                          <p className="line-clamp-1 border-l-2 border-primary-foreground/30 pl-1.5 text-[12px] leading-snug text-primary-foreground/85">
+                            {sel.text}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {m.content}
                 </div>
               </div>
@@ -548,7 +575,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         </div>
       )}
 
-      {/* 阅读页选中的段落：引用区（淡灰卡片、13px 两行文本 + 左缘引文竖线；发送成功后自动清空） */}
+      {/* 阅读页选中的段落：引用区（淡灰卡片、13px 两行文本 + 左缘引文竖线；提交后立即清空并附着到消息） */}
       {selections && selections.length > 0 && (
         <div className="flex flex-col gap-1.5 rounded-lg bg-muted/50 px-3 py-2">
           <div className="flex items-baseline justify-between">

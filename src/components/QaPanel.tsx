@@ -87,7 +87,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     localStorage.getItem(qaTabKey(paperId)) === "quiz" ? "quiz" : "qa",
   );
   const [dragging, setDragging] = useState(false);
-  // PDF 选中的段落列表（上下文引用区，可多条；发送成功后由 QaChat 回调清空）
+  // PDF 选中的段落列表（上下文引用区，可多条；提交后由 QaChat 回调清空并附着到消息）
   const [selections, setSelections] = useState<AskSelection[]>([]);
   const dragStart = useRef<{ x: number; width: number; max: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -128,6 +128,30 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   function switchTab(next: "qa" | "quiz") {
     setTab(next);
     localStorage.setItem(qaTabKey(paperId), next);
+  }
+
+  /** 把引用加回输入框引用区：与 acceptSelection 同一套去重/上限规则（rects 不持久化，重引条目为跳页级定位） */
+  function requoteSelection(sel: { text: string; pageIdx: number | null; location?: string }) {
+    setSelections((prev) => {
+      if (prev.some((s) => s.text === sel.text && s.pageIdx === sel.pageIdx)) return prev;
+      if (prev.length >= MAX_SELECTIONS) return prev;
+      return [...prev, { text: sel.text, pageIdx: sel.pageIdx, location: sel.location }];
+    });
+  }
+
+  /** 发送失败后批量恢复引用（同去重/上限规则） */
+  function restoreSelections(
+    sels: { text: string; pageIdx: number | null; location?: string }[],
+  ) {
+    setSelections((prev) => {
+      let next = prev;
+      for (const sel of sels) {
+        if (next.length >= MAX_SELECTIONS) break;
+        if (next.some((s) => s.text === sel.text && s.pageIdx === sel.pageIdx)) continue;
+        next = [...next, { text: sel.text, pageIdx: sel.pageIdx, location: sel.location }];
+      }
+      return next;
+    });
   }
 
   // 论文切换时恢复该论文记住的页签
@@ -421,6 +445,8 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
                 onRemoveSelection={(i) =>
                   setSelections((prev) => prev.filter((_, idx) => idx !== i))
                 }
+                onRequoteSelection={requoteSelection}
+                onRestoreSelections={restoreSelections}
                 onConversationCreated={handleConversationCreated}
                 onSendingChange={setSending}
               />

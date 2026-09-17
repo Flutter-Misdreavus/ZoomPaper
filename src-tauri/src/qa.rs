@@ -66,6 +66,9 @@ pub struct QaMessage {
     /// AI 耗时记录（仅 assistant 消息携带；旧数据为 None）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<crate::agent::Timing>,
+    /// 用户消息携带的选中段落引用（仅 user 消息；旧数据为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selections: Option<Vec<SelectionInput>>,
 }
 
 /// ask_user 澄清请求（模型调用 ask_user 工具中断循环后随 Answer 返回）。
@@ -321,6 +324,7 @@ mod tests {
                 citations: None,
                 trace: None,
                 timing: None,
+                selections: None,
             },
             QaMessage {
                 role: Role::Assistant,
@@ -328,6 +332,7 @@ mod tests {
                 citations: None,
                 trace: None,
                 timing: None,
+                selections: None,
             },
         ];
         let msgs = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history, None);

@@ -90,6 +90,8 @@ export interface QaMessage {
   trace?: ToolStep[] | null;
   /** AI 耗时记录（仅 assistant 消息携带；旧数据为 null） */
   timing?: Timing | null;
+  /** 用户消息携带的引用段落（仅 user 消息；旧数据为 null/缺省） */
+  selections?: { text: string; pageIdx: number | null; location?: string }[] | null;
 }
 
 /** agent 深度模式的一步工具调用轨迹（前端展示用） */
