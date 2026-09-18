@@ -64,7 +64,8 @@ impl Db {
         self.conn.lock().expect("数据库锁被毒化")
     }
 
-    /// 用已有的连接构造 Db（测试用）。
+    /// 用已有的连接构造 Db（仅测试使用）。
+    #[cfg(test)]
     pub fn from_connection(conn: Connection) -> Self {
         Self {
             conn: Mutex::new(conn),

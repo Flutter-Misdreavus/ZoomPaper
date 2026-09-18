@@ -69,21 +69,6 @@ pub struct Folder {
     pub created_at: i64,
 }
 
-/// 论文文本分块（RAG 检索单元）。
-///
-/// `start_line`/`end_line` 语义为 content_list 的块索引范围（非 md 行号）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Chunk {
-    pub id: i64,
-    pub paper_id: String,
-    pub section: String,
-    pub content: String,
-    pub start_line: i64,
-    pub end_line: i64,
-    pub page_idx: Option<i64>,
-    pub bbox: Option<String>,
-}
-
 /// 检索命中结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {

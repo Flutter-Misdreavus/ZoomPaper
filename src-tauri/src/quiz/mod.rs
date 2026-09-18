@@ -334,7 +334,7 @@ fn extract_json_object<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
 
 /// LLM 出题的原始 JSON 元素（qtype 用字符串容错解析）。
 #[derive(Debug, Deserialize)]
-struct RawQuestion {
+pub(crate) struct RawQuestion {
     #[serde(rename = "type")]
     qtype: String,
     question: String,
