@@ -19,6 +19,7 @@ import {
   resolveImgSrc,
 } from "@/lib/markdown";
 import { WebToggle } from "@/components/WebToggle";
+import { useStickyScroll } from "@/hooks/useStickyScroll";
 import {
   askQuestion,
   askQuestionReply,
@@ -32,7 +33,7 @@ import {
   type PendingAsk,
   type QaMessage,
 } from "@/lib/api";
-import { FileSearch, Loader2, MessageSquare, X } from "lucide-react";
+import { ArrowDown, FileSearch, Loader2, MessageSquare, X } from "lucide-react";
 
 interface Props {
   /** null/缺省 = 跨论文问答 */
@@ -151,7 +152,13 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   const [thinkingText, setThinkingText] = useState("");
   const [streamingText, setStreamingText] = useState("");
   const [liveTrace, setLiveTrace] = useState<LiveToolStep[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // 吸底滚动：用户上翻时停止跟随，浮出「回到底部」
+  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([
+    messages,
+    sending,
+    streamingText,
+    thinkingText,
+  ]);
   // 引用条目悬停：完整内容 + 「跳转到原文」（显示在条目左侧）
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [hoverPos, setHoverPos] = useState<{
@@ -269,10 +276,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     setLiveTrace([]);
   }, [conversationId]);
 
-  // 新消息滚动到底部（含流式增量）
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, sending, streamingText, thinkingText]);
+  // 新消息滚动到底部由 useStickyScroll 承担（仅贴底时跟随）
 
   /** 实时事件分发：思考/正文增量、工具开始/完成 */
   function onAgentEvent(evt: AgentEvent) {
@@ -321,6 +325,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     setPausedNote(false);
     cancelTokenRef.current = crypto.randomUUID();
     setMessages((prev) => [...prev, { role: "user", content: reply }]);
+    stick(); // 自己发送：恢复吸附，滚到底
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -374,6 +379,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       ...prev,
       { role: "user", content: question, selections: sentSelections },
     ]);
+    stick(); // 自己发送：恢复吸附，滚到底
     if (sentSelections) onClearSelections?.();
     try {
       const ch = new Channel<AgentEvent>();
@@ -425,7 +431,12 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2"
+      >
         {loadingHistory ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -581,6 +592,18 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             <span className="text-[11px] text-muted-foreground">已暂停</span>
           </div>
         )}
+      </div>
+      {/* 回到底部：上翻阅读时浮出，点击恢复吸附 */}
+      {!atBottom && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          title="回到底部"
+          className="zp-msg-in pressable absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full border bg-card text-muted-foreground shadow-md transition-colors hover:text-foreground"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+      )}
       </div>
 
       {error && (

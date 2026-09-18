@@ -10,6 +10,7 @@ import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import { WebToggle } from "@/components/WebToggle";
+import { useStickyScroll } from "@/hooks/useStickyScroll";
 import {
   cancelGeneration,
   feynmanConfirmPlan,
@@ -30,6 +31,7 @@ import {
   isWebSearchConfigured,
 } from "@/lib/api";
 import {
+  ArrowDown,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -145,7 +147,22 @@ export function FeynmanChat({ paperId }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editObjective, setEditObjective] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // 吸底滚动：用户上翻时停止跟随，浮出「回到底部」
+  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([
+    conceptMessages,
+    activeIndex,
+    sending,
+    review,
+    starting,
+    judging,
+    quizzing,
+    nexting,
+    planning,
+    liveText,
+    liveThinking,
+    fs,
+    legacyMessages,
+  ]);
 
   // 恢复该论文最近的费曼会话（主行 + 状态 + 当前概念消息）
   useEffect(() => {
@@ -211,10 +228,7 @@ export function FeynmanChat({ paperId }: Props) {
     }
   }, [fs]);
 
-  // 新消息 / 状态变化滚动到底部
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [conceptMessages, activeIndex, sending, review, starting, judging, quizzing, nexting, planning, liveText, liveThinking, fs, legacyMessages]);
+  // 新消息滚动到底部由 useStickyScroll 承担（仅贴底时跟随）
 
   // 派生状态
   const isPlanning = fs?.status === "planning" && !legacy;
@@ -248,6 +262,7 @@ export function FeynmanChat({ paperId }: Props) {
       if (!fs || legacy) return;
       setActiveIndex(i);
       setReview(null);
+      stick(); // 切换概念：吸附回底部
       if (conceptMessages[i]) return;
       const sessionId = fs.concepts[i]?.session_id;
       if (!sessionId) return;
@@ -279,6 +294,7 @@ export function FeynmanChat({ paperId }: Props) {
       setLegacyMessages([]);
       setActiveIndex(null);
       setConceptMessages({});
+      stick();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -311,6 +327,7 @@ export function FeynmanChat({ paperId }: Props) {
             : [],
         }));
         setTurnThinking((prev) => ({ ...prev, 0: turn.thinking ?? "" }));
+        stick();
       }
     } catch (e) {
       setError(String(e));
@@ -376,6 +393,7 @@ export function FeynmanChat({ paperId }: Props) {
       ...prev,
       [idx]: [...(prev[idx] ?? []), { role: "user", content }],
     }));
+    stick(); // 自己发送：恢复吸附，滚到底
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -421,6 +439,7 @@ export function FeynmanChat({ paperId }: Props) {
     setPausedNote(false);
     cancelTokenRef.current = crypto.randomUUID();
     resetLive();
+    stick(); // 用户发起的生成：恢复吸附
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -454,6 +473,7 @@ export function FeynmanChat({ paperId }: Props) {
     setPausedNote(false);
     cancelTokenRef.current = crypto.randomUUID();
     resetLive();
+    stick(); // 用户发起的生成：恢复吸附
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -503,6 +523,7 @@ export function FeynmanChat({ paperId }: Props) {
             : [],
         }));
         setTurnThinking((prev) => ({ ...prev, [nextIdx]: turn.thinking ?? "" }));
+        stick(); // 切换到新概念：吸附回底部
       }
     } catch (e) {
       setError(String(e));
@@ -876,7 +897,12 @@ export function FeynmanChat({ paperId }: Props) {
       )}
 
       {/* 消息区 */}
-      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2"
+      >
         {loadingHistory ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -990,6 +1016,18 @@ export function FeynmanChat({ paperId }: Props) {
             </div>
           </div>
         )}
+      </div>
+      {/* 回到底部：上翻阅读时浮出，点击恢复吸附 */}
+      {!atBottom && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          title="回到底部"
+          className="zp-msg-in pressable absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full border bg-card text-muted-foreground shadow-md transition-colors hover:text-foreground"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+      )}
       </div>
 
       {error && (
