@@ -22,7 +22,7 @@ export function CitationBadge({ index, citation, onJumpPage, onOpenPaper, curren
   return (
     <Popover>
       <PopoverTrigger
-        className="pressable mx-0.5 inline-flex h-4 min-w-4 cursor-pointer items-center justify-center rounded-sm bg-primary/10 px-1 align-super text-[10px] font-semibold text-primary transition-colors hover:bg-primary/20"
+        className="pressable mx-0.5 inline-flex h-4 min-w-4 cursor-pointer items-center justify-center rounded-sm bg-zp-ai-soft px-1 align-super text-[10px] font-semibold text-zp-ai transition-colors hover:bg-zp-ai/20"
         aria-label={`引用 ${index}`}
       >
         {index}

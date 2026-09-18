@@ -5,8 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { ChatComposer } from "@/components/ChatComposer";
 import { CitationBadge } from "@/components/CitationBadge";
 import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
@@ -33,7 +32,7 @@ import {
   type PendingAsk,
   type QaMessage,
 } from "@/lib/api";
-import { FileSearch, Loader2, MessageSquare, SendHorizonal, Square, X } from "lucide-react";
+import { FileSearch, Loader2, MessageSquare, X } from "lucide-react";
 
 interface Props {
   /** null/缺省 = 跨论文问答 */
@@ -433,19 +432,41 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             加载会话…
           </div>
         ) : messages.length === 0 && !sending ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
-            <MessageSquare className="h-10 w-10" />
-            <p className="text-sm">
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+              <MessageSquare className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <p className="text-sm text-muted-foreground">
               {paperId
                 ? "就这篇论文提问，回答会优先依据本篇内容并附原文引用"
                 : "跨论文提问，回答会附原文引用"}
             </p>
+            <div className="flex max-w-md flex-wrap items-center justify-center gap-1.5">
+              {(paperId
+                ? ["这篇论文的核心贡献是什么？", "用通俗的话解释论文的方法", "论文的实验结论可靠吗？"]
+                : ["帮我总结论文库的研究主题", "哪些论文的方法可以对比？", "推荐一篇适合入门的论文"]
+              ).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setInput(s)}
+                  className="pressable rounded-full border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
         ) : (
           messages.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="flex justify-end">
-                <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
+              <div
+                key={i}
+                className={`zp-msg-in flex justify-end ${
+                  i > 0 ? "mt-1 border-t border-border/50 pt-4" : ""
+                }`}
+              >
+                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground shadow-sm">
                   {/* 提交时携带的引用：附着展示，点击重新加回输入框引用区 */}
                   {m.selections && m.selections.length > 0 && (
                     <div className="mb-1.5 flex flex-col gap-1">
@@ -474,38 +495,36 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                 </div>
               </div>
             ) : (
-              <div key={i} className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
-                  {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳，网页版风格） */}
-                  {(m.role === "assistant" &&
-                    i === messages.length - 1 &&
-                    thinkingText) ||
-                  (m.trace && m.trace.length > 0) ? (
-                    // 默认 stretch：胶囊组件撑满气泡宽度，展开面板不溢出（items-start 会按内容收缩）
-                    <div className="mb-2 flex flex-col gap-1.5">
-                      {m.role === "assistant" && i === messages.length - 1 && thinkingText && (
-                        <ThinkingPanel text={thinkingText} streaming={false} />
-                      )}
-                      {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
-                    </div>
-                  ) : null}
-                  <AssistantBody
-                    content={m.content}
-                    citations={m.citations}
-                    onOpenPaper={onOpenPaper}
-                    onJumpPage={onJumpPage}
-                    currentPaperId={paperId ?? null}
-                  />
-                  <TimingLine timing={m.timing} />
-                </div>
+              /* AI 回答：通栏无气泡，长文/公式直接排版；轮次分隔由用户消息的上缘线承担 */
+              <div key={i} className="zp-msg-in">
+                {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
+                {(m.role === "assistant" &&
+                  i === messages.length - 1 &&
+                  thinkingText) ||
+                (m.trace && m.trace.length > 0) ? (
+                  <div className="mb-2 flex flex-col gap-1.5">
+                    {m.role === "assistant" && i === messages.length - 1 && thinkingText && (
+                      <ThinkingPanel text={thinkingText} streaming={false} />
+                    )}
+                    {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
+                  </div>
+                ) : null}
+                <AssistantBody
+                  content={m.content}
+                  citations={m.citations}
+                  onOpenPaper={onOpenPaper}
+                  onJumpPage={onJumpPage}
+                  currentPaperId={paperId ?? null}
+                />
+                <TimingLine timing={m.timing} />
               </div>
             ),
           )
         )}
-        {/* AI 澄清气泡（ask_user）：问题 + 选项 chips + 自由输入提示 + 已执行工具轨迹 */}
+        {/* AI 澄清气泡（ask_user）：卡片 + 点缀色左缘；问题 + 选项 chips + 已执行工具轨迹 */}
         {pending && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-3">
+          <div className="zp-msg-in flex justify-start">
+            <div className="w-full max-w-[95%] rounded-xl border border-l-2 border-l-zp-ai/60 bg-card px-4 py-3">
               <p className="text-sm font-medium">{pending.question}</p>
               {pending.options && pending.options.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -532,34 +551,29 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             </div>
           </div>
         )}
-        {/* 实时生成区：思考胶囊（默认收纳）+ 工具轨迹 + 流式回答 */}
+        {/* 实时生成区：思考胶囊 + 工具轨迹 + 流式回答（通栏，与最终形态一致） */}
         {sending && (
-          <>
+          <div className="zp-msg-in flex flex-col gap-2">
             {thinkingText && <ThinkingPanel text={thinkingText} streaming />}
-            {liveTrace.length > 0 && (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
-                  <ToolTrace trace={liveTrace} />
-                </div>
-              </div>
-            )}
+            {liveTrace.length > 0 && <ToolTrace trace={liveTrace} />}
             {streamingText && (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm">
-                  {streamingText}
-                </div>
+              <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                {streamingText}
+                <span className="animate-pulse text-zp-ai">▍</span>
               </div>
             )}
             {!thinkingText && liveTrace.length === 0 && !streamingText && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
-                  <LiveClock />
-                </div>
+              <div className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                </span>
+                {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
+                <LiveClock />
               </div>
             )}
-          </>
+          </div>
         )}
         {/* 已暂停提示（本轮被用户暂停且无正文可提交时） */}
         {pausedNote && !sending && (
@@ -572,50 +586,6 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       {error && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
-        </div>
-      )}
-
-      {/* 阅读页选中的段落：引用区（淡灰卡片、13px 两行文本 + 左缘引文竖线；提交后立即清空并附着到消息） */}
-      {selections && selections.length > 0 && (
-        <div className="flex flex-col gap-1.5 rounded-lg bg-muted/50 px-3 py-2">
-          <div className="flex items-baseline justify-between">
-            <span className="text-[11px] text-muted-foreground">
-              引用 {selections.length}
-              {maxSelections && selections.length >= maxSelections && (
-                <span className="ml-1">· 已满</span>
-              )}
-            </span>
-            <button
-              onClick={() => onClearSelections?.()}
-              title="清空引用"
-              className="pressable text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            >
-              清空
-            </button>
-          </div>
-          <div className="flex flex-col gap-1">
-            {selections.map((sel, i) => (
-              <div
-                key={`${sel.pageIdx}:${sel.text.slice(0, 24)}`}
-                className="animate-in fade-in -mx-1 flex items-start gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-accent/50"
-                onMouseEnter={(e) => openHover(i, e.currentTarget)}
-                onMouseLeave={scheduleHoverClose}
-              >
-                <div className="min-w-0 flex-1 border-l-2 border-foreground/10 pl-2">
-                  <p className="line-clamp-2 text-[13px] leading-snug text-foreground/85">
-                    {sel.text}
-                  </p>
-                </div>
-                <button
-                  onClick={() => onRemoveSelection?.(i)}
-                  title="移除该条引用"
-                  className="pressable shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 
@@ -665,78 +635,99 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         </div>
       )}
 
-      {/* 问答模式开关：快速（单轮 RAG）/ 深度（多步工具研究，默认） */}
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-0.5 rounded-full border bg-muted/50 p-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setMode("quick")}
-            disabled={!!pending}
-            title="单轮检索，快而省"
-            className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
-              mode === "quick"
-                ? "bg-background font-medium text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
-          >
-            快速
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("agent")}
-            disabled={!!pending}
-            title="AI 多角度研读论文并联网检索后再回答"
-            className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
-              mode === "agent"
-                ? "bg-background font-medium text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
-          >
-            深度
-          </button>
-        </div>
-        <WebToggle on={webOn} onChange={setWebOn} configured={webConfigured} disabled={!!pending} />
-        {pending && (
-          <span className="text-[11px] text-muted-foreground">等待你回答 AI 的澄清问题</span>
-        )}
-      </div>
-
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-          placeholder={pending ? "回答 AI 的澄清问题…（Enter 发送）" : paperId ? "针对这篇论文提问…（Enter 发送，Shift+Enter 换行）" : "向整个论文库提问…（Enter 发送，Shift+Enter 换行）"}
-          className="min-h-11 flex-1 resize-none"
-          rows={1}
-        />
-        {sending ? (
-          <Button
-            size="icon"
-            onClick={() => {
-              if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
-            }}
-            title="暂停生成"
-            className="pressable h-11 w-11"
-          >
-            <Square className="h-4 w-4" />
-          </Button>
-        ) : (
-          <Button
-            size="icon"
-            onClick={() => void handleSend()}
-            disabled={!input.trim()}
-            className="pressable h-11 w-11"
-          >
-            <SendHorizonal className="h-4 w-4" />
-          </Button>
-        )}
-      </div>
+      {/* 一体化输入壳：引用 chips（顶部）+ 输入框 + 底部工具行（模式/联网 + 发送） */}
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSend={() => void handleSend()}
+        sending={sending}
+        onStop={() => {
+          if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
+        }}
+        sendDisabled={!input.trim()}
+        placeholder={pending ? "回答 AI 的澄清问题…（Enter 发送）" : paperId ? "针对这篇论文提问…（Enter 发送，Shift+Enter 换行）" : "向整个论文库提问…（Enter 发送，Shift+Enter 换行）"}
+        attachments={
+          selections && selections.length > 0 ? (
+            <div className="flex flex-col gap-1 border-b px-3 pt-2 pb-1.5">
+              <div className="flex items-baseline justify-between">
+                <span className="text-[11px] text-muted-foreground">
+                  引用 {selections.length}
+                  {maxSelections && selections.length >= maxSelections && (
+                    <span className="ml-1">· 已满</span>
+                  )}
+                </span>
+                <button
+                  onClick={() => onClearSelections?.()}
+                  title="清空引用"
+                  className="pressable text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  清空
+                </button>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {selections.map((sel, i) => (
+                  <div
+                    key={`${sel.pageIdx}:${sel.text.slice(0, 24)}`}
+                    className="animate-in fade-in -mx-1 flex items-start gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-accent/50"
+                    onMouseEnter={(e) => openHover(i, e.currentTarget)}
+                    onMouseLeave={scheduleHoverClose}
+                  >
+                    <div className="min-w-0 flex-1 border-l-2 border-foreground/10 pl-2">
+                      <p className="line-clamp-2 text-[13px] leading-snug text-foreground/85">
+                        {sel.text}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onRemoveSelection?.(i)}
+                      title="移除该条引用"
+                      className="pressable shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : undefined
+        }
+        left={
+          <>
+            {/* 问答模式开关：快速（单轮 RAG）/ 深度（多步工具研究，默认） */}
+            <div className="flex items-center gap-0.5 rounded-full bg-muted/60 p-0.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setMode("quick")}
+                disabled={!!pending}
+                title="单轮检索，快而省"
+                className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
+                  mode === "quick"
+                    ? "bg-background font-medium text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                快速
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("agent")}
+                disabled={!!pending}
+                title="AI 多角度研读论文并联网检索后再回答"
+                className={`pressable rounded-full px-2.5 py-0.5 transition-colors ${
+                  mode === "agent"
+                    ? "bg-background font-medium text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                } ${pending ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                深度
+              </button>
+            </div>
+            <WebToggle on={webOn} onChange={setWebOn} configured={webConfigured} disabled={!!pending} />
+            {pending && (
+              <span className="text-[11px] text-muted-foreground">等待你回答 AI 的澄清问题</span>
+            )}
+          </>
+        }
+      />
     </div>
   );
 }

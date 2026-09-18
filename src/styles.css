@@ -56,6 +56,8 @@
     --color-zp-surface: var(--zp-surface);
     --color-zp-surface-hover: var(--zp-surface-hover);
     --color-zp-surface-active: var(--zp-surface-active);
+    --color-zp-ai: var(--zp-ai);
+    --color-zp-ai-soft: var(--zp-ai-soft);
 }
 
 :root {
@@ -155,6 +157,10 @@
   --zp-surface: #fafafa;          /* 内容区背景 */
   --zp-surface-hover: #f5f5f5;    /* hover 背景 / 未解析标签 */
   --zp-surface-active: #f0f0f0;   /* active 背景 */
+
+  /* AI 工作状态点缀色（靛蓝）：仅用于思考/工具执行中/流式光标/回顾卡等「AI 正在工作」元素 */
+  --zp-ai: oklch(0.51 0.19 277);
+  --zp-ai-soft: oklch(0.51 0.19 277 / 8%);
 }
 
 .dark {
@@ -166,6 +172,9 @@
   --zp-surface: #171717;
   --zp-surface-hover: #262626;
   --zp-surface-active: #333333;
+
+  --zp-ai: oklch(0.7 0.15 277);
+  --zp-ai-soft: oklch(0.7 0.15 277 / 14%);
 }
 
 /* 批量操作栏入场：材质到达（opacity + scale 同步），200ms 强 ease-out */
@@ -177,6 +186,36 @@
 @keyframes zp-bulk-fade {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+
+/* 对话消息入场：opacity + 4px 上浮，200ms 强 ease-out */
+@keyframes zp-msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.zp-msg-in {
+  animation: zp-msg-in 200ms var(--ease-out);
+}
+
+/* 「输入中」三点跳动（生成占位）；通过 animation-delay 形成波浪 */
+@keyframes zp-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30%           { transform: translateY(-3px); opacity: 1; }
+}
+.zp-typing-dot {
+  animation: zp-typing 1.2s var(--ease-in-out) infinite;
+}
+.zp-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.zp-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .zp-msg-in {
+    animation-name: zp-bulk-fade;
+  }
+  .zp-typing-dot {
+    animation: none;
+    opacity: 0.7;
+  }
 }
 .zp-bulk-bar {
   animation: zp-bulk-enter 200ms var(--ease-out);

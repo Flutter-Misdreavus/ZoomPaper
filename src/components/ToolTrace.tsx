@@ -97,7 +97,7 @@ function ToolCard({ step }: { step: LiveToolStep }) {
   const Icon = meta.icon;
   const title = toolTitle(step.name, step.args);
   return (
-    <div className="overflow-hidden rounded-lg border bg-background/50">
+    <div className="overflow-hidden rounded-lg border bg-card">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -106,7 +106,7 @@ function ToolCard({ step }: { step: LiveToolStep }) {
         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-xs font-medium">{title}</span>
         {step.running ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-primary">
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-zp-ai">
             <Loader2 className="h-3 w-3 animate-spin" />
             执行中
           </span>
@@ -173,7 +173,7 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="pressable inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+        className="pressable inline-flex items-center gap-1 rounded-full bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       >
         {open ? (
           <ChevronDown className="h-3 w-3" />
@@ -182,7 +182,7 @@ export function ToolTrace({ trace }: { trace?: LiveToolStep[] | null }) {
         )}
         <Wrench className="h-3 w-3" />
         工具调用（{trace.length}）
-        {running && <span className="text-primary">· 执行中</span>}
+        {running && <span className="text-zp-ai">· 执行中</span>}
         {errors > 0 && <span className="text-destructive">· {errors} 个失败</span>}
       </button>
       {open && (

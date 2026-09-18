@@ -46,11 +46,11 @@ export function ThinkingPanel({ text, streaming }: Props) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="pressable inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+        className="pressable inline-flex items-center gap-1 rounded-full bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       >
-        <Brain className="h-3 w-3" />
+        <Brain className={`h-3 w-3 ${streaming ? "animate-pulse text-zp-ai" : ""}`} />
         {streaming ? (
-          <span>
+          <span className="text-zp-ai">
             AI 思考中…{" "}
             <span className="tabular-nums">{fmtDur(Math.floor(elapsedMs / 1000))}</span>
           </span>
@@ -64,12 +64,12 @@ export function ThinkingPanel({ text, streaming }: Props) {
         )}
       </button>
       {open && (
-        <div className="mt-1.5 w-full overflow-hidden rounded-lg border bg-muted/30">
-          <div className="flex items-center gap-1 border-b bg-muted/40 px-2.5 py-1 text-[10px] text-muted-foreground/80">
+        <div className="mt-1.5 w-full overflow-hidden rounded-lg border bg-card">
+          <div className="flex items-center gap-1 border-b px-2.5 py-1 text-[10px] text-muted-foreground/80">
             <Brain className="h-3 w-3" />
             思考
             {streaming && (
-              <span className="ml-auto animate-pulse">
+              <span className="ml-auto text-zp-ai">
                 生成中…{" "}
                 <span className="tabular-nums">{fmtDur(Math.floor(elapsedMs / 1000))}</span>
               </span>
@@ -80,7 +80,7 @@ export function ThinkingPanel({ text, streaming }: Props) {
             className="max-h-[40vh] overflow-y-auto whitespace-pre-wrap px-2.5 py-2 text-xs leading-relaxed text-muted-foreground"
           >
             {text}
-            {streaming && <span className="animate-pulse">▍</span>}
+            {streaming && <span className="animate-pulse text-zp-ai">▍</span>}
           </div>
         </div>
       )}

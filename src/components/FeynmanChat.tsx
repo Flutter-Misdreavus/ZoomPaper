@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { Reorder } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { ChatComposer } from "@/components/ChatComposer";
 import { MarkdownView } from "@/components/MarkdownView";
 import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
@@ -42,9 +42,7 @@ import {
   Play,
   Plus,
   RotateCcw,
-  SendHorizonal,
   Sparkles,
-  Square,
   Trash2,
   TriangleAlert,
   X,
@@ -917,63 +915,62 @@ export function FeynmanChat({ paperId }: Props) {
         ) : (
           activeMessages.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="flex justify-end">
-                <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
+              <div
+                key={i}
+                className={`zp-msg-in flex justify-end ${
+                  i > 0 ? "mt-1 border-t border-border/50 pt-4" : ""
+                }`}
+              >
+                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground shadow-sm">
                   {m.content}
                 </div>
               </div>
             ) : (
-              <div key={i} className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
-                  {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
-                  {(m.role === "assistant" &&
-                    i === activeMessages.length - 1 &&
-                    thinking) ||
-                  (m.trace && m.trace.length > 0) ? (
-                    <div className="mb-2 flex flex-col gap-1.5">
-                      {m.role === "assistant" &&
-                        i === activeMessages.length - 1 &&
-                        thinking && (
-                          <ThinkingPanel text={thinking} streaming={false} />
-                        )}
-                      {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
-                    </div>
-                  ) : null}
-                  <MarkdownView markdown={m.content} className="prose-sm" />
-                  <TimingLine timing={m.timing} />
-                </div>
+              /* 学生回答：通栏无气泡，长文/公式直接排版 */
+              <div key={i} className="zp-msg-in">
+                {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
+                {(m.role === "assistant" &&
+                  i === activeMessages.length - 1 &&
+                  thinking) ||
+                (m.trace && m.trace.length > 0) ? (
+                  <div className="mb-2 flex flex-col gap-1.5">
+                    {m.role === "assistant" &&
+                      i === activeMessages.length - 1 &&
+                      thinking && (
+                        <ThinkingPanel text={thinking} streaming={false} />
+                      )}
+                    {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
+                  </div>
+                ) : null}
+                <MarkdownView markdown={m.content} className="prose-sm" />
+                <TimingLine timing={m.timing} />
               </div>
             ),
           )
         )}
-        {/* 实时生成区：思考胶囊（默认收纳）+ 工具卡片 + 流式回答；无实时内容时显示加载提示 */}
+        {/* 实时生成区：思考胶囊 + 工具卡片 + 流式回答（通栏）；无实时内容时三点占位 */}
         {(sending || quizzing || judging || nexting || planning) && (
-          <>
+          <div className="zp-msg-in flex flex-col gap-2">
             {liveThinking && <ThinkingPanel text={liveThinking} streaming />}
-            {liveTrace.length > 0 && (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
-                  <ToolTrace trace={liveTrace} />
-                </div>
-              </div>
-            )}
+            {liveTrace.length > 0 && <ToolTrace trace={liveTrace} />}
             {liveText && (
-              <div className="flex justify-start">
-                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm">
-                  {liveText}
-                </div>
+              <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                {liveText}
+                <span className="animate-pulse text-zp-ai">▍</span>
               </div>
             )}
             {!liveThinking && liveTrace.length === 0 && !liveText && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  学生正在研读论文并思考…
-                  <LiveClock />
-                </div>
+              <div className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
+                </span>
+                学生正在研读论文并思考…
+                <LiveClock />
               </div>
             )}
-          </>
+          </div>
         )}
         {/* 已暂停提示（本轮被用户暂停且无正文可提交时） */}
         {pausedNote && !busy && (
@@ -983,10 +980,10 @@ export function FeynmanChat({ paperId }: Props) {
         )}
 
         {review && (
-          <div className="flex justify-start">
-            <div className="max-w-[95%] rounded-2xl border border-primary/20 bg-accent/40 px-4 py-3">
+          <div className="zp-msg-in flex justify-start">
+            <div className="max-w-[95%] rounded-xl border border-zp-ai/25 bg-zp-ai-soft px-4 py-3">
               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
-                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <Sparkles className="h-3.5 w-3.5 text-zp-ai" />
                 教学复盘
               </div>
               <MarkdownView markdown={review} className="prose-sm" />
@@ -1001,92 +998,71 @@ export function FeynmanChat({ paperId }: Props) {
         </div>
       )}
 
-      {/* 输入区：测验/交卷按钮 + 发送（legacy 只读禁用） */}
-      <div className="mb-1.5">
-        <WebToggle
-          on={webOn}
-          onChange={setWebOn}
-          configured={webConfigured}
-          disabled={legacy || !activeSessionId}
-        />
-      </div>
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-          disabled={legacy || !activeSessionId}
-          placeholder={
-            legacy
-              ? "旧版会话仅可查看"
-              : !activeSessionId
-                ? "先制定教学计划并确认，开始闯关"
-                : isQuiz
-                  ? "作答测验题…（答完点「交卷」）"
-                  : "讲解你理解的论文概念…（Enter 发送，Shift+Enter 换行）"
-          }
-          className="min-h-11 flex-1 resize-none"
-          rows={1}
-        />
-        {canQuiz && (
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => void handleQuiz()}
-            disabled={quizzing}
-            title="学生出题，检验当前概念是否讲明白"
-            className="pressable h-11 w-11 shrink-0"
-          >
-            {quizzing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <ClipboardList className="h-4 w-4" />
+      {/* 输入壳：左侧联网/出题/交卷，右侧发送（生成中变暂停）；legacy 只读禁用 */}
+      <ChatComposer
+        value={input}
+        onChange={setInput}
+        onSend={() => void handleSend()}
+        sending={busy}
+        onStop={() => {
+          if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
+        }}
+        sendDisabled={!input.trim() || legacy || !activeSessionId}
+        disabled={legacy || !activeSessionId}
+        placeholder={
+          legacy
+            ? "旧版会话仅可查看"
+            : !activeSessionId
+              ? "先制定教学计划并确认，开始闯关"
+              : isQuiz
+                ? "作答测验题…（答完点「交卷」）"
+                : "讲解你理解的论文概念…（Enter 发送，Shift+Enter 换行）"
+        }
+        left={
+          <WebToggle
+            on={webOn}
+            onChange={setWebOn}
+            configured={webConfigured}
+            disabled={legacy || !activeSessionId}
+          />
+        }
+        rightExtra={
+          <>
+            {canQuiz && (
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => void handleQuiz()}
+                disabled={quizzing}
+                title="学生出题，检验当前概念是否讲明白"
+                className="pressable h-8 w-8 shrink-0 rounded-full"
+              >
+                {quizzing ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ClipboardList className="h-4 w-4" />
+                )}
+              </Button>
             )}
-          </Button>
-        )}
-        {isQuiz && (
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => void handleJudge()}
-            disabled={!canJudge}
-            title={hasQuizAnswers ? "交卷并判定" : "先在对话中作答测验题"}
-            className="pressable h-11 w-11 shrink-0"
-          >
-            {judging ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <CheckCircle2 className="h-4 w-4" />
+            {isQuiz && (
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => void handleJudge()}
+                disabled={!canJudge}
+                title={hasQuizAnswers ? "交卷并判定" : "先在对话中作答测验题"}
+                className="pressable h-8 w-8 shrink-0 rounded-full"
+              >
+                {judging ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+              </Button>
             )}
-          </Button>
-        )}
-        {busy ? (
-          <Button
-            size="icon"
-            onClick={() => {
-              if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
-            }}
-            title="暂停生成"
-            className="pressable h-11 w-11"
-          >
-            <Square className="h-4 w-4" />
-          </Button>
-        ) : (
-          <Button
-            size="icon"
-            onClick={() => void handleSend()}
-            disabled={!input.trim() || legacy || !activeSessionId}
-            className="pressable h-11 w-11"
-          >
-            <SendHorizonal className="h-4 w-4" />
-          </Button>
-        )}
-      </div>
+          </>
+        }
+      />
     </div>
   );
 }

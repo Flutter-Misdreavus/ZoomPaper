@@ -5,7 +5,7 @@ import { QaChat } from "@/components/QaChat";
 import { ConversationDeleteDialog } from "@/components/ConversationDeleteDialog";
 import { deleteConversation, listConversations, type Conversation } from "@/lib/api";
 import { formatTime } from "@/lib/utils";
-import { MessageSquare, Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 interface Props {
   onOpenPaper: (paperId: string, pageIdx?: number) => void;
@@ -103,8 +103,7 @@ export function AskPage({ onOpenPaper }: Props) {
       {/* 对话区 */}
       <section className="flex min-w-0 flex-1 flex-col">
         <div className="mb-3 flex items-center gap-2">
-          <MessageSquare className="h-5 w-5 text-primary" />
-          <h1 className="text-xl font-bold tracking-tight">知识库问答</h1>
+          <h1 className="text-lg font-semibold tracking-tight">知识库问答</h1>
         </div>
         {error && (
           <div className="mb-3 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
