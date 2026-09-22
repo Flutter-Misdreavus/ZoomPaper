@@ -9,8 +9,8 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-/// RAG 问答 system prompt：只依据上下文，用 [n] 标注引用，缺失则明说。
-const QA_SYSTEM_PROMPT: &str = "你是一个论文知识库问答助手。\n\n规则：\n1. 只依据下面提供的【上下文资料】回答，引用某段资料时用 [n] 标注（n 为该资料的编号）。\n2. 资料里没有的信息就明确说「资料中没有相关信息」，不要编造。\n3. 用中文回答，简洁准确。";
+/// RAG 问答 system prompt：只依据上下文，用 [n] 标注引用，缺失则明说；公式须带定界符。
+const QA_SYSTEM_PROMPT: &str = "你是一个论文知识库问答助手。\n\n规则：\n1. 只依据下面提供的【上下文资料】回答，引用某段资料时用 [n] 标注（n 为该资料的编号）。\n2. 资料里没有的信息就明确说「资料中没有相关信息」，不要编造。\n3. 用中文回答，简洁准确。\n4. 输出公式时：独立公式用 $$ 定界符并单独成段（前后留空行），行内公式用 $...$ 包裹，禁止输出没有定界符的裸 LaTeX。";
 
 /// 绑定论文（阅读页会话）时追加的系统提示段：强调当前论文优先，不要用通用知识替代论文内容。
 fn bound_paper_prompt(title: &str) -> String {

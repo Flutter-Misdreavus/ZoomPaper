@@ -13,6 +13,7 @@ import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import {
   katexOptions,
+  linkifyCitations,
   markdownUrlTransform,
   normalizeImageUrls,
   normalizeLatex,
@@ -73,11 +74,6 @@ interface Props {
   onJumpToSelection?: (pageIdx: number, rects?: AnnotationRect[]) => void;
   /** 发送状态变化回调（供外层在生成期间禁用会话切换等操作） */
   onSendingChange?: (sending: boolean) => void;
-}
-
-// 把正文里的 [n] 改写成 markdown 链接，交给自定义 a 渲染成 CitationBadge
-function linkifyCitations(md: string): string {
-  return md.replace(/\[(\d+)\]/g, "[$1](citation:$1)");
 }
 
 interface AssistantBodyProps {
