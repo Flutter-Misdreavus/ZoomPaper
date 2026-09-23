@@ -14,13 +14,16 @@ use crate::quiz::{
 };
 use crate::db::Db;
 use crate::settings::Settings;
+use futures_util::StreamExt;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 // ---------- 生成取消（「暂停」按钮） ----------
@@ -306,14 +309,25 @@ pub fn import_pdf(db: State<'_, Db>, source_path: String) -> Result<Paper, Strin
 
 /// 核心导入逻辑（library 由调用方决定，便于测试）。
 fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper, String> {
+    import_pdf_inner_with_title(db, library, source_path, None)
+}
+
+fn import_pdf_inner_with_title(
+    db: &Db,
+    library: &Path,
+    source_path: &str,
+    suggested_title: Option<&str>,
+) -> Result<Paper, String> {
     let id = Uuid::new_v4().to_string();
     let src = Path::new(source_path);
     let pdf_path = crate::fs::copy_pdf(src, library, &id).map_err(|e| e.to_string())?;
     let md_path = crate::fs::paper_dir(library, &id).join("paper.md");
     let now = chrono::Utc::now().timestamp();
-    let title = src
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
+    let title = suggested_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(|title| title.chars().take(300).collect())
+        .or_else(|| src.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "未命名论文".to_string());
 
     let paper = Paper {
@@ -358,6 +372,113 @@ fn import_pdf_inner(db: &Db, library: &Path, source_path: &str) -> Result<Paper,
     .map_err(|e| e.to_string())?;
 
     Ok(paper)
+}
+
+const MAX_REMOTE_PDF_BYTES: u64 = 100 * 1024 * 1024;
+
+fn validate_remote_pdf_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw).map_err(|_| "论文链接格式无效".to_string())?;
+    if url.scheme() != "https" {
+        return Err("只支持 HTTPS 论文链接".to_string());
+    }
+    let host = url.host_str().ok_or("论文链接缺少域名")?;
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
+        return Err("不允许导入本机或局域网地址".to_string());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let private = match ip {
+            IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified(),
+            IpAddr::V6(ip) => ip.is_loopback() || ip.is_unique_local() || ip.is_unspecified(),
+        };
+        if private {
+            return Err("不允许导入本机或局域网地址".to_string());
+        }
+    }
+    Ok(url)
+}
+
+/// 从浏览器扩展传入的 HTTPS 地址下载 PDF，再复用本地导入流程。
+#[tauri::command]
+pub async fn import_pdf_url(
+    db: State<'_, Db>,
+    url: String,
+    suggested_title: Option<String>,
+) -> Result<Paper, String> {
+    let url = validate_remote_pdf_url(&url)?;
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let library = settings.papers_dir().map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .user_agent("ZoomPaper/0.2.1 browser-import")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("重定向次数过多");
+            }
+            match validate_remote_pdf_url(attempt.url().as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(error) => attempt.error(error),
+            }
+        }))
+        .build()
+        .map_err(|e| format!("创建下载请求失败：{e}"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("下载论文失败：{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("论文服务器返回错误：{e}"))?;
+    validate_remote_pdf_url(response.url().as_str())?;
+    if response.content_length().is_some_and(|size| size > MAX_REMOTE_PDF_BYTES) {
+        return Err("PDF 超过 100 MB，已停止导入".to_string());
+    }
+
+    let temp_path = std::env::temp_dir().join(format!("zoompaper-browser-{}.pdf", Uuid::new_v4()));
+    let download_result = async {
+        let mut file = tokio::fs::File::create(&temp_path)
+            .await
+            .map_err(|e| format!("创建临时文件失败：{e}"))?;
+        let mut stream = response.bytes_stream();
+        let mut total = 0_u64;
+        let mut signature = Vec::with_capacity(5);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("下载论文失败：{e}"))?;
+            total = total.saturating_add(chunk.len() as u64);
+            if total > MAX_REMOTE_PDF_BYTES {
+                return Err("PDF 超过 100 MB，已停止导入".to_string());
+            }
+            if signature.len() < 5 {
+                let needed = 5 - signature.len();
+                signature.extend_from_slice(&chunk[..chunk.len().min(needed)]);
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("保存下载文件失败：{e}"))?;
+        }
+        file.sync_all()
+            .await
+            .map_err(|e| format!("保存下载文件失败：{e}"))?;
+        if !signature.starts_with(b"%PDF-") {
+            return Err("该链接返回的内容不是有效 PDF".to_string());
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = download_result {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
+
+    let result = import_pdf_inner_with_title(
+        &db,
+        &library,
+        &temp_path.to_string_lossy(),
+        suggested_title.as_deref(),
+    );
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    result
 }
 
 /// 调用 MinerU 解析论文 Markdown 并更新状态。
@@ -4163,6 +4284,36 @@ mod tests {
             .query_row("SELECT title FROM papers WHERE id = ?1", [&paper.id], |r| r.get(0))
             .unwrap();
         assert_eq!(stored, "src-paper.pdf");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn browser_import_uses_page_title_and_limits_unsafe_urls() {
+        db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrations::migrate(&conn).unwrap();
+        let db = db::Db::from_connection(conn);
+
+        let tmp = std::env::temp_dir().join(format!("zoompaper-test-{}", uuid::Uuid::new_v4()));
+        let library = tmp.join("papers");
+        let src = tmp.join("download.pdf");
+        fs::create_dir_all(&library).unwrap();
+        fs::write(&src, b"%PDF-1.4 test").unwrap();
+
+        let paper = import_pdf_inner_with_title(
+            &db,
+            &library,
+            src.to_str().unwrap(),
+            Some("  A Useful Paper  "),
+        )
+        .unwrap();
+        assert_eq!(paper.title, "A Useful Paper");
+        assert!(validate_remote_pdf_url("https://aclanthology.org/paper.pdf").is_ok());
+        assert!(validate_remote_pdf_url("http://example.com/paper.pdf").is_err());
+        assert!(validate_remote_pdf_url("https://localhost/paper.pdf").is_err());
+        assert!(validate_remote_pdf_url("https://127.0.0.1/paper.pdf").is_err());
+        assert!(validate_remote_pdf_url("https://192.168.1.2/paper.pdf").is_err());
 
         fs::remove_dir_all(&tmp).ok();
     }

@@ -284,6 +284,8 @@ export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperI
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
+export const importPdfUrl = (url: string, suggestedTitle?: string | null) =>
+  invoke<Paper>("import_pdf_url", { url, suggestedTitle: suggestedTitle ?? null });
 export const parsePdf = (
   paperId: string,
   onProgress?: (p: ParseProgress) => void,

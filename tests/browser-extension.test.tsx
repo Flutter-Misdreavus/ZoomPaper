@@ -1,0 +1,73 @@
+import { describe, expect, it } from "vitest";
+// @ts-expect-error 浏览器扩展保持原生 JavaScript，可直接由 Chrome 加载。
+import { detectPaper } from "../browser-extension/detector.js";
+
+describe("browser extension paper detection", () => {
+  it("uses standard academic metadata", () => {
+    expect(detectPaper({
+      pageUrl: "https://aclanthology.org/2026.acl-long.8/",
+      title: "A Paper",
+      citationPdfUrl: "/2026.acl-long.8.pdf",
+    })).toEqual({
+      pdfUrl: "https://aclanthology.org/2026.acl-long.8.pdf",
+      title: "A Paper",
+      sourceUrl: "https://aclanthology.org/2026.acl-long.8/",
+    });
+  });
+
+  it("recognizes arXiv and ignores supplementary PDFs", () => {
+    expect(detectPaper({
+      pageUrl: "https://arxiv.org/abs/2601.12345",
+      title: "ArXiv Paper",
+      links: [{ href: "/supplement.pdf", text: "Supplement", title: "" }],
+    })?.pdfUrl).toBe("https://arxiv.org/pdf/2601.12345");
+  });
+
+  it("prefers a selected direct PDF link", () => {
+    expect(detectPaper({
+      pageUrl: "https://example.org/paper",
+      linkUrl: "https://example.org/main.pdf",
+      title: "Example",
+      citationPdfUrl: "https://example.org/metadata.pdf",
+    })?.pdfUrl).toBe("https://example.org/main.pdf");
+  });
+
+  it.each([
+    [
+      "CVF Open Access",
+      "https://openaccess.thecvf.com/content/CVPR2025/html/Smith_Useful_Vision_CVPR_2025_paper.html",
+      "https://openaccess.thecvf.com/content/CVPR2025/papers/Smith_Useful_Vision_CVPR_2025_paper.pdf",
+    ],
+    [
+      "NeurIPS proceedings",
+      "https://proceedings.neurips.cc/paper_files/paper/2025/hash/abc-Abstract-Conference.html",
+      "https://proceedings.neurips.cc/paper_files/paper/2025/file/abc-Paper-Conference.pdf",
+    ],
+    [
+      "OpenReview",
+      "https://openreview.net/forum?id=paper123",
+      "https://openreview.net/pdf?id=paper123",
+    ],
+  ])("recognizes %s pages", (_site, pageUrl, expected) => {
+    expect(detectPaper({ pageUrl, title: "Paper" })?.pdfUrl).toBe(expected);
+  });
+
+  it("uses publisher download endpoints and excludes non-paper attachments", () => {
+    expect(detectPaper({
+      pageUrl: "https://dl.acm.org/doi/10.1145/example",
+      title: "ACM Paper",
+      links: [
+        { href: "/doi/pdf/10.1145/example", text: "View PDF", title: "", type: "application/pdf" },
+        { href: "/supplement.pdf", text: "Supplement", title: "", type: "application/pdf" },
+      ],
+    })?.pdfUrl).toBe("https://dl.acm.org/doi/pdf/10.1145/example");
+  });
+
+  it("accepts PDF URLs exposed through JSON-LD or alternate links", () => {
+    expect(detectPaper({
+      pageUrl: "https://example.org/article/1",
+      title: "Metadata Paper",
+      metaPdfUrls: ["/download/fulltext?format=pdf"],
+    })?.pdfUrl).toBe("https://example.org/download/fulltext?format=pdf");
+  });
+});
