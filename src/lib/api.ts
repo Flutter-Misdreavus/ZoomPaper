@@ -662,6 +662,9 @@ export const getAnnotations = (paperId: string, kind?: string) =>
 export const saveAnnotations = (paperId: string, data: string, kind?: string) =>
   invoke<void>("save_annotations", { paperId, data, kind: kind ?? null });
 
+export const translateSelection = (text: string, context = "") =>
+  invoke<string>("translate_selection", { text, context });
+
 // ---------- 论文阅读理解测验 ----------
 
 /** 出题配置（生成前由用户选择） */
