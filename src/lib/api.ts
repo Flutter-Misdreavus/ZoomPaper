@@ -16,6 +16,7 @@ export interface ProviderConfig {
   base_url?: string | null;
   default_model: string;
   models: string[];
+  enabled: boolean;
 }
 
 export interface Settings {

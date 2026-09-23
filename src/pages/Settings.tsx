@@ -429,7 +429,7 @@ function AddProviderDialog({
 }) {
   const [apiKey, setApiKey] = useState("");
   const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [customModel, setCustomModel] = useState("");
+  const [customModel, setCustomModel] = useState<string>("");
 
   const handleAdd = () => {
     if (!selectedTemplate || !apiKey) return;
@@ -502,7 +502,7 @@ function AddProviderDialog({
               <div className="grid gap-1.5">
                 <Label htmlFor="add-model">默认模型 *</Label>
                 {selectedTemplate.models.length > 0 ? (
-                  <Select value={customModel} onValueChange={setCustomModel}>
+                  <Select value={customModel} onValueChange={(v) => setCustomModel(v || "")}>
                     <SelectTrigger id="add-model">
                       <SelectValue placeholder="选择模型" />
                     </SelectTrigger>
@@ -605,7 +605,7 @@ function EditProviderDialog({
             {config.models.length > 0 ? (
               <Select
                 value={config.default_model}
-                onValueChange={(v) => setConfig({ ...config, default_model: v })}
+                onValueChange={(v) => setConfig({ ...config, default_model: v || "" })}
               >
                 <SelectTrigger id="edit-model">
                   <SelectValue />
