@@ -4401,7 +4401,6 @@ mod tests {
             base_url: Some("https://api.deepseek.com".to_string()),
             default_model: "deepseek-chat".to_string(),
             models: vec![],
-            enabled: true,
         });
         s.web_search_provider = "auto".into();
         // 开 → 原样
