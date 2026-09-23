@@ -46,10 +46,9 @@ import {
   X,
 } from "lucide-react";
 
-/** 最近 N 天统计（覆盖热力图 17 周 ≈ 119 天） */
-const STATS_DAYS = 120;
-/** 热力图周数 */
-const HEATMAP_WEEKS = 17;
+/** GitHub 式全年阅读热力图。 */
+const HEATMAP_WEEKS = 52;
+const STATS_DAYS = HEATMAP_WEEKS * 7 + 7;
 
 interface Props {
   onOpenPaper: (paperId: string) => void;
@@ -73,11 +72,11 @@ function heatLevel(seconds: number): number {
 }
 
 const HEAT_CLASSES = [
-  "bg-zp-surface",
-  "bg-emerald-200",
-  "bg-emerald-400",
-  "bg-emerald-600",
-  "bg-emerald-700",
+  "bg-[#ebedf0] dark:bg-[#2d333b]",
+  "bg-[#9be9a8] dark:bg-[#0e4429]",
+  "bg-[#40c463] dark:bg-[#006d32]",
+  "bg-[#30a14e] dark:bg-[#26a641]",
+  "bg-[#216e39] dark:bg-[#39d353]",
 ];
 
 export function TimelinePage({ onOpenPaper }: Props) {
@@ -141,12 +140,9 @@ export function TimelinePage({ onOpenPaper }: Props) {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto pb-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto pb-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">时间线</h1>
-        <p className="text-sm text-muted-foreground">
-          记录每天的阅读时长与论文，追踪阅读计划的完成情况
-        </p>
       </div>
 
       {error && (
@@ -155,61 +151,29 @@ export function TimelinePage({ onOpenPaper }: Props) {
         </div>
       )}
 
-      {/* 今日概览 */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <Clock className="h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
-            <div>
-              <div className="text-lg font-semibold">
-                {formatDuration(today?.seconds ?? 0)}
-              </div>
-              <div className="text-xs text-muted-foreground">今日阅读时长</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <BookCheck className="h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
-            <div>
-              <div className="text-lg font-semibold">
-                {today?.finished_count ?? 0}
-                {dailyPlan?.target_count != null && (
-                  <span className="text-sm font-normal text-muted-foreground">
-                    {" "}/ {dailyPlan.target_count} 篇
-                  </span>
-                )}
-                {!dailyPlan && <span className="text-sm font-normal text-muted-foreground"> 篇</span>}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                今日读完
-                {dailyPlan &&
-                  (today != null && today.finished_count >= (dailyPlan.target_count ?? 0) ? (
-                    <span className="ml-1 text-emerald-600">已达标</span>
-                  ) : (
-                    <span className="ml-1 text-destructive">未达标</span>
-                  ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <Flame className="h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.8} />
-            <div>
-              <div className="text-lg font-semibold">{stats?.streak ?? 0} 天</div>
-              <div className="text-xs text-muted-foreground">连续阅读</div>
-            </div>
-          </CardContent>
-        </Card>
+      {/* 今日概览：用一行数字替代厚重卡片。 */}
+      <div className="flex flex-wrap items-center gap-x-10 gap-y-4 border-y border-zp-border py-4">
+        <div className="flex items-center gap-3"><Clock className="h-4 w-4 text-zp-quaternary" /><div><div className="text-lg font-semibold">{formatDuration(today?.seconds ?? 0)}</div><div className="text-xs text-zp-quaternary">今日阅读</div></div></div>
+        <div className="flex items-center gap-3"><BookCheck className="h-4 w-4 text-zp-quaternary" /><div><div className="text-lg font-semibold">{today?.finished_count ?? 0}<span className="ml-1 text-sm font-normal text-zp-quaternary">{dailyPlan?.target_count != null ? `/ ${dailyPlan.target_count}` : "篇"}</span></div><div className="text-xs text-zp-quaternary">今日读完</div></div></div>
+        <div className="flex items-center gap-3"><Flame className="h-4 w-4 text-zp-quaternary" /><div><div className="text-lg font-semibold">{stats?.streak ?? 0} 天</div><div className="text-xs text-zp-quaternary">连续阅读</div></div></div>
       </div>
 
       {/* 热力图 + 当日明细 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold">阅读热力图</h2>
-        <Card>
-          <CardContent className="overflow-x-auto p-4">
-            <div className="flex gap-[3px]">
+        <div className="overflow-x-auto rounded-md border border-zp-border bg-white p-4 dark:bg-zp-surface">
+          <div className="w-max min-w-full">
+            <div className="mb-1 ml-7 flex gap-[3px]">
+              {weeks.map((col, wi) => {
+                const first = col.find((cell) => cell.date.getDate() === 1);
+                return <span key={wi} className="h-4 w-3.5 overflow-visible whitespace-nowrap text-[10px] text-zp-quaternary">{first ? first.date.toLocaleDateString("zh-CN", { month: "short" }) : ""}</span>;
+              })}
+            </div>
+            <div className="flex">
+              <div className="mr-2 grid grid-rows-7 gap-[3px] text-[10px] leading-3.5 text-zp-quaternary">
+                <span /><span>一</span><span /><span>三</span><span /><span>五</span><span />
+              </div>
+              <div className="flex gap-[3px]">
               {weeks.map((col, wi) => (
                 <div key={wi} className="flex flex-col gap-[3px]">
                   {col.map((cell) => {
@@ -228,7 +192,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
                           setSelectedDate(isSelected ? null : cell.key)
                         }
                         className={cn(
-                          "h-3.5 w-3.5 rounded-[3px] transition-transform hover:scale-125",
+                          "h-3.5 w-3.5 rounded-[2px] outline-none ring-offset-1 hover:ring-1 hover:ring-zp-quaternary",
                           HEAT_CLASSES[heatLevel(secs)],
                           isSelected && "ring-2 ring-zp-primary",
                         )}
@@ -237,17 +201,17 @@ export function TimelinePage({ onOpenPaper }: Props) {
                   })}
                 </div>
               ))}
+              </div>
             </div>
-            <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <div className="mt-3 flex items-center justify-end gap-1 text-[11px] text-zp-quaternary">
               <span>少</span>
               {HEAT_CLASSES.map((c, i) => (
                 <span key={i} className={cn("h-3 w-3 rounded-[3px]", c)} />
               ))}
               <span>多</span>
-              <span className="ml-2">按当天阅读时长着色，点击格子查看当日明细</span>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {selectedDate && (
           <Card>
@@ -397,11 +361,7 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
         />
       )}
 
-      {plans.length === 0 && !showForm ? (
-        <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-          还没有阅读计划，定一个目标监督自己吧
-        </div>
-      ) : (
+      {plans.length > 0 && (
         <div className="flex flex-col gap-3">
           {plans.map((plan) => (
             <PlanCard
