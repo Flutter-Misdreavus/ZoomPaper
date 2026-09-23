@@ -431,6 +431,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
       {/* 划选浮动工具条 */}
       {sel && (
         <SelectionToolbar
+          text={sel.text}
           x={sel.x}
           y={sel.y}
           onHighlight={(color) => addHighlight(color, false)}
