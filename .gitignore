@@ -43,6 +43,7 @@ settings.json
 .playwright-mcp/
 .claude/
 .agent/
+AGENTS.md
 
 # ---- 本地文件 ----
 *.local
