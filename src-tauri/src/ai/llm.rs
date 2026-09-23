@@ -177,52 +177,36 @@ pub async fn stream_plain_chat<L: LlmChat>(
 }
 
 impl Llm {
-    /// 按 settings 的 `llm_provider` 选择 provider 并取对应 API Key（为空则报错）。
-    pub fn from_settings(s: &Settings) -> Result<Llm> {
-        let model = s.llm_model.clone();
-        match s.llm_provider.to_lowercase().as_str() {
-            "openai" => {
-                let key = s.api_keys.openai.clone();
-                if key.is_empty() {
-                    anyhow::bail!("未配置 OpenAI API Key，请先在设置页填写");
-                }
-                Ok(Llm::OpenAiCompat {
-                    base_url: "https://api.openai.com/v1".into(),
-                    api_key: key,
-                    model,
-                })
-            }
-            "deepseek" => {
-                let key = s.api_keys.deepseek.clone();
-                if key.is_empty() {
-                    anyhow::bail!("未配置 DeepSeek API Key，请先在设置页填写");
-                }
-                Ok(Llm::OpenAiCompat {
-                    base_url: "https://api.deepseek.com".into(),
-                    api_key: key,
-                    model,
-                })
-            }
-            "gemini" => {
-                let key = s.api_keys.gemini.clone();
-                if key.is_empty() {
-                    anyhow::bail!("未配置 Gemini API Key，请先在设置页填写");
-                }
-                Ok(Llm::OpenAiCompat {
-                    base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
-                    api_key: key,
-                    model,
-                })
-            }
-            "anthropic" => {
-                let key = s.api_keys.anthropic.clone();
-                if key.is_empty() {
-                    anyhow::bail!("未配置 Anthropic API Key，请先在设置页填写");
-                }
-                Ok(Llm::Anthropic { api_key: key, model })
-            }
-            other => anyhow::bail!("未知 LLM provider: {other}"),
+    /// 从 ProviderConfig 构造 Llm 实例
+    pub fn from_provider(config: &crate::settings::ProviderConfig) -> Result<Llm> {
+        if config.api_key.is_empty() {
+            anyhow::bail!("Provider {} 未配置 API Key，请先在设置页填写", config.name);
         }
+
+        match config.provider_type.as_str() {
+            "openai-compat" => {
+                let base_url = config
+                    .base_url
+                    .as_ref()
+                    .context("OpenAI 兼容 provider 需要配置 base_url")?;
+                Ok(Llm::OpenAiCompat {
+                    base_url: base_url.clone(),
+                    api_key: config.api_key.clone(),
+                    model: config.default_model.clone(),
+                })
+            }
+            "anthropic" => Ok(Llm::Anthropic {
+                api_key: config.api_key.clone(),
+                model: config.default_model.clone(),
+            }),
+            _ => anyhow::bail!("不支持的 provider 类型: {}", config.provider_type),
+        }
+    }
+
+    /// 按 settings 的激活 provider 构造 Llm 实例（新版）
+    pub fn from_settings(s: &Settings) -> Result<Llm> {
+        let config = s.active_provider()?;
+        Self::from_provider(config)
     }
 
     /// 发送多轮对话，返回助手回复文本。
@@ -917,10 +901,22 @@ mod tests {
     #[test]
     fn from_settings_requires_key_and_picks_base_url() {
         let mut s = Settings::default();
-        s.llm_provider = "openai".to_string();
-        assert!(Llm::from_settings(&s).is_err()); // 空 key 应报错
+        // 没有 provider 时应报错
+        assert!(Llm::from_settings(&s).is_err());
 
-        s.api_keys.openai = "sk-test".into();
+        // 添加 openai provider
+        s.providers.push(crate::settings::ProviderConfig {
+            id: "openai".to_string(),
+            name: "OpenAI".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            default_model: "gpt-4o-mini".to_string(),
+            models: vec![],
+            enabled: true,
+        });
+        s.active_provider_id = "openai".to_string();
+
         match Llm::from_settings(&s).unwrap() {
             Llm::OpenAiCompat {
                 base_url, api_key, ..
@@ -935,7 +931,17 @@ mod tests {
     #[test]
     fn from_settings_unknown_provider_errors() {
         let mut s = Settings::default();
-        s.llm_provider = "nope".into();
+        s.providers.push(crate::settings::ProviderConfig {
+            id: "unknown".to_string(),
+            name: "Unknown".to_string(),
+            provider_type: "unknown-type".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+            default_model: "model".to_string(),
+            models: vec![],
+            enabled: true,
+        });
+        s.active_provider_id = "unknown".to_string();
         assert!(Llm::from_settings(&s).is_err());
     }
 

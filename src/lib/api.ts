@@ -8,12 +8,27 @@ export interface ApiKeys {
   deepseek: string;
 }
 
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  provider_type: string;
+  api_key: string;
+  base_url?: string | null;
+  default_model: string;
+  models: string[];
+}
+
 export interface Settings {
-  api_keys: ApiKeys;
+  providers: ProviderConfig[];
+  active_provider_id: string;
+  // 兼容字段（用于迁移）
+  api_keys?: ApiKeys | null;
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  // MinerU API Key（保留在顶层）
+  mineru_api_key: string;
   paper_library_path: string | null;
   embedding_model: string;
-  llm_provider: string;
-  llm_model: string;
   /** 联网搜索 provider：none / auto / deepseek / anthropic（复用对应 API Key） */
   web_search_provider: string;
   /** 原生搜索用模型名；null = 用 provider 默认 */
@@ -226,15 +241,33 @@ export const getSettings = () => invoke<Settings>("get_settings");
 export function isWebSearchConfigured(s: Settings): boolean {
   const p = (s.web_search_provider ?? "").toLowerCase();
   if (!p || p === "none") return false;
-  if (p === "deepseek") return !!s.api_keys.deepseek;
-  if (p === "anthropic") return !!s.api_keys.anthropic;
-  if (p === "auto") return !!(s.api_keys.deepseek || s.api_keys.anthropic);
+
+  const findProvider = (id: string) =>
+    s.providers.some(provider => provider.id === id && provider.enabled && !!provider.api_key);
+
+  if (p === "deepseek") return findProvider("deepseek");
+  if (p === "anthropic") return findProvider("anthropic");
+  if (p === "auto") return findProvider("deepseek") || findProvider("anthropic");
   return false;
 }
-export const generateBlog = (paperId: string) =>
-  invoke<string>("generate_blog", { paperId });
+
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
+
+export const addProvider = (config: ProviderConfig) =>
+  invoke<Settings>("add_provider", { config });
+
+export const updateProvider = (id: string, config: ProviderConfig) =>
+  invoke<Settings>("update_provider", { id, config });
+
+export const deleteProvider = (id: string) =>
+  invoke<Settings>("delete_provider", { id });
+
+export const setActiveProvider = (id: string) =>
+  invoke<Settings>("set_active_provider", { id });
+
+export const generateBlog = (paperId: string) =>
+  invoke<string>("generate_blog", { paperId });
 
 /** 解析进度（后端 parse_pdf 通过 Channel 推送） */
 export interface ParseProgress {

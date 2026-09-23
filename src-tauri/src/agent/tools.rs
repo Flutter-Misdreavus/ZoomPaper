@@ -731,11 +731,22 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
         .settings
         .web_search_available()
         .ok_or_else(|| "联网搜索未启用，请先在设置页配置（复用 DeepSeek/Anthropic Key）".to_string())?;
-    let (base_url, api_key) = match provider.as_str() {
-        "deepseek" => ("https://api.deepseek.com/anthropic/v1".to_string(), ctx.settings.api_keys.deepseek.clone()),
-        "anthropic" => ("https://api.anthropic.com/v1".to_string(), ctx.settings.api_keys.anthropic.clone()),
+
+    // 从 providers 中查找对应的 API key
+    let api_key = ctx
+        .settings
+        .providers
+        .iter()
+        .find(|p| p.id == provider)
+        .map(|p| p.api_key.clone())
+        .ok_or_else(|| format!("未找到 provider '{}' 的配置", provider))?;
+
+    let base_url = match provider.as_str() {
+        "deepseek" => "https://api.deepseek.com/anthropic/v1".to_string(),
+        "anthropic" => "https://api.anthropic.com/v1".to_string(),
         other => return Err(format!("未知的搜索 provider: {other}")),
     };
+
     let result = web::native_search(
         ctx.http,
         &base_url,
@@ -966,7 +977,16 @@ mod tests {
         assert!(tools.contains(&ToolKind::AskUser)); // 澄清工具恒可用
 
         s.web_search_provider = "auto".into();
-        s.api_keys.deepseek = "sk-test".into();
+        s.providers.push(crate::settings::ProviderConfig {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_model: "deepseek-chat".to_string(),
+            models: vec![],
+            enabled: true,
+        });
         let tools = build_tools(&s, Some("p1"), &[]);
         assert!(tools.contains(&ToolKind::WebSearch));
         assert!(tools.contains(&ToolKind::WebFetch));
@@ -991,7 +1011,16 @@ mod tests {
         assert!(!tools.contains(&ToolKind::WebSearch));
         // 启用联网后包含 web 工具
         s.web_search_provider = "auto".into();
-        s.api_keys.deepseek = "sk-test".into();
+        s.providers.push(crate::settings::ProviderConfig {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_model: "deepseek-chat".to_string(),
+            models: vec![],
+            enabled: true,
+        });
         let tools2 = build_feynman_tools(&s);
         assert!(tools2.contains(&ToolKind::WebSearch));
         assert!(tools2.contains(&ToolKind::WebFetch));

@@ -115,6 +115,76 @@ pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
     Ok(new_settings)
 }
 
+/// 添加 provider 配置
+#[tauri::command]
+pub fn add_provider(config: crate::settings::ProviderConfig) -> Result<Settings, String> {
+    let mut settings = Settings::load().map_err(|e| e.to_string())?;
+
+    // 检查 id 是否已存在
+    if settings.providers.iter().any(|p| p.id == config.id) {
+        return Err(format!("Provider ID '{}' 已存在", config.id));
+    }
+
+    settings.providers.push(config.clone());
+
+    // 如果没有激活的 provider，自动激活新添加的
+    if settings.active_provider_id.is_empty() {
+        settings.active_provider_id = config.id;
+    }
+
+    settings.save().map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+/// 更新 provider 配置
+#[tauri::command]
+pub fn update_provider(id: String, config: crate::settings::ProviderConfig) -> Result<Settings, String> {
+    let mut settings = Settings::load().map_err(|e| e.to_string())?;
+
+    let provider = settings.providers.iter_mut().find(|p| p.id == id)
+        .ok_or_else(|| format!("Provider '{}' 不存在", id))?;
+
+    // 更新配置（保留原 id）
+    let old_id = provider.id.clone();
+    *provider = config;
+    provider.id = old_id;
+
+    settings.save().map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+/// 删除 provider 配置
+#[tauri::command]
+pub fn delete_provider(id: String) -> Result<Settings, String> {
+    let mut settings = Settings::load().map_err(|e| e.to_string())?;
+
+    // 不允许删除当前激活的 provider
+    if settings.active_provider_id == id {
+        return Err(format!("不能删除当前激活的 provider '{}'，请先切换到其他 provider", id));
+    }
+
+    let index = settings.providers.iter().position(|p| p.id == id)
+        .ok_or_else(|| format!("Provider '{}' 不存在", id))?;
+
+    settings.providers.remove(index);
+    settings.save().map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+/// 设置激活的 provider
+#[tauri::command]
+pub fn set_active_provider(id: String) -> Result<Settings, String> {
+    let mut settings = Settings::load().map_err(|e| e.to_string())?;
+
+    // 验证 provider 存在
+    settings.providers.iter().find(|p| p.id == id)
+        .ok_or_else(|| format!("Provider '{}' 不存在", id))?;
+
+    settings.active_provider_id = id;
+    settings.save().map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
 // ---------- 论文 ----------
 
 /// 论文查询公共前缀：LEFT JOIN paper_folders 聚合所属文件夹（多归属）。
@@ -339,8 +409,7 @@ async fn parse_pdf_run(
     };
     let api_key = Settings::load()
         .map_err(|e| e.to_string())?
-        .api_keys
-        .mineru;
+        .mineru_api_key;
     if api_key.is_empty() {
         return Err("未配置 MinerU API Key，请先在设置页填写".into());
     }
@@ -4324,7 +4393,16 @@ mod tests {
     #[test]
     fn effective_settings_turns_off_web_provider() {
         let mut s = Settings::default();
-        s.api_keys.deepseek = "sk-test".into();
+        s.providers.push(crate::settings::ProviderConfig {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_model: "deepseek-chat".to_string(),
+            models: vec![],
+            enabled: true,
+        });
         s.web_search_provider = "auto".into();
         // 开 → 原样
         let on = effective_settings(&s, true);

@@ -44,6 +44,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            commands::add_provider,
+            commands::update_provider,
+            commands::delete_provider,
+            commands::set_active_provider,
             commands::list_papers,
             commands::get_paper,
             commands::get_paper_md,
