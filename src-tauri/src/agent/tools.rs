@@ -985,7 +985,6 @@ mod tests {
             base_url: Some("https://api.deepseek.com".to_string()),
             default_model: "deepseek-chat".to_string(),
             models: vec![],
-            enabled: true,
         });
         let tools = build_tools(&s, Some("p1"), &[]);
         assert!(tools.contains(&ToolKind::WebSearch));
@@ -1019,7 +1018,6 @@ mod tests {
             base_url: Some("https://api.deepseek.com".to_string()),
             default_model: "deepseek-chat".to_string(),
             models: vec![],
-            enabled: true,
         });
         let tools2 = build_feynman_tools(&s);
         assert!(tools2.contains(&ToolKind::WebSearch));

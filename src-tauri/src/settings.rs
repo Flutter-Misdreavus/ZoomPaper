@@ -395,18 +395,8 @@ mod tests {
     }
 
     #[test]
-    fn active_provider_fails_if_disabled() {
+    fn active_provider_fails_if_missing() {
         let mut s = Settings::default();
-        s.providers.push(ProviderConfig {
-            id: "test".to_string(),
-            name: "Test".to_string(),
-            provider_type: "openai-compat".to_string(),
-            api_key: "sk-test".to_string(),
-            base_url: Some("https://api.test.com".to_string()),
-            default_model: "test-model".to_string(),
-            models: vec![],
-            enabled: false,
-        });
         s.active_provider_id = "test".to_string();
 
         assert!(s.active_provider().is_err());

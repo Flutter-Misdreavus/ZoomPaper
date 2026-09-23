@@ -76,6 +76,9 @@ pub enum AgentMsg {
     /// assistant 发起的一组工具调用（可无文本，仅调用）。
     ToolCalls {
         content: Option<String>,
+        /// DeepSeek 思考模式要求后续工具轮次原样回传该字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
         calls: Vec<ToolCallRef>,
     },
     /// 工具执行结果（回喂给模型）。
@@ -270,10 +273,11 @@ impl LlmChat for Llm {
                 api_key,
                 model,
             } => {
+                let body = openai_tools_request_body(base_url, model, messages, tools);
                 let resp = Client::new()
                     .post(format!("{base_url}/chat/completions"))
                     .bearer_auth(api_key)
-                    .json(&openai_body_with_tools(model, messages, tools))
+                    .json(&body)
                     .send()
                     .await
                     .context("调用 OpenAI 兼容接口失败")?;
@@ -375,7 +379,7 @@ async fn stream_openai_compat(
     cancel: Option<&AtomicBool>,
     on_event: &mut (dyn FnMut(StreamEvent) + Send),
 ) -> Result<ChatResponse> {
-    let mut body = openai_body_with_tools(model, messages, tools);
+    let mut body = openai_tools_request_body(base_url, model, messages, tools);
     body["stream"] = serde_json::Value::Bool(true);
     let resp = Client::new()
         .post(format!("{base_url}/chat/completions"))
@@ -757,19 +761,27 @@ fn openai_body_with_tools(model: &str, messages: &[AgentMsg], tools: &[ToolDef])
         .iter()
         .map(|m| match m {
             AgentMsg::Plain(cm) => json!({ "role": cm.role, "content": cm.content }),
-            AgentMsg::ToolCalls { content, calls } => json!({
-                // OpenAI 兼容格式要求 content 字段存在；纯工具轮次用空串
-                "role": "assistant",
-                "content": content.clone().unwrap_or_default(),
-                "tool_calls": calls.iter().map(|c| json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": {
-                        "name": c.name,
-                        "arguments": serde_json::to_string(&c.arguments).unwrap_or_default(),
-                    },
-                })).collect::<Vec<_>>(),
-            }),
+            AgentMsg::ToolCalls { content, reasoning, calls } => {
+                let mut message = json!({
+                    // OpenAI 兼容格式要求 content 字段存在；纯工具轮次用空串
+                    "role": "assistant",
+                    "content": content.clone().unwrap_or_default(),
+                    "tool_calls": calls.iter().map(|c| json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {
+                            "name": c.name,
+                            "arguments": serde_json::to_string(&c.arguments).unwrap_or_default(),
+                        },
+                    })).collect::<Vec<_>>(),
+                });
+                // DeepSeek thinking mode requires the exact reasoning text on later tool turns.
+                // Omit the extension for providers that do not emit it.
+                if let Some(reasoning) = reasoning {
+                    message["reasoning_content"] = serde_json::Value::String(reasoning.clone());
+                }
+                message
+            }
             AgentMsg::ToolResult { call_id, content, .. } => json!({
                 "role": "tool",
                 "tool_call_id": call_id,
@@ -793,6 +805,22 @@ fn openai_body_with_tools(model: &str, messages: &[AgentMsg], tools: &[ToolDef])
     json!({ "model": model, "messages": msgs, "tools": tools })
 }
 
+/// DeepSeek thinking mode requires every earlier assistant reasoning block to be replayed.
+/// Persisted conversations created by older versions do not contain those private blocks,
+/// so tool requests use the provider's explicit non-thinking mode for deterministic replay.
+fn openai_tools_request_body(
+    base_url: &str,
+    model: &str,
+    messages: &[AgentMsg],
+    tools: &[ToolDef],
+) -> serde_json::Value {
+    let mut body = openai_body_with_tools(model, messages, tools);
+    if base_url.contains("api.deepseek.com") && !tools.is_empty() {
+        body["thinking"] = json!({ "type": "disabled" });
+    }
+    body
+}
+
 /// 构造带工具的 Anthropic 请求体（`messages` + `tools`）：system 拆顶层，
 /// assistant 工具轮次拆成 text + tool_use 块，工具结果用 `tool_result` 用户块。
 fn anthropic_body_with_tools(
@@ -813,7 +841,7 @@ fn anthropic_body_with_tools(
         .filter(|m| !matches!(m, AgentMsg::Plain(cm) if cm.role == Role::System))
         .map(|m| match m {
             AgentMsg::Plain(cm) => json!({ "role": cm.role, "content": cm.content }),
-            AgentMsg::ToolCalls { content, calls } => {
+            AgentMsg::ToolCalls { content, calls, .. } => {
                 let mut blocks: Vec<serde_json::Value> = Vec::new();
                 if let Some(t) = content {
                     if !t.is_empty() {
@@ -913,7 +941,6 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".to_string()),
             default_model: "gpt-4o-mini".to_string(),
             models: vec![],
-            enabled: true,
         });
         s.active_provider_id = "openai".to_string();
 
@@ -939,7 +966,6 @@ mod tests {
             base_url: None,
             default_model: "model".to_string(),
             models: vec![],
-            enabled: true,
         });
         s.active_provider_id = "unknown".to_string();
         assert!(Llm::from_settings(&s).is_err());
@@ -970,6 +996,7 @@ mod tests {
             AgentMsg::Plain(msg(Role::User, "hi")),
             AgentMsg::ToolCalls {
                 content: None,
+                reasoning: Some("检索前思考".into()),
                 calls: vec![call("call_1", "search_papers")],
             },
             AgentMsg::ToolResult {
@@ -988,6 +1015,7 @@ mod tests {
         // assistant 工具轮次：content 空串 + tool_calls
         assert_eq!(arr[2]["role"], "assistant");
         assert_eq!(arr[2]["content"], "");
+        assert_eq!(arr[2]["reasoning_content"], "检索前思考");
         assert_eq!(arr[2]["tool_calls"][0]["function"]["name"], "search_papers");
         // arguments 序列化为 JSON 字符串
         assert_eq!(arr[2]["tool_calls"][0]["function"]["arguments"], r#"{"q":"注意力"}"#);
@@ -998,12 +1026,37 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_tool_requests_disable_thinking_for_replayable_history() {
+        let msgs = vec![
+            AgentMsg::Plain(msg(Role::User, "question")),
+            AgentMsg::Plain(msg(Role::Assistant, "an older answer without saved reasoning")),
+        ];
+        let tools = [tool_def("search_papers")];
+        let deepseek = openai_tools_request_body(
+            "https://api.deepseek.com",
+            "deepseek-chat",
+            &msgs,
+            &tools,
+        );
+        assert_eq!(deepseek["thinking"]["type"], "disabled");
+
+        let openai = openai_tools_request_body(
+            "https://api.openai.com/v1",
+            "gpt-4o-mini",
+            &msgs,
+            &tools,
+        );
+        assert!(openai.get("thinking").is_none());
+    }
+
+    #[test]
     fn anthropic_tools_body_splits_system_and_blocks() {
         let msgs = vec![
             AgentMsg::Plain(msg(Role::System, "sys prompt")),
             AgentMsg::Plain(msg(Role::User, "hi")),
             AgentMsg::ToolCalls {
                 content: Some("我先查一下".into()),
+                reasoning: None,
                 calls: vec![call("tu_1", "get_outline")],
             },
             AgentMsg::ToolResult {
@@ -1092,6 +1145,7 @@ mod tests {
             AgentMsg::Plain(msg(Role::System, "sys")),
             AgentMsg::ToolCalls {
                 content: None,
+                reasoning: Some("先检索".into()),
                 calls: vec![call("c1", "search_papers")],
             },
             AgentMsg::ToolResult {
@@ -1108,8 +1162,9 @@ mod tests {
             _ => panic!("应为 Plain"),
         }
         match &back[1] {
-            AgentMsg::ToolCalls { content, calls } => {
+            AgentMsg::ToolCalls { content, reasoning, calls } => {
                 assert!(content.is_none());
+                assert_eq!(reasoning.as_deref(), Some("先检索"));
                 assert_eq!(calls[0].name, "search_papers");
                 assert_eq!(calls[0].arguments["q"], "注意力");
             }
@@ -1155,8 +1210,9 @@ mod tests {
     #[test]
     fn openai_sse_bad_arguments_falls_back_to_null() {
         let mut p = OpenAiStreamParser::default();
-        p.push_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"x","arguments":"not-json"}}]}}]}"#)
-            .is_none();
+        assert!(p
+            .push_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"x","arguments":"not-json"}}]}}]}"#)
+            .is_none());
         let resp = p.finish().unwrap();
         assert_eq!(resp.tool_calls[0].arguments, serde_json::Value::Null);
     }
