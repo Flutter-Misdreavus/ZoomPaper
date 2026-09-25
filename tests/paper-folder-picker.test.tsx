@@ -15,9 +15,9 @@ const folders: Folder[] = [
   { id: "folder-b", name: "实验", parent_id: null, color: "green", tags: [], created_at: 2 },
 ];
 
-function paper(folderIds: string[]): Paper {
+function paper(folderIds: string[], id = "paper-1"): Paper {
   return {
-    id: "paper-1",
+    id,
     title: "Paper",
     authors: null,
     abstract: null,
@@ -79,5 +79,30 @@ describe("PaperFolderPicker", () => {
     expect(first.getAttribute("aria-checked")).toBe("true");
     expect(addPapersToFolder).toHaveBeenCalledWith(["paper-1"], "folder-b");
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows mixed membership and adds only papers missing from the folder", async () => {
+    vi.mocked(addPapersToFolder).mockResolvedValue(1);
+    const existing = paper(["folder-a"], "paper-1");
+    const missing = paper([], "paper-2");
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PaperFolderPicker
+        open
+        onOpenChange={vi.fn()}
+        papers={[existing, missing]}
+        folders={folders}
+        onChanged={onChanged}
+        onError={vi.fn()}
+      />
+    );
+
+    const checkbox = screen.getByRole("checkbox", { name: /方法/ });
+    expect(checkbox.getAttribute("aria-checked")).toBe("mixed");
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(addPapersToFolder).toHaveBeenCalledWith(["paper-2"], "folder-a"));
+    expect(onChanged).toHaveBeenCalledOnce();
   });
 });

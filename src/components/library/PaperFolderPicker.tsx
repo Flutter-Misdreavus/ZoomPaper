@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
+import { Check, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { buildFolderTree, type FolderNode } from "@/lib/folders";
@@ -40,9 +40,14 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
 
   async function toggle(node: FolderNode) {
     if (busy) return;
-    setBusy(true);
-    const ids = papers.map((p) => p.id);
     const target = checked(node.folder.id);
+    const ids = papers
+      .filter((paper) => target
+        ? paper.folder_ids.includes(node.folder.id)
+        : !paper.folder_ids.includes(node.folder.id))
+      .map((paper) => paper.id);
+    if (ids.length === 0) return;
+    setBusy(true);
     try {
       if (target) {
         await removePapersFromFolder(ids, node.folder.id);
@@ -84,9 +89,11 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
             )}
             style={isChecked ? { backgroundColor: c.swatch } : undefined}
           >
-            {(isChecked || indeterminate(node.folder.id)) && (
-              <Check className="h-3 w-3" strokeWidth={3} />
-            )}
+            {isChecked
+              ? <Check className="h-3 w-3" strokeWidth={3} />
+              : indeterminate(node.folder.id)
+                ? <Minus className="h-3 w-3 text-zp-secondary" strokeWidth={3} />
+                : null}
           </span>
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full"
