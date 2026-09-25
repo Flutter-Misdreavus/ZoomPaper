@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 // @ts-expect-error 浏览器扩展保持原生 JavaScript，可直接由 Chrome 加载。
 import { detectPaper } from "../browser-extension/detector.js";
 
 describe("browser extension paper detection", () => {
+  it("keeps a stable extension identity across release folders", () => {
+    const manifest = JSON.parse(readFileSync("browser-extension/manifest.json", "utf8"));
+    const digest = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest().subarray(0, 16);
+    const id = [...digest].map((byte) => `${String.fromCharCode(97 + (byte >> 4))}${String.fromCharCode(97 + (byte & 15))}`).join("");
+    expect(id).toBe("fjmflfompjgilhdknkpogjhpjeanndbn");
+  });
+
   it("uses standard academic metadata", () => {
     expect(detectPaper({
       pageUrl: "https://aclanthology.org/2026.acl-long.8/",

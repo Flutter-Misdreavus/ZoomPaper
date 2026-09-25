@@ -10,6 +10,10 @@
 4. 选择本仓库的 `browser-extension` 文件夹。
 5. 首次使用时，浏览器会询问是否打开 ZoomPaper，请允许。
 
+## 更新
+
+从 `v0.2.8` 起扩展 ID 固定。解压新版压缩包后，在扩展管理页重新加载 `ZoomPaper Plus Connector` 即可覆盖升级，收藏栏位置和扩展权限会保留。`v0.2.7` 及更早版本需完成一次迁移：移除旧扩展并加载新版目录；后续不再重复此步骤。
+
 ## 支持范围
 
 - 支持 `citation_*`、Dublin Core、Highwire、JSON-LD 和 `application/pdf` 等通用学术元数据。
