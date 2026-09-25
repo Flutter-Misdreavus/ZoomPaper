@@ -9,7 +9,7 @@ import { AskPage } from "@/pages/AskPage";
 import { TimelinePage } from "@/pages/TimelinePage";
 import { NavRail, type NavItem } from "@/components/NavRail";
 import { BrowserImportNotice, type BrowserImportPhase } from "@/components/BrowserImportNotice";
-import { importPdfUrl, parsePdf } from "@/lib/api";
+import { importBrowserDownload, importPdfUrl, parsePdf } from "@/lib/api";
 
 type View =
   | { name: "library" }
@@ -44,7 +44,8 @@ function App() {
         }
         if (link.protocol !== "zoompaper:" || link.hostname !== "import") continue;
         const pdfUrl = link.searchParams.get("pdf");
-        if (!pdfUrl) continue;
+        const localFile = link.searchParams.get("file");
+        if (!pdfUrl && !localFile) continue;
         const title = link.searchParams.get("title")?.trim() || "浏览器中的论文";
         const requestId = link.searchParams.get("request") || rawLink;
         if (handledLinks.current.has(requestId)) continue;
@@ -55,7 +56,9 @@ function App() {
           setView({ name: "library" });
           setBrowserImport({ phase: "downloading", title, message: "正在安全下载 PDF…" });
           try {
-            const paper = await importPdfUrl(pdfUrl, title);
+            const paper = localFile
+              ? await importBrowserDownload(localFile, title)
+              : await importPdfUrl(pdfUrl!, title);
             if (disposed) return;
             setLibraryRefreshSignal((value) => value + 1);
             setBrowserImport({ phase: "parsing", title: paper.title, message: "已保存，正在提取正文与元数据…" });

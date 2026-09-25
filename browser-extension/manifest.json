@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyYEE0BO/kGT+c7K510qHK+SumVDA4YOIc9IyY6rDZll6j2hVq8UoxURwxXyuFhFcfwZoRMbAL51DIanT/hO+RnPqAxB5LnoydYPZiaw6N8SH7q6Pt8XGaHx2Lkj89HlJo0PQpn5OroDH7fxJBhiFQ8wtucnND4hVhOruigKLOlK1KU6r+dHWoabFEg3ZMOuwF+0M4udF1bSzrsxNPqxtuj9tuTLDvOh8QAwhr1+HM54yvkZo5137yE0k8gWWbExRjwEMp8bpzsr/rXH7PBAOHMMODXc7KIz0A8Y/LKx9Obn9xLP3GDJJqA06H13xcf+gJwMsKGC212MZZAhCh9BUKQIDAQAB",
   "description": "从论文网页或 PDF 链接一键加入 ZoomPaper。",
-  "permissions": ["activeTab", "contextMenus", "notifications", "scripting"],
+  "permissions": ["activeTab", "contextMenus", "downloads", "notifications", "scripting"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

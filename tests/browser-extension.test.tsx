@@ -3,8 +3,18 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 // @ts-expect-error 浏览器扩展保持原生 JavaScript，可直接由 Chrome 加载。
 import { detectPaper } from "../browser-extension/detector.js";
+// @ts-expect-error 浏览器扩展保持原生 JavaScript，可直接由 Chrome 加载。
+import { browserDownloadFilename, requiresBrowserSessionDownload } from "../browser-extension/download.js";
 
 describe("browser extension paper detection", () => {
+  it("uses the authenticated browser download for OpenReview only", () => {
+    expect(requiresBrowserSessionDownload("https://openreview.net/pdf?id=7X91AAKL5B")).toBe(true);
+    expect(requiresBrowserSessionDownload("https://arxiv.org/pdf/2601.12345")).toBe(false);
+    expect(browserDownloadFilename("A / Paper: title?", "request-123")).toBe(
+      "ZoomPaper Imports/A Paper title-request-123.pdf",
+    );
+  });
+
   it("keeps a stable extension identity across release folders", () => {
     const manifest = JSON.parse(readFileSync("browser-extension/manifest.json", "utf8"));
     const digest = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest().subarray(0, 16);

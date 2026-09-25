@@ -6,7 +6,7 @@ ZoomPaper Connector 采用三层识别方式：标准学术元数据、稳定站
 
 | 类别 | 网站 | 当前方式 |
 | --- | --- | --- |
-| 预印本与开放评审 | arXiv、OpenReview | 内置稳定规则 + 页面元数据 |
+| 预印本与开放评审 | arXiv、OpenReview | 内置稳定规则；OpenReview 使用浏览器验证会话下载 |
 | NLP | ACL Anthology | 内置稳定规则 + `citation_pdf_url` |
 | 计算机视觉 | CVF Open Access（CVPR / ICCV / WACV） | 内置稳定规则 |
 | 机器学习 | NeurIPS Proceedings、PMLR、JMLR | 内置规则或页面 PDF 入口 |
@@ -19,12 +19,12 @@ ZoomPaper Connector 采用三层识别方式：标准学术元数据、稳定站
 
 ## 无法保证自动下载的情况
 
-- 需要学校代理、机构订阅、验证码或单点登录的 PDF。当前由 ZoomPaper 桌面端下载，不会复制浏览器的登录 Cookie。
+- 需要学校代理、机构订阅、验证码或单点登录的 PDF。OpenReview 已使用浏览器会话下载；其他受保护网站仍可能需要先手动下载 PDF。
 - 只有摘要、没有公开 PDF 的论文页。
 - 页面用临时签名或脚本生成下载地址，且点击前没有把地址写入网页。
 - 搜索结果页包含多篇论文时，扩展不会猜测用户要哪一篇；应在目标 PDF 链接上右键，或先进入论文详情页。
 
-这类页面仍可先在浏览器下载 PDF，再通过 ZoomPaper 的本地导入功能加入。后续若增加登录态下载，将采用类似 Zotero Connector 的本机通信通道，并明确说明所需的网站读取权限。
+这类页面仍可先在浏览器下载 PDF，再通过 ZoomPaper 的本地导入功能加入。
 
 ## 维护原则
 

@@ -53,6 +53,7 @@ pub fn run() {
             commands::get_paper,
             commands::get_paper_md,
             commands::import_pdf,
+            commands::import_browser_download,
             commands::import_pdf_url,
             commands::parse_pdf,
             commands::delete_paper,
