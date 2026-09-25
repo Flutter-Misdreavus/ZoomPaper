@@ -77,7 +77,7 @@ export function Library({ onOpenPaper }: Props) {
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerPapers, setPickerPapers] = useState<Paper[]>([]);
+  const [pickerPaperIds, setPickerPaperIds] = useState<string[]>([]);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<Folder | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<Paper[] | null>(null);
 
@@ -146,6 +146,12 @@ export function Library({ onOpenPaper }: Props) {
     () => papers.filter((p) => selected.has(p.id)),
     [papers, selected]
   );
+  // 归属弹窗只保存稳定的 id，并始终从最新 papers 派生对象。否则刷新后弹窗仍会
+  // 持有旧 folder_ids，造成后端已加入文件夹、勾选状态却不更新。
+  const pickerPapers = useMemo(() => {
+    const ids = new Set(pickerPaperIds);
+    return papers.filter((paper) => ids.has(paper.id));
+  }, [papers, pickerPaperIds]);
 
   const isFolderView = view.type === "folder";
   const activeFolder = isFolderView ? folders.find((f) => f.id === view.folderId) : undefined;
@@ -434,12 +440,12 @@ export function Library({ onOpenPaper }: Props) {
       selected.has(paper.id) && selected.size > 0
         ? papers.filter((p) => selected.has(p.id))
         : [paper];
-    setPickerPapers(targets);
+    setPickerPaperIds(targets.map((target) => target.id));
     setPickerOpen(true);
   }
 
   function handleBulkPickFolder() {
-    setPickerPapers(selectedPapers);
+    setPickerPaperIds(selectedPapers.map((paper) => paper.id));
     setPickerOpen(true);
   }
 
@@ -613,7 +619,10 @@ export function Library({ onOpenPaper }: Props) {
         onOpenChange={setPickerOpen}
         papers={pickerPapers}
         folders={folders}
-        onChanged={() => void refresh()}
+        onChanged={async () => {
+          await refresh();
+          clear();
+        }}
         onError={setError}
       />
 
