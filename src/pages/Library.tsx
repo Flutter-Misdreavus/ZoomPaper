@@ -619,7 +619,10 @@ export function Library({ onOpenPaper }: Props) {
         onOpenChange={setPickerOpen}
         papers={pickerPapers}
         folders={folders}
-        onChanged={refresh}
+        onChanged={async () => {
+          await refresh();
+          clear();
+        }}
         onError={setError}
       />
 
