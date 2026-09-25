@@ -20,6 +20,25 @@ function looksLikePdfEndpoint(value) {
   return isPdfUrl(value) || /\/pdf(?:\/|\?|$)|download.?pdf|pdfdirect|[?&](?:format|type)=pdf(?:&|$)/i.test(value || "");
 }
 
+/** Convert a known paper landing page to its stable PDF endpoint. */
+function landingPagePdf(value) {
+  try {
+    const url = new URL(value);
+    if (["arxiv.org", "export.arxiv.org"].includes(url.hostname) && url.pathname.startsWith("/abs/")) {
+      return `${url.origin}/pdf/${url.pathname.slice(5)}`;
+    }
+    if (url.hostname === "openreview.net" && url.pathname === "/forum" && url.searchParams.has("id")) {
+      return `${url.origin}/pdf?id=${encodeURIComponent(url.searchParams.get("id"))}`;
+    }
+    if (url.hostname === "aclanthology.org" && !isPdfUrl(url.href) && /^\/[^/]+\/$/.test(url.pathname)) {
+      return `${url.origin}${url.pathname.replace(/\/$/, "")}.pdf`;
+    }
+  } catch {
+    // Ignore malformed candidate URLs.
+  }
+  return null;
+}
+
 const SITE_ADAPTERS = [
   {
     id: "acl-anthology",
@@ -49,7 +68,7 @@ const SITE_ADAPTERS = [
 ];
 
 function candidateScore(link) {
-  const description = `${link.text || ""} ${link.title || ""} ${link.rel || ""} ${link.type || ""}`;
+  const description = `${link.text || ""} ${link.title || ""} ${link.context || ""} ${link.rel || ""} ${link.type || ""}`;
   const href = link.href || "";
   if (/checklist|supplement|appendix|attachment|slides|poster|code/i.test(`${description} ${href}`)) return -100;
   let score = 0;
@@ -58,6 +77,8 @@ function candidateScore(link) {
   if (/pdf|full.?text|download/i.test(description)) score += 4;
   if (isPdfUrl(href)) score += 5;
   if (looksLikePdfEndpoint(href)) score += 3;
+  if (landingPagePdf(href)) score += 5;
+  if (/pre-?print|paper|full.?text/i.test(description)) score += 3;
   return score;
 }
 
@@ -72,7 +93,7 @@ export function detectPaper({
   const page = absoluteUrl(pageUrl, pageUrl);
   const selectedLink = absoluteUrl(linkUrl, pageUrl);
   const citation = absoluteUrl(citationPdfUrl, pageUrl);
-  let pdfUrl = isPdfUrl(selectedLink) ? selectedLink : citation;
+  let pdfUrl = isPdfUrl(selectedLink) ? selectedLink : landingPagePdf(selectedLink) || citation;
 
   if (!pdfUrl) {
     pdfUrl = metaPdfUrls
@@ -97,7 +118,7 @@ export function detectPaper({
       .map((link) => ({ ...link, score: candidateScore(link) }))
       .filter((link) => link.score >= 5)
       .sort((a, b) => b.score - a.score);
-    pdfUrl = candidates[0]?.href || null;
+    pdfUrl = candidates[0] ? landingPagePdf(candidates[0].href) || candidates[0].href : null;
   }
 
   return pdfUrl ? { pdfUrl, title: title?.trim() || "未命名论文", sourceUrl: page } : null;

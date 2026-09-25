@@ -50,6 +50,8 @@ AGENTS.md
 
 # 本地测试用 PDF
 test-paper.pdf
+ZoomPaper-Connector_*.zip
+ZoomPaper-Connector_*/
 
 # fastembed 运行时缓存（可能出现在项目目录）
 .fastembed_cache/

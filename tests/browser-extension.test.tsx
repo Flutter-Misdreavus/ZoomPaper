@@ -70,4 +70,29 @@ describe("browser extension paper detection", () => {
       metaPdfUrls: ["/download/fulltext?format=pdf"],
     })?.pdfUrl).toBe("https://example.org/download/fulltext?format=pdf");
   });
+
+  it("follows a Researchr preprint landing page to the actual arXiv PDF", () => {
+    const sourceUrl = "https://conf.researchr.org/details/icse-2026/research/191/paper";
+    expect(detectPaper({
+      pageUrl: sourceUrl,
+      title: "Minimizing Breaking Changes",
+      links: [{
+        href: "https://arxiv.org/abs/2511.06762",
+        text: "https://arxiv.org/abs/2511.06762",
+        context: "Link to Preprint https://arxiv.org/abs/2511.06762",
+      }],
+    })).toEqual({
+      pdfUrl: "https://arxiv.org/pdf/2511.06762",
+      title: "Minimizing Breaking Changes",
+      sourceUrl,
+    });
+  });
+
+  it("resolves an arXiv landing link when it is the right-click target", () => {
+    expect(detectPaper({
+      pageUrl: "https://conf.researchr.org/details/icse-2026/research/191/paper",
+      linkUrl: "https://arxiv.org/abs/2511.06762",
+      title: "Minimizing Breaking Changes",
+    })?.pdfUrl).toBe("https://arxiv.org/pdf/2511.06762");
+  });
 });

@@ -14,6 +14,7 @@
 
 - 支持 `citation_*`、Dublin Core、Highwire、JSON-LD 和 `application/pdf` 等通用学术元数据。
 - 内置 ACL Anthology、arXiv、OpenReview、CVF Open Access、NeurIPS 的稳定 URL 识别。
+- Researchr 等会议日程页只有 arXiv / OpenReview 预印本入口时，会自动解析到实际 PDF，同时保留会议页面作为论文来源。
 - 支持直接打开的 PDF，以及在 PDF 下载链接上右键导入。
 - ACM DL、IEEE Xplore、SpringerLink、ScienceDirect、USENIX、PMLR/JMLR 等网站会通过页面元数据和下载入口识别，并排除 checklist、supplement、slides 等附件。
 

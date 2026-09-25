@@ -13,6 +13,7 @@ ZoomPaper Connector 采用三层识别方式：标准学术元数据、稳定站
 | 系统与安全 | USENIX、NDSS 等公开论文页 | 页面学术元数据与 PDF 入口 |
 | 出版商 | ACM Digital Library、IEEE Xplore、SpringerLink、ScienceDirect、Wiley、Taylor & Francis、SAGE | 标准元数据与 PDF 下载入口 |
 | 会议与开放仓库 | AAAI、IJCAI、CEUR-WS、Dagstuhl / LIPIcs、HAL、Zenodo | 标准元数据与 PDF 入口 |
+| 会议日程 | Researchr | 自动跟随页面中的 arXiv / OpenReview 预印本入口 |
 | 检索入口 | DBLP、Semantic Scholar、Google Scholar、Papers with Code | 在结果中的 PDF 链接上右键；进入论文详情页后也可识别 |
 | 任意直接 PDF | HTTPS PDF 页面或链接 | 文件地址识别 |
 
