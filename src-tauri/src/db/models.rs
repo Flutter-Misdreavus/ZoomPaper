@@ -7,9 +7,13 @@ use serde::{Deserialize, Serialize};
 pub struct Paper {
     pub id: String,
     pub title: String,
+    /// Cached Simplified Chinese title generated after parsing.
+    pub title_zh: Option<String>,
     pub authors: Option<String>,
     #[serde(rename = "abstract")]
     pub abstract_text: Option<String>,
+    /// Cached Simplified Chinese abstract generated after parsing.
+    pub abstract_zh: Option<String>,
     pub pdf_path: String,
     pub md_path: String,
     pub blog_md_path: Option<String>,
@@ -23,12 +27,20 @@ pub struct Paper {
     pub starred: bool,
     /// 最近一次标记已读时间（epoch 秒）；None = 未读完/已取消已读。
     pub finished_at: Option<i64>,
+    /// 浏览器扩展导入时的论文落地页。
+    pub source_url: Option<String>,
+    /// 论文正文或来源页中识别到的 GitHub 仓库地址。
+    pub github_url: Option<String>,
+    /// 发表期刊或会议（如 ACL 2026、Nature、arXiv）。
+    pub venue: Option<String>,
+    /// Moved to trash at this epoch second; None means visible in the library.
+    pub deleted_at: Option<i64>,
+    /// Source website favicon captured by the browser connector.
+    pub source_icon_url: Option<String>,
     /// 累计阅读时长（秒），由 reading_sessions 聚合填充。
     pub total_read_seconds: i64,
     /// 所属文件夹 id 列表（多归属；空数组 = 未分类）。由 list/get 聚合填充。
     pub folder_ids: Vec<String>,
-    /// 论文中的 GitHub 仓库链接；None = 尚未扫描，Some("") = 已扫描但没有
-    pub github_url: Option<String>,
 }
 
 /// 计划条目：指派论文清单中的一篇论文，带条目级截止日期（提醒事项式）。

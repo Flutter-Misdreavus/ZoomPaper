@@ -232,7 +232,11 @@ pub fn build_grade_all_messages(
             user.push_str(&format!(
                 "- 第 {} 题：{}（读者回答 {}，正确答案 {}）\n  题目：{}\n",
                 q.id,
-                if g.correct == Some(true) { "正确" } else { "错误" },
+                if g.correct == Some(true) {
+                    "正确"
+                } else {
+                    "错误"
+                },
                 user_answer,
                 q.answer,
                 q.question

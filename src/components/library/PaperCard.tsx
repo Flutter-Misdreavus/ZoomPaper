@@ -1,15 +1,14 @@
 /**
  * 论文卡片（PaperCard）：状态驱动极简卡片。
- * 结构：复选框 + 状态圆点 + 标题(2行截断) + 作者(1行) + 解析 pill + 星标 + 更多。
- * 交互：单击主体无操作（不进入选择）；复选框为选择唯一入口（toggle）；
- * 双击主体打开；星标独立响应不触发选择；拖拽未选中卡片时自动并入选择。
+ * 结构：状态圆点 + 标题(2行截断) + 期刊/会议 + 解析状态 + 星标 + 更多。
+ * 长按进入多选模式后显示复选框；双击打开论文。
  */
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { useMemo, useRef, useState } from "react";
 import { CalendarClock, Check, MoreHorizontal, Star } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { cn, parseProgressPercent } from "@/lib/utils";
+import { cn, displayPaperTitle, parseProgressPercent } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { PAPER_DRAG_MIME } from "@/lib/folders";
 import type { Folder, Paper, ParseProgress, ReadingPlan, ReadingStatus } from "@/lib/api";
@@ -20,20 +19,16 @@ import {
   type PlanMenuPrimitives,
 } from "./planMenu";
 import { RenameInput } from "./RenameInput";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
+import { useLongPressSelection } from "@/hooks/useLongPressSelection";
+import { VenueBadge } from "./VenueBadge";
 
-/** 解析状态 pill：已解析深色填充，其余弱化 */
+/** 解析状态作为次要元信息显示；失败时保留警示色。 */
 const PARSE_STYLE: Record<string, { label: string; className: string }> = {
-  ready: { label: "已解析", className: "bg-zp-primary text-white" },
-  parsing: { label: "解析中…", className: "bg-zp-surface-hover text-zp-tertiary" },
-  unparsed: { label: "未解析", className: "bg-zp-surface-hover text-zp-tertiary" },
-  failed: { label: "解析失败", className: "bg-red-500/10 text-red-600" },
-};
-
-/** 阅读状态圆点：未读=实心黑 / 在读=实心灰 / 已读=浅灰描边 */
-const STATUS_DOT: Record<ReadingStatus, string> = {
-  unread: "bg-zp-primary",
-  reading: "bg-zp-tertiary",
-  read: "border border-zp-border",
+  ready: { label: "已解析", className: "text-zp-quaternary" },
+  parsing: { label: "解析中…", className: "text-zp-secondary" },
+  unparsed: { label: "未解析", className: "text-zp-quaternary" },
+  failed: { label: "解析失败", className: "text-red-600 dark:text-red-400" },
 };
 
 function readingStatusOf(s: string): ReadingStatus {
@@ -46,14 +41,17 @@ export interface PaperCardProps {
   folders: Folder[];
   selected: boolean;
   selectedIds: ReadonlySet<string>;
-  /** 选择模式：任意卡片被选中时，所有复选框常驻可见 */
+  /** 选择模式中显示复选框 */
   selectionMode: boolean;
+  onLongPress: (paperId: string) => void;
   isRenaming: boolean;
-  /** 解析进度；非 null 表示该论文正在解析（用于进度条与按钮禁用） */
-  progress: ParseProgress | null;
+  parsing: boolean;
+  progress?: ParseProgress | null;
   /** 当前处于某文件夹视图时的 folderId；null = 全部/未分类视图 */
   currentFolderId: string | null;
   onToggle: (paperId: string) => void;
+  onSelectionDragStart: (paperId: string, selected: boolean) => void;
+  onSelectionDragEnter: (paperId: string) => void;
   onOpen: (paperId: string) => void;
   onStartRename: (paper: Paper) => void;
   onCommitRename: (paper: Paper, title: string) => void;
@@ -61,6 +59,8 @@ export interface PaperCardProps {
   /** 打开归属面板；未选中该论文时以它为目标 */
   onPickFolder: (paper: Paper) => void;
   onSetStatus: (paper: Paper, status: ReadingStatus) => void;
+  onBulkSetStatus: (status: ReadingStatus) => void;
+  onBulkDelete: () => void;
   /** 全部阅读计划（卡片据此计算所在计划与目标计划） */
   plans: ReadingPlan[];
   /** 快捷加入/更新日期：planId 为 null 时由 Library 自动新建计划 */
@@ -83,16 +83,22 @@ export function PaperCard(props: PaperCardProps) {
     selected,
     selectedIds,
     selectionMode,
+    onLongPress,
     isRenaming,
+    parsing,
     progress,
     currentFolderId,
     onToggle,
+    onSelectionDragStart,
+    onSelectionDragEnter,
     onOpen,
     onStartRename,
     onCommitRename,
     onCancelRename,
     onPickFolder,
     onSetStatus,
+    onBulkSetStatus,
+    onBulkDelete,
     plans,
     onPlanQuickAdd,
     onPlanRemove,
@@ -105,22 +111,22 @@ export function PaperCard(props: PaperCardProps) {
   } = props;
 
   const st = PARSE_STYLE[paper.parse_status] ?? PARSE_STYLE.unparsed;
+  const percentRef = useRef(0);
+  if (!progress) percentRef.current = 0;
+  else percentRef.current = Math.max(percentRef.current, parseProgressPercent(progress));
   const status = readingStatusOf(paper.reading_status);
   const reduceMotion = useReducedMotion();
-  // 进度条百分比：阶段推进单调不回退；progress 清空（解析结束）时归零
-  const percentRef = useRef(0);
-  if (progress == null) {
-    percentRef.current = 0;
-  } else {
-    percentRef.current = Math.max(percentRef.current, parseProgressPercent(progress));
-  }
-  const parsePercent = percentRef.current;
+  const longPress = useLongPressSelection((paperId) => {
+    onLongPress(paperId);
+    onSelectionDragStart(paperId, selected);
+  });
   // 归属文件夹（多归属；按 id 解析，脏数据过滤）
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const paperFolders = paper.folder_ids
     .map((id) => folderById.get(id))
     .filter((f): f is Folder => Boolean(f));
 
+  const useBulkActions = selectionMode && selected;
   const menuActions: PaperMenuActions = {
     onOpen: () => onOpen(paper.id),
     onRename: () => onStartRename(paper),
@@ -128,9 +134,9 @@ export function PaperCard(props: PaperCardProps) {
     onRemoveFromCurrentFolder: currentFolderId
       ? () => onRemoveFromCurrentFolder(paper)
       : undefined,
-    onSetStatus: (s) => onSetStatus(paper, s),
+    onSetStatus: (s) => useBulkActions ? onBulkSetStatus(s) : onSetStatus(paper, s),
     currentStatus: status,
-    onDelete: () => onDelete(paper),
+    onDelete: () => useBulkActions ? onBulkDelete() : onDelete(paper),
   };
 
   // ---------- 阅读计划子菜单（提醒事项式快捷定日期） ----------
@@ -169,8 +175,9 @@ export function PaperCard(props: PaperCardProps) {
     status !== "read" && currentDue != null ? dueBadge(currentDue, false) : null;
 
   function handleDragStart(e: React.DragEvent) {
+    longPress.cancel();
     const ids = selected ? [...selectedIds] : [paper.id];
-    if (!selected) onToggle(paper.id);
+    if (!selected) onLongPress(paper.id);
     e.dataTransfer.setData(PAPER_DRAG_MIME, JSON.stringify(ids));
     e.dataTransfer.effectAllowed = "copy";
   }
@@ -186,16 +193,28 @@ export function PaperCard(props: PaperCardProps) {
           >
             <div
               draggable
+              {...longPress.bind(paper.id)}
+              onContextMenu={(event) => { if (longPress.suppressContextMenu(paper.id)) event.preventDefault(); }}
               onDragStart={handleDragStart}
               tabIndex={0}
               role="button"
+              data-paper-item
               aria-label={paper.title}
-              // 单击主体无操作：选择只通过复选框进入，打开只通过双击 / Enter
-              onDoubleClick={() => onOpen(paper.id)}
+              onClick={(event) => {
+                if (longPress.consumeClick(paper.id)) { event.preventDefault(); event.stopPropagation(); return; }
+                if (selectionMode) onToggle(paper.id);
+              }}
+              onDoubleClick={() => { if (!selectionMode) onOpen(paper.id); }}
+              onPointerEnter={() => { if (selectionMode) onSelectionDragEnter(paper.id); }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  onOpen(paper.id);
+                  if (selectionMode) onToggle(paper.id);
+                  else onOpen(paper.id);
+                } else if (e.key === " " && !e.repeat) {
+                  e.preventDefault();
+                  if (selectionMode) onToggle(paper.id);
+                  else onLongPress(paper.id);
                 }
               }}
               className={cn(
@@ -208,28 +227,31 @@ export function PaperCard(props: PaperCardProps) {
             >
               {/* header：复选框 + 状态圆点 + 标题 + 星标/更多 */}
               <div className="flex items-start gap-2">
-                <button
+                {selectionMode && <button
                   type="button"
                   aria-label={selected ? "取消选择" : "选择"}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0 || !e.isPrimary) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onSelectionDragStart(paper.id, selected);
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onToggle(paper.id);
+                    if (e.detail === 0) onToggle(paper.id);
                   }}
                   className={cn(
-                    "mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-all",
+                    "mt-0.5 flex h-[18px] w-[18px] touch-none shrink-0 items-center justify-center rounded-[5px] border transition-all",
                     selected
                       ? "border-zp-primary bg-zp-primary text-white opacity-100"
                       : "border-zp-border bg-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100 dark:bg-zp-surface",
-                    selectionMode && "opacity-100"
+                    "opacity-100"
                   )}
                 >
                   {selected && <Check className="h-3 w-3" strokeWidth={3} />}
-                </button>
+                </button>}
 
-                <span
-                  className={cn("mt-[7px] h-2 w-2 shrink-0 rounded-full", STATUS_DOT[status])}
-                  title={{ unread: "未读", reading: "在读", read: "已读" }[status]}
-                />
+                <VenueBadge venue={paper.venue} sourceUrl={paper.source_url} iconUrl={paper.source_icon_url} status={status} />
 
                 <div className="min-w-0 flex-1">
                   {isRenaming ? (
@@ -240,17 +262,16 @@ export function PaperCard(props: PaperCardProps) {
                       onCancel={onCancelRename}
                     />
                   ) : (
-                    <h3 className="line-clamp-2 text-[15px] leading-[1.4] font-medium text-zp-primary">
-                      {paper.title}
+                    <h3 className={cn("line-clamp-2 text-[15px] leading-[1.4]", status === "unread" ? "font-semibold text-zp-primary" : status === "read" ? "font-normal text-zp-tertiary" : "font-medium text-zp-primary")}>
+                      {displayPaperTitle(paper.title)}
                     </h3>
                   )}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-0.5">
                   {/* 星标：独立响应，不触发选择 */}
-                  <button
+                  <IconTooltip label={paper.starred ? "取消星标" : "添加星标"}><button
                     type="button"
-                    title={paper.starred ? "取消星标" : "添加星标"}
                     aria-label={paper.starred ? "取消星标" : "添加星标"}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -267,15 +288,15 @@ export function PaperCard(props: PaperCardProps) {
                       className={cn("h-[18px] w-[18px]", paper.starred && "fill-current")}
                       strokeWidth={1.8}
                     />
-                  </button>
+                  </button></IconTooltip>
 
                   {/* ⋯ 更多菜单（与右键菜单同构） */}
+                  <IconTooltip label="更多操作">
                   <MenuPrimitive.Root>
                     <MenuPrimitive.Trigger
                       render={
                         <button
                           type="button"
-                          title="更多操作"
                           aria-label="更多操作"
                           className="pressable flex h-7 w-7 items-center justify-center rounded-full text-zp-quaternary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-zp-surface-hover hover:text-zp-primary focus-visible:opacity-100"
                           onClick={(e) => e.stopPropagation()}
@@ -295,6 +316,7 @@ export function PaperCard(props: PaperCardProps) {
                           <PaperMenuItems
                             Item={MenuPrimitive.Item}
                             actions={menuActions}
+                            selectionMode={selectionMode}
                             planMenuSlot={renderPlanSubmenu(
                               MenuPrimitive as unknown as PlanMenuPrimitives,
                             )}
@@ -303,21 +325,24 @@ export function PaperCard(props: PaperCardProps) {
                       </MenuPrimitive.Positioner>
                     </MenuPrimitive.Portal>
                   </MenuPrimitive.Root>
+                  </IconTooltip>
                 </div>
               </div>
 
-              {/* 作者：单行截断 */}
-              {paper.authors && (
+              {/* 期刊 / 会议：单行截断 */}
+              {paper.venue && (
                 <p className="truncate pl-[42px] text-[13px] leading-[1.5] text-zp-tertiary">
-                  {paper.authors}
+                  {paper.venue}
                 </p>
               )}
 
-              {/* footer：解析状态 pill + 归属文件夹 pill（最多 3 个，点击跳转） */}
+              {progress && <div role="progressbar" aria-valuenow={Math.round(percentRef.current)} aria-valuemin={0} aria-valuemax={100} aria-label="解析进度" className="ml-[42px] mt-2 h-1 overflow-hidden rounded-full bg-zp-surface-hover"><div className="h-full rounded-full bg-primary/65 transition-[width] duration-300" style={{ width: `${percentRef.current}%` }} /></div>}
+
+              {/* footer：低强调的解析状态 + 归属文件夹（最多 3 个，点击跳转） */}
               <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-[42px]">
                 <span
                   className={cn(
-                    "inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] leading-[1.3] font-medium",
+                    "inline-flex h-5 items-center text-[11px] leading-none",
                     st.className
                   )}
                 >
@@ -342,14 +367,14 @@ export function PaperCard(props: PaperCardProps) {
                 {paper.parse_status !== "ready" && (
                   <button
                     type="button"
-                    disabled={progress != null}
+                    disabled={parsing}
                     onClick={(e) => {
                       e.stopPropagation();
                       void onParse(paper.id);
                     }}
                     className="text-[11px] text-zp-quaternary underline-offset-2 transition-colors hover:text-zp-primary hover:underline disabled:opacity-50"
                   >
-                    {progress != null
+                    {parsing
                       ? "解析中…"
                       : paper.parse_status === "failed"
                         ? "重新解析"
@@ -383,16 +408,6 @@ export function PaperCard(props: PaperCardProps) {
                   </span>
                 )}
               </div>
-
-              {/* 解析进度条：阶段推进单调前进，解析结束随 progress 清空而消失 */}
-              {progress && (
-                <div className="mt-2 h-1 overflow-hidden rounded-full bg-zp-surface-hover">
-                  <div
-                    className="h-full rounded-full bg-zp-primary transition-[width] duration-500"
-                    style={{ width: `${parsePercent}%` }}
-                  />
-                </div>
-              )}
             </div>
           </motion.div>
         }
@@ -403,6 +418,7 @@ export function PaperCard(props: PaperCardProps) {
             <PaperMenuItems
               Item={ContextMenuPrimitive.Item}
               actions={menuActions}
+              selectionMode={selectionMode}
               planMenuSlot={renderPlanSubmenu(
                 ContextMenuPrimitive as unknown as PlanMenuPrimitives,
               )}

@@ -150,7 +150,9 @@ pub async fn run_agent<L: LlmChat>(
             .unwrap_or_else(|_| "当前论文".to_string())
     });
     let tools = tools::build_tools(settings, paper_id, selections);
-    let web_enabled = tools.iter().any(|t| matches!(t, tools::ToolKind::WebSearch));
+    let web_enabled = tools
+        .iter()
+        .any(|t| matches!(t, tools::ToolKind::WebSearch));
 
     let mut messages: Vec<AgentMsg> = Vec::new();
     // system 提示注入标题前截断（防超长标题撑爆提示词）
@@ -175,7 +177,10 @@ pub async fn run_agent<L: LlmChat>(
         content: question.to_string(),
     }));
 
-    run_agent_loop(llm, db, settings, messages, paper_id, selections, tools, cancel, sink).await
+    run_agent_loop(
+        llm, db, settings, messages, paper_id, selections, tools, cancel, sink,
+    )
+    .await
 }
 
 /// 通用循环入口：给定完整消息列表（system + 历史 + user）与工具集，运行 agent 循环。
@@ -209,8 +214,20 @@ pub async fn run_agent_loop<L: LlmChat>(
     let mut model_ms: u64 = 0;
     let mut tool_ms: u64 = 0;
     drive_loop(
-        llm, &ctx, &tools, &mut messages, &schemas, 0, &mut citations, &mut trace, false, "",
-        cancel, sink, &mut model_ms, &mut tool_ms,
+        llm,
+        &ctx,
+        &tools,
+        &mut messages,
+        &schemas,
+        0,
+        &mut citations,
+        &mut trace,
+        false,
+        "",
+        cancel,
+        sink,
+        &mut model_ms,
+        &mut tool_ms,
     )
     .await
 }
@@ -327,9 +344,7 @@ async fn drive_loop<L: LlmChat>(
         let t0 = std::time::Instant::now();
         let resp = llm
             .stream_chat_with_tools_abortable(messages, schemas, cancel, &mut |evt| match evt {
-                crate::ai::llm::StreamEvent::Thinking(t) => {
-                    sink(AgentEvent::Thinking { text: t })
-                }
+                crate::ai::llm::StreamEvent::Thinking(t) => sink(AgentEvent::Thinking { text: t }),
                 crate::ai::llm::StreamEvent::Content(t) => sink(AgentEvent::Content { text: t }),
             })
             .await?;
@@ -370,6 +385,7 @@ async fn drive_loop<L: LlmChat>(
         let calls = resp.tool_calls;
         messages.push(AgentMsg::ToolCalls {
             content: resp.content.clone(),
+            reasoning: resp.reasoning.clone(),
             calls: calls.clone(),
         });
 
@@ -525,12 +541,18 @@ async fn drive_loop<L: LlmChat>(
                     name: call.name.clone(),
                     args: call.arguments.clone(),
                     summary: String::new(),
-                    error: Some(format!("超出单轮工具数量限制（{}/{}）", calls.len(), MAX_TOOLS_PER_TURN)),
+                    error: Some(format!(
+                        "超出单轮工具数量限制（{}/{}）",
+                        calls.len(),
+                        MAX_TOOLS_PER_TURN
+                    )),
                 });
                 sink(AgentEvent::ToolEnd {
                     name: call.name.clone(),
                     summary: String::new(),
-                    error: Some(format!("已达工具调用上限（{MAX_TOOLS_PER_TURN}），请下一轮继续")),
+                    error: Some(format!(
+                        "已达工具调用上限（{MAX_TOOLS_PER_TURN}），请下一轮继续"
+                    )),
                     elapsed_ms: 0,
                 });
             }
@@ -634,7 +656,10 @@ fn build_fallback_answer(trace: &[ToolStep]) -> String {
             .as_deref()
             .map(|e| format!("（失败：{e}）"))
             .unwrap_or_default();
-        out.push_str(&format!("- 工具 `{}`：{}{}\n", step.name, step.summary, err));
+        out.push_str(&format!(
+            "- 工具 `{}`：{}{}\n",
+            step.name, step.summary, err
+        ));
     }
     out.push_str("\n你可以继续追问，或切换为「快速问答」模式。");
     out
@@ -725,9 +750,20 @@ mod tests {
     async fn direct_answer_without_tools() {
         let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![content("直接回答")]);
-        match run_agent(&llm, &db, &settings, "你好", Some("p1"), &[], &[], &[], None, &mut |_| {})
-            .await
-            .unwrap()
+        match run_agent(
+            &llm,
+            &db,
+            &settings,
+            "你好",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
         {
             RunResult::Done {
                 answer,
@@ -755,9 +791,20 @@ mod tests {
             calls(&[("c3", "read_selection", json!({ "index": 1 }))]),
             content("综合 [1] 与 [3] 得出结论。"),
         ]);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
-            .await
-            .unwrap()
+        match run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &selections,
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
         {
             RunResult::Done {
                 answer,
@@ -781,9 +828,20 @@ mod tests {
             calls(&[("c1", "search_papers", json!({}))]),
             content("我无法检索，但可以基于已有知识回答。"),
         ]);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
-            .await
-            .unwrap()
+        match run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
         {
             RunResult::Done { answer, trace, .. } => {
                 assert_eq!(answer, "我无法检索，但可以基于已有知识回答。");
@@ -798,9 +856,20 @@ mod tests {
     async fn unknown_tool_aborts_loop_with_error() {
         let (db, settings) = setup();
         let llm = ScriptedLlm::new(vec![calls(&[("c1", "no_such_tool", json!({}))])]);
-        let err = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
-            .await
-            .unwrap_err();
+        let err = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("未知工具"));
     }
 
@@ -818,9 +887,20 @@ mod tests {
             )]));
         }
         let llm = ScriptedLlm::new(responses);
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
-            .await
-            .unwrap()
+        match run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &selections,
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
         {
             RunResult::Done { answer, trace, .. } => {
                 assert_eq!(trace.len(), MAX_STEPS);
@@ -919,7 +999,10 @@ mod tests {
         match run {
             RunResult::Done { answer, trace, .. } => {
                 assert!(trace.len() >= 1, "第一轮工具应已执行");
-                assert!(answer.contains("已暂停"), "回答应为暂停提示，实际: {answer}");
+                assert!(
+                    answer.contains("已暂停"),
+                    "回答应为暂停提示，实际: {answer}"
+                );
             }
             RunResult::NeedInput { .. } => panic!("不应请求澄清"),
         }
@@ -977,9 +1060,20 @@ mod tests {
             ask_user_call("c1", "你想对比哪个方向？", json!(["A", "B"])),
             content("根据你的选择，最终回答。"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
-            .await
-            .unwrap();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         let (question, options, free_text, state) = match run {
             RunResult::NeedInput {
                 question,
@@ -1020,9 +1114,20 @@ mod tests {
             ask_user_call("c2", "第二次澄清", json!([])),
             content("最终回答"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &[], &[], None, &mut |_| {})
-            .await
-            .unwrap();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &[],
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         let state = match &run {
             RunResult::NeedInput { state, .. } => state.clone(),
             _ => panic!("应请求澄清"),
@@ -1034,10 +1139,8 @@ mod tests {
             RunResult::Done { answer, trace, .. } => {
                 assert_eq!(answer, "最终回答");
                 // 第二次 ask_user 被拒绝并标记错误
-                let ask_steps: Vec<&ToolStep> = trace
-                    .iter()
-                    .filter(|t| t.name == "ask_user")
-                    .collect();
+                let ask_steps: Vec<&ToolStep> =
+                    trace.iter().filter(|t| t.name == "ask_user").collect();
                 assert_eq!(ask_steps.len(), 2);
                 assert!(ask_steps[1].error.is_some());
             }
@@ -1052,14 +1155,29 @@ mod tests {
         let llm = ScriptedLlm::new(vec![
             calls(&[
                 ("c1", "read_selection", json!({ "index": 0 })),
-                ("c2", "ask_user", json!({ "question": "确认方向", "options": [] })),
+                (
+                    "c2",
+                    "ask_user",
+                    json!({ "question": "确认方向", "options": [] }),
+                ),
                 ("c3", "read_selection", json!({ "index": 0 })),
             ]),
             content("完成"),
         ]);
-        let run = run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
-            .await
-            .unwrap();
+        let run = run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &selections,
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
         let state = match run {
             RunResult::NeedInput { state, .. } => state,
             _ => panic!("应请求澄清"),
@@ -1216,10 +1334,7 @@ mod tests {
                 json!({ "index": i }),
             ));
         }
-        let llm = ScriptedLlm::new(vec![
-            calls(&tool_calls),
-            content("综合所有资料回答"),
-        ]);
+        let llm = ScriptedLlm::new(vec![calls(&tool_calls), content("综合所有资料回答")]);
 
         let mut events = Vec::new();
         match run_agent(
@@ -1250,7 +1365,11 @@ mod tests {
                 for i in 8..10 {
                     assert!(trace[i].error.is_some(), "工具 {} 应标记错误", i);
                     assert!(
-                        trace[i].error.as_ref().unwrap().contains("超出单轮工具数量限制"),
+                        trace[i]
+                            .error
+                            .as_ref()
+                            .unwrap()
+                            .contains("超出单轮工具数量限制"),
                         "错误消息应说明超限"
                     );
                 }
@@ -1309,9 +1428,20 @@ mod tests {
             content("完整回答"),
         ]);
 
-        match run_agent(&llm, &db, &settings, "问题", Some("p1"), &[], &selections, &[], None, &mut |_| {})
-            .await
-            .unwrap()
+        match run_agent(
+            &llm,
+            &db,
+            &settings,
+            "问题",
+            Some("p1"),
+            &[],
+            &selections,
+            &[],
+            None,
+            &mut |_| {},
+        )
+        .await
+        .unwrap()
         {
             RunResult::Done { answer, trace, .. } => {
                 // 第一轮 10 个（8 个成功 + 2 个错误）+ 第二轮 2 个成功 = 12 个
@@ -1327,4 +1457,3 @@ mod tests {
         }
     }
 }
-

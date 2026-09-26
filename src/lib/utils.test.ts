@@ -15,6 +15,7 @@ describe("parseProgressPercent", () => {
     expect(parseProgressPercent(p("converting"))).toBe(15);
     expect(parseProgressPercent(p("downloading"))).toBe(90);
     expect(parseProgressPercent(p("indexing"))).toBe(95);
+    expect(parseProgressPercent(p("translating_metadata"))).toBe(98);
     expect(parseProgressPercent(p("unknown"))).toBe(0);
   });
 

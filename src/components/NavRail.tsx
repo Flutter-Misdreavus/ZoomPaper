@@ -6,18 +6,21 @@ import {
   BookOpen,
   CalendarDays,
   MessageSquare,
+  CircleHelp,
   Search,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
 
-export type NavItem = "library" | "timeline" | "search" | "ask" | "settings";
+export type NavItem = "library" | "timeline" | "search" | "ask" | "help" | "settings";
 
 const NAV_ITEMS: { name: NavItem; label: string; icon: typeof BookOpen }[] = [
   { name: "library", label: "论文库", icon: BookOpen },
   { name: "timeline", label: "时间线", icon: CalendarDays },
   { name: "search", label: "搜索", icon: Search },
   { name: "ask", label: "问答", icon: MessageSquare },
+  { name: "help", label: "帮助", icon: CircleHelp },
   { name: "settings", label: "设置", icon: SettingsIcon },
 ];
 
@@ -28,7 +31,10 @@ interface Props {
 
 export function NavRail({ active, onSelect }: Props) {
   return (
-    <nav className="flex w-14 shrink-0 flex-col items-center border-r border-zp-border py-4">
+    <nav className={cn(
+      "flex w-14 shrink-0 flex-col items-center border-r border-zp-border py-4",
+      active === "ask" ? "bg-[#edf3eb] dark:bg-[#202b24]" : "bg-background"
+    )}>
       {/* Logo：32×32 圆角矩形，深色填充 + 白色首字母 */}
       <div className="mb-6 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-zp-primary text-sm font-semibold text-white">
         Z
@@ -38,10 +44,8 @@ export function NavRail({ active, onSelect }: Props) {
           const Icon = item.icon;
           const isActive = active === item.name;
           return (
-            <button
-              key={item.name}
+            <IconTooltip key={item.name} label={item.label} side="right"><button
               type="button"
-              title={item.label}
               aria-label={item.label}
               onClick={() => onSelect(item.name)}
               className={cn(
@@ -55,7 +59,7 @@ export function NavRail({ active, onSelect }: Props) {
                 <span className="absolute -left-2 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-sm bg-zp-primary" />
               )}
               <Icon className="h-5 w-5" strokeWidth={1.8} />
-            </button>
+            </button></IconTooltip>
           );
         })}
       </div>

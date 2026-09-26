@@ -43,7 +43,19 @@ pub fn write_md(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, content).context("写入 Markdown 失败")
+    // Same-directory rename keeps the previous file intact until the write succeeds.
+    let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        if let Ok(metadata) = fs::metadata(path) { file.set_permissions(metadata.permissions())?; }
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temporary); }
+    result.context("原子保存文件失败")
 }
 
 /// 把解析出的资源文件按相对路径写到 `dir` 下（自动建子目录）。
@@ -73,6 +85,17 @@ pub fn remove_paper_dir(library: &Path, paper_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_write_replaces_complete_content_without_temporary_files() {
+        let dir = std::env::temp_dir().join(format!("zoompaper-atomic-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("notes.json");
+        write_md(&path, "old").unwrap();
+        write_md(&path, "新的完整内容").unwrap();
+        assert_eq!(read_md(&path).unwrap(), "新的完整内容");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn write_extracted_files_creates_subdirs() {

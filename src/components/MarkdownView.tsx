@@ -21,7 +21,7 @@ interface Props {
 /** 论文/博客/笔记 Markdown 渲染：GFM + KaTeX 公式 + 本地图片路径重写 */
 export function MarkdownView({ markdown, className, baseDir }: Props) {
   return (
-    <article className={`prose prose-neutral max-w-none dark:prose-invert ${className ?? ""}`}>
+    <article className={`prose prose-neutral reading-prose max-w-none dark:prose-invert ${className ?? ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeRaw, [rehypeKatex, katexOptions]]}

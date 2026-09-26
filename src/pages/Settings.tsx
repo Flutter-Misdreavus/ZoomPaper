@@ -166,10 +166,10 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto min-h-0 w-full max-w-4xl flex-1 space-y-4 overflow-y-auto p-6">
+    <div className="min-h-0 w-full flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-2xl space-y-4 pb-4">
       <div>
         <h1 className="text-2xl font-bold">设置</h1>
-        <p className="text-sm text-muted-foreground">配置 AI Provider、论文库和其他选项</p>
       </div>
 
       {error && (
@@ -183,7 +183,6 @@ export function SettingsPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
           <div>
             <CardTitle className="text-base">AI Provider</CardTitle>
-            <p className="text-sm text-muted-foreground mt-1">管理 LLM API 配置</p>
           </div>
           <Button size="sm" onClick={() => setShowAddDialog(true)}>
             <Plus className="mr-2 h-4 w-4" />
@@ -351,6 +350,7 @@ export function SettingsPage() {
           onSave={handleUpdateProvider}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -410,6 +410,39 @@ function ProviderCard({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ModelInput({
+  id,
+  value,
+  suggestions,
+  onChange,
+  required = false,
+}: {
+  id: string;
+  value: string;
+  suggestions: string[];
+  onChange: (value: string) => void;
+  required?: boolean;
+}) {
+  const listId = `${id}-suggestions`;
+  return (
+    <div className="grid gap-1.5">
+      <Label htmlFor={id}>默认模型{required ? " *" : ""}</Label>
+      <Input
+        id={id}
+        list={suggestions.length > 0 ? listId : undefined}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        autoComplete="off"
+      />
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((model) => <option key={model} value={model} />)}
+        </datalist>
+      )}
     </div>
   );
 }
@@ -499,30 +532,13 @@ function AddProviderDialog({
                 </div>
               )}
 
-              <div className="grid gap-1.5">
-                <Label htmlFor="add-model">默认模型 *</Label>
-                {selectedTemplate.models.length > 0 ? (
-                  <Select value={customModel} onValueChange={(v) => setCustomModel(v || "")}>
-                    <SelectTrigger id="add-model">
-                      <SelectValue placeholder="选择模型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {selectedTemplate.models.map((model) => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    id="add-model"
-                    value={customModel}
-                    onChange={(e) => setCustomModel(e.target.value)}
-                    placeholder="输入模型名称"
-                  />
-                )}
-              </div>
+              <ModelInput
+                id="add-model"
+                value={customModel}
+                suggestions={selectedTemplate.models}
+                onChange={setCustomModel}
+                required
+              />
             </div>
 
             <DialogFooter>
@@ -600,32 +616,12 @@ function EditProviderDialog({
             </div>
           )}
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="edit-model">默认模型</Label>
-            {config.models.length > 0 ? (
-              <Select
-                value={config.default_model}
-                onValueChange={(v) => setConfig({ ...config, default_model: v || "" })}
-              >
-                <SelectTrigger id="edit-model">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {config.models.map((model) => (
-                    <SelectItem key={model} value={model}>
-                      {model}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <Input
-                id="edit-model"
-                value={config.default_model}
-                onChange={(e) => setConfig({ ...config, default_model: e.target.value })}
-              />
-            )}
-          </div>
+          <ModelInput
+            id="edit-model"
+            value={config.default_model}
+            suggestions={config.models}
+            onChange={(default_model) => setConfig({ ...config, default_model })}
+          />
         </div>
 
         <DialogFooter>

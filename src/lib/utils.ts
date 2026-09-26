@@ -45,6 +45,23 @@ export function formatDuration(seconds: number): string {
   return rest > 0 ? `${h} 小时 ${rest} 分钟` : `${h} 小时`;
 }
 
+/** 将学术站点元数据里的少量 HTML 转为适合桌面列表显示的纯文本。 */
+export function displayPaperTitle(title: string): string {
+  const superscript: Record<string, string> = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+  };
+  return title
+    .replace(/<sup>(.*?)<\/sup>/gi, (_, value: string) =>
+      [...value].map((char) => superscript[char] ?? char).join(""),
+    )
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
 /** 解析进度 → 进度条百分比（0~100）。running 阶段按页数换算到 15~85 区间。 */
 export function parseProgressPercent(p: ParseProgress): number {
   switch (p.stage) {
@@ -65,9 +82,9 @@ export function parseProgressPercent(p: ParseProgress): number {
       return 90;
     case "indexing":
       return 95;
+    case "translating_metadata":
+      return 98;
     default:
       return 0;
   }
 }
-
-
