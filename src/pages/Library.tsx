@@ -53,9 +53,10 @@ type Renaming = { kind: "folder"; id: string } | { kind: "paper"; id: string };
 
 interface Props {
   onOpenPaper: (id: string) => void;
+  refreshSignal?: number;
 }
 
-export function Library({ onOpenPaper }: Props) {
+export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [plans, setPlans] = useState<ReadingPlan[]>([]);
@@ -102,7 +103,7 @@ export function Library({ onOpenPaper }: Props) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, refreshSignal]);
 
   // ---------- 视图内论文（文件夹 × 状态过滤 × 关键词 交集 + 排序，星标置顶） ----------
 
