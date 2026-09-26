@@ -6,10 +6,30 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// 应用数据目录：`~/Library/Application Support/com.paper-reader/`
+/// API Key 保存在本地明文 JSON 中；Unix 平台限制为仅当前用户可读写。
+#[cfg(unix)]
+fn harden_settings_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .context("限制 settings.json 文件权限失败")
+}
+
+#[cfg(not(unix))]
+fn harden_settings_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// 应用数据目录。保留旧目录名以便升级后继续读取已有论文和设置。
 pub fn app_data_dir() -> Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = option_env!("ZOOMPAPER_TEST_DATA_DIR") {
+        let path = PathBuf::from(path);
+        anyhow::ensure!(path.is_absolute(), "测试数据目录必须为绝对路径");
+        return Ok(path);
+    }
     dirs::data_dir()
         .map(|d| d.join("com.paper-reader"))
         .context("无法定位系统数据目录")
@@ -49,6 +69,12 @@ pub struct ProviderConfig {
     /// 可选：支持的模型列表（用于前端下拉提示）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// 完整应用设置。
@@ -116,11 +142,14 @@ impl Settings {
             default.save()?;
             return Ok(default);
         }
+        harden_settings_permissions(&path)?;
         let raw = fs::read_to_string(&path).context("读取 settings.json 失败")?;
         let mut s: Settings = serde_json::from_str(&raw).context("解析 settings.json 失败")?;
 
         // 自动迁移旧配置
-        s.migrate_from_legacy();
+        if s.migrate_from_legacy() {
+            s.save()?;
+        }
 
         Ok(s)
     }
@@ -132,7 +161,8 @@ impl Settings {
             fs::create_dir_all(parent)?;
         }
         let raw = serde_json::to_string_pretty(self).context("序列化 settings 失败")?;
-        fs::write(&path, raw).context("写入 settings.json 失败")?;
+        crate::fs::write_md(&path, &raw).context("写入 settings.json 失败")?;
+        harden_settings_permissions(&path)?;
         Ok(())
     }
 
@@ -149,20 +179,27 @@ impl Settings {
     pub fn active_provider(&self) -> Result<&ProviderConfig> {
         self.providers
             .iter()
-            .find(|p| p.id == self.active_provider_id)
+            .find(|p| p.id == self.active_provider_id && p.enabled)
             .with_context(|| format!("当前激活的 provider '{}' 不存在", self.active_provider_id))
     }
 
     /// 迁移旧配置到新结构（api_keys → providers）。
-    pub fn migrate_from_legacy(&mut self) {
-        // 已有 providers 配置，跳过迁移
+    pub fn migrate_from_legacy(&mut self) -> bool {
+        // 新配置已经生效时，只清理不再使用的旧字段。
         if !self.providers.is_empty() {
-            return;
+            let had_legacy = self.api_keys.is_some() || self.llm_provider.is_some() || self.llm_model.is_some();
+            if self.mineru_api_key.is_empty() {
+                if let Some(keys) = &self.api_keys { self.mineru_api_key = keys.mineru.clone(); }
+            }
+            self.api_keys = None;
+            self.llm_provider = None;
+            self.llm_model = None;
+            return had_legacy;
         }
 
         let api_keys = match &self.api_keys {
             Some(keys) => keys,
-            None => return,
+            None => return false,
         };
 
         let old_provider = self.llm_provider.as_deref().unwrap_or("openai");
@@ -178,7 +215,12 @@ impl Settings {
                 provider_type: "openai-compat".to_string(),
                 api_key: api_keys.openai.clone(),
                 base_url: Some("https://api.openai.com/v1".to_string()),
-                default_model: if old_provider == "openai" { old_model.to_string() } else { "gpt-4o-mini".to_string() },
+                default_model: if old_provider == "openai" {
+                    old_model.to_string()
+                } else {
+                    "gpt-4o-mini".to_string()
+                },
+                enabled: true,
                 models: vec![
                     "gpt-4o".to_string(),
                     "gpt-4o-mini".to_string(),
@@ -195,7 +237,12 @@ impl Settings {
                 provider_type: "anthropic".to_string(),
                 api_key: api_keys.anthropic.clone(),
                 base_url: None,
-                default_model: if old_provider == "anthropic" { old_model.to_string() } else { "claude-sonnet-4-6".to_string() },
+                default_model: if old_provider == "anthropic" {
+                    old_model.to_string()
+                } else {
+                    "claude-sonnet-4-6".to_string()
+                },
+                enabled: true,
                 models: vec![
                     "claude-sonnet-4-6".to_string(),
                     "claude-opus-4".to_string(),
@@ -211,11 +258,13 @@ impl Settings {
                 provider_type: "openai-compat".to_string(),
                 api_key: api_keys.deepseek.clone(),
                 base_url: Some("https://api.deepseek.com".to_string()),
-                default_model: if old_provider == "deepseek" { old_model.to_string() } else { "deepseek-chat".to_string() },
-                models: vec![
-                    "deepseek-chat".to_string(),
-                    "deepseek-reasoner".to_string(),
-                ],
+                default_model: if old_provider == "deepseek" {
+                    old_model.to_string()
+                } else {
+                    "deepseek-chat".to_string()
+                },
+                enabled: true,
+                models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
             });
         }
 
@@ -225,8 +274,15 @@ impl Settings {
                 name: "Google Gemini".to_string(),
                 provider_type: "openai-compat".to_string(),
                 api_key: api_keys.gemini.clone(),
-                base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".to_string()),
-                default_model: if old_provider == "gemini" { old_model.to_string() } else { "gemini-2.0-flash-exp".to_string() },
+                base_url: Some(
+                    "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                ),
+                default_model: if old_provider == "gemini" {
+                    old_model.to_string()
+                } else {
+                    "gemini-2.0-flash-exp".to_string()
+                },
+                enabled: true,
                 models: vec![
                     "gemini-2.0-flash-exp".to_string(),
                     "gemini-1.5-pro".to_string(),
@@ -235,7 +291,9 @@ impl Settings {
         }
 
         // MinerU 提取到顶层字段
-        self.mineru_api_key = api_keys.mineru.clone();
+        if self.mineru_api_key.is_empty() {
+            self.mineru_api_key = api_keys.mineru.clone();
+        }
 
         // 设置激活的 provider
         if !providers.is_empty() {
@@ -247,6 +305,10 @@ impl Settings {
         }
 
         self.providers = providers;
+        self.api_keys = None;
+        self.llm_provider = None;
+        self.llm_model = None;
+        true
     }
 
     /// 解析联网搜索 provider：返回 `(provider, model)`；不可用时返回 None。
@@ -265,7 +327,9 @@ impl Settings {
 
         // 从 providers 中查找 provider
         let find_provider = |id: &str| -> bool {
-            self.providers.iter().any(|p| p.id == id && !p.api_key.is_empty())
+            self.providers
+                .iter()
+                .any(|p| p.id == id && p.enabled && !p.api_key.is_empty())
         };
 
         let candidates: Vec<(&str, bool, String)> = vec![
@@ -278,11 +342,19 @@ impl Settings {
                 "anthropic",
                 find_provider("anthropic"),
                 model(
-                    if self.active_provider().ok().map(|p| p.provider_type.as_str()) == Some("anthropic") {
-                        self.active_provider().ok().map(|p| p.default_model.as_str()).unwrap_or("claude-sonnet-4-6")
+                    if self
+                        .active_provider()
+                        .ok()
+                        .map(|p| p.provider_type.as_str())
+                        == Some("anthropic")
+                    {
+                        self.active_provider()
+                            .ok()
+                            .map(|p| p.default_model.as_str())
+                            .unwrap_or("claude-sonnet-4-6")
                     } else {
                         "claude-sonnet-4-6"
-                    }
+                    },
                 ),
             ),
         ];
@@ -322,6 +394,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com".to_string()),
             default_model: "deepseek-chat".to_string(),
             models: vec![],
+            enabled: true,
         });
         let (provider, _model) = s.web_search_available().unwrap();
         assert_eq!(provider, "deepseek");
@@ -336,6 +409,7 @@ mod tests {
             base_url: None,
             default_model: "claude-sonnet-4-6".to_string(),
             models: vec![],
+            enabled: true,
         });
         let (provider2, _m2) = s2.web_search_available().unwrap();
         assert_eq!(provider2, "anthropic");
@@ -373,6 +447,8 @@ mod tests {
 
         // MinerU key 应该提取到顶层
         assert_eq!(s.mineru_api_key, "mineru-key");
+        assert!(s.api_keys.is_none(), "迁移后不应继续保留旧密钥副本");
+        assert!(!s.migrate_from_legacy(), "重复加载不应再次迁移");
     }
 
     #[test]
@@ -386,6 +462,7 @@ mod tests {
             base_url: Some("https://api.test.com".to_string()),
             default_model: "test-model".to_string(),
             models: vec![],
+            enabled: true,
         });
         s.active_provider_id = "test".to_string();
 

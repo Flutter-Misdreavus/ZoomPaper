@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
+import { Check, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { buildFolderTree, type FolderNode } from "@/lib/folders";
@@ -19,7 +19,7 @@ interface Props {
   papers: Paper[];
   folders: Folder[];
   /** 任一归属变更成功后回调（父级刷新） */
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
   onError: (msg: string) => void;
 }
 
@@ -29,27 +29,40 @@ interface Props {
  */
 export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChanged, onError }: Props) {
   const [busy, setBusy] = useState(false);
+  const [intent, setIntent] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (open) setIntent({});
+  }, [open, papers.map((paper) => `${paper.id}:${paper.folder_ids.join(",")}`).join("|")]);
 
   // 当前全部勾选 = 每篇论文都在该文件夹
   function checked(folderId: string): boolean {
+    if (folderId in intent) return intent[folderId];
     return papers.length > 0 && papers.every((p) => p.folder_ids.includes(folderId));
   }
   function indeterminate(folderId: string): boolean {
+    if (folderId in intent) return false;
     return papers.some((p) => p.folder_ids.includes(folderId)) && !checked(folderId);
   }
 
-  async function toggle(node: FolderNode) {
+  function toggle(node: FolderNode) {
+    if (!busy) setIntent((current) => ({ ...current, [node.folder.id]: !checked(node.folder.id) }));
+  }
+
+  async function apply() {
     if (busy) return;
     setBusy(true);
-    const ids = papers.map((p) => p.id);
-    const target = checked(node.folder.id);
     try {
-      if (target) {
-        await removePapersFromFolder(ids, node.folder.id);
-      } else {
-        await addPapersToFolder(ids, node.folder.id);
+      for (const [folderId, shouldContain] of Object.entries(intent)) {
+        const ids = papers.filter((paper) => shouldContain
+          ? !paper.folder_ids.includes(folderId)
+          : paper.folder_ids.includes(folderId)).map((paper) => paper.id);
+        if (!ids.length) continue;
+        if (shouldContain) await addPapersToFolder(ids, folderId);
+        else await removePapersFromFolder(ids, folderId);
       }
-      onChanged();
+      await onChanged();
+      onOpenChange(false);
     } catch (e) {
       onError(String(e));
     } finally {
@@ -64,8 +77,10 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
       <div key={node.folder.id}>
         <button
           type="button"
+          role="checkbox"
+          aria-checked={isChecked ? true : indeterminate(node.folder.id) ? "mixed" : false}
           disabled={busy}
-          onClick={() => void toggle(node)}
+          onClick={() => toggle(node)}
           className={cn(
             "pressable flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent",
             isChecked && "text-foreground"
@@ -81,9 +96,11 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
             )}
             style={isChecked ? { backgroundColor: c.swatch } : undefined}
           >
-            {(isChecked || indeterminate(node.folder.id)) && (
-              <Check className="h-3 w-3" strokeWidth={3} />
-            )}
+            {isChecked
+              ? <Check className="h-3 w-3" strokeWidth={3} />
+              : indeterminate(node.folder.id)
+                ? <Minus className="h-3 w-3 text-zp-secondary" strokeWidth={3} />
+                : null}
           </span>
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -123,10 +140,6 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
           <DialogPrimitive.Title className="font-heading text-base font-medium">
             添加到文件夹
           </DialogPrimitive.Title>
-          <DialogPrimitive.Description className="text-sm text-muted-foreground">
-            已选 {papers.length} 篇论文 · 勾选即加入，取消勾选即移出（多归属）
-          </DialogPrimitive.Description>
-
           <div className="mt-3 max-h-72 overflow-y-auto pr-1">
             {tree.length === 0 ? (
               <p className="py-6 text-center text-sm text-muted-foreground">
@@ -138,9 +151,7 @@ export function PaperFolderPicker({ open, onOpenChange, papers, folders, onChang
           </div>
 
           <div className="mt-4 flex justify-end">
-            <DialogPrimitive.Close render={<Button variant="outline" />}>
-              完成
-            </DialogPrimitive.Close>
+            <Button variant="outline" onClick={() => void apply()} disabled={busy}>完成</Button>
           </div>
         </DialogPrimitive.Popup>
       </DialogPrimitive.Portal>

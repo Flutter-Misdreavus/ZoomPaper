@@ -30,13 +30,29 @@ fn enable_pinch_zoom(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 初始化数据库（建目录 + 建表）并放入应用状态
             let db = db::Db::init()?;
             app.manage(db);
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
+            }
             #[cfg(target_os = "macos")]
             enable_pinch_zoom(app);
             Ok(())
@@ -50,15 +66,23 @@ pub fn run() {
             commands::set_active_provider,
             commands::list_papers,
             commands::get_paper,
+            commands::open_paper,
+            commands::set_reading_status,
+            commands::export_notes,
             commands::get_paper_md,
             commands::import_pdf,
+            commands::import_browser_download,
+            commands::import_pdf_url,
             commands::parse_pdf,
+            commands::translate_paper_metadata,
             commands::delete_paper,
             commands::index_paper,
             commands::reindex_all_papers,
             commands::search,
+            commands::keyword_search,
             commands::generate_blog,
             commands::translate_chunk,
+            commands::translate_selection,
             commands::save_translation,
             commands::get_translation,
             commands::get_annotations,
@@ -72,6 +96,10 @@ pub fn run() {
             commands::rename_paper,
             commands::set_paper_status,
             commands::set_paper_starred,
+            commands::restore_paper,
+            commands::permanently_delete_paper,
+            commands::empty_trash,
+            commands::ask_app_help,
             commands::add_reading_time,
             commands::mark_paper_read,
             commands::create_reading_plan,

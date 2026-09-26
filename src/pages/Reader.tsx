@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogPanel } from "@/components/BlogPanel";
@@ -8,18 +9,15 @@ import { TranslatePanel } from "@/components/TranslatePanel";
 import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
-import { getPaper, markPaperRead, setPaperStatus, addReadingTime, type Paper } from "@/lib/api";
-import { formatDuration } from "@/lib/utils";
-import { ArrowLeft, BookCheck, Clock } from "lucide-react";
-
-/** GitHub 品牌图标（lucide-react 已移除品牌图标，用官方 mark 内联 SVG） */
-function GithubIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-      <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-    </svg>
-  );
-}
+import {
+  addReadingTime,
+  markPaperRead,
+  openPaperForReading,
+  setPaperStatus,
+  type Paper,
+} from "@/lib/api";
+import { displayPaperTitle, formatDuration } from "@/lib/utils";
+import { ArrowLeft, BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
 
 interface Props {
   paperId: string;
@@ -37,7 +35,7 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    getPaper(paperId)
+    openPaperForReading(paperId)
       .then((p) => !cancelled && setPaper(p))
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoading(false));
@@ -99,12 +97,18 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" onClick={onBack} className="pressable">
+        <IconTooltip label="返回论文库" side="bottom"><Button
+          variant="ghost"
+          size="icon"
+          onClick={onBack}
+          aria-label="返回论文库"
+          className="pressable"
+        >
           <ArrowLeft className="h-4 w-4" />
-        </Button>
+        </Button></IconTooltip>
         <div className="min-w-0">
           <h1 className="truncate text-xl font-bold tracking-tight">
-            {paper?.title ?? "加载中…"}
+            {paper ? displayPaperTitle(paper.title) : "加载中…"}
           </h1>
           {paper?.authors && (
             <p className="text-sm text-muted-foreground">{paper.authors}</p>
@@ -112,6 +116,17 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
         </div>
         {paper && (
           <div className="ml-auto flex shrink-0 items-center gap-3">
+            {paper.github_url && (
+              <IconTooltip label="打开 GitHub 项目" side="bottom"><Button
+                variant="ghost"
+                size="icon"
+                onClick={() => void openUrl(paper.github_url!)}
+                aria-label="打开 GitHub 项目"
+                className="pressable"
+              >
+                <GitFork className="h-4 w-4" />
+              </Button></IconTooltip>
+            )}
             <span
               className="flex items-center gap-1.5 text-sm text-muted-foreground"
               title="本篇累计阅读时长"
@@ -119,18 +134,6 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
               <Clock className="h-4 w-4" strokeWidth={1.8} />
               已阅读 {formatDuration(paper.total_read_seconds + sessionSeconds)}
             </span>
-            {paper.github_url && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="pressable"
-                title={paper.github_url}
-                onClick={() => openUrl(paper.github_url!)}
-              >
-                <GithubIcon className="h-4 w-4" />
-                GitHub
-              </Button>
-            )}
             <Button
               variant={paper.reading_status === "read" ? "secondary" : "outline"}
               size="sm"
@@ -231,13 +234,8 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
               }
             />
           ) : (
-            <div className="ml-2 flex w-10 shrink-0 items-start justify-center rounded-lg border border-dashed py-3 text-muted-foreground">
-              <span
-                className="text-xs [writing-mode:vertical-rl]"
-                title="解析完成后可用问答"
-              >
-                问答（需先解析）
-              </span>
+            <div className="ml-2 flex w-10 shrink-0 items-start justify-center py-3 text-muted-foreground" title="解析完成后可用论文助手">
+              <MessageSquare className="h-4 w-4" />
             </div>
           )}
         </div>

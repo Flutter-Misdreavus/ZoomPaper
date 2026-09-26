@@ -9,7 +9,7 @@
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -61,22 +61,22 @@
 }
 
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
+    --background: #f7f8f6;
+    --foreground: #243330;
     --card: oklch(1 0 0);
     --card-foreground: oklch(0.145 0 0);
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
+    --primary: #27665b;
     --primary-foreground: oklch(0.985 0 0);
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    --muted-foreground: #65736d;
+    --accent: #e8f0ec;
+    --accent-foreground: #24584f;
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
+    --border: #e1e7e3;
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
     --chart-1: oklch(0.87 0 0);
@@ -85,7 +85,7 @@
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
+    --sidebar: #edf1ed;
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
     --sidebar-primary-foreground: oklch(0.985 0 0);
@@ -289,7 +289,7 @@
    注意：必须放在 @layer 之外（unlayered）——typography 的 .prose{color:...} 也是 unlayered，
    非 layer 样式按特异性取胜，写进 @layer base 会被 typography 的黑色按层序压过。 */
 .prose.trans-zh {
-  color: #38bdf8; /* sky-400 */
+  color: #32685e; /* 保持长文阅读所需的对比度 */
 }
 .prose.trans-zh h1,
 .prose.trans-zh h2,
@@ -426,3 +426,47 @@
   animation: zp-heading-flash 1.2s ease-out;
   border-radius: 6px;
 }
+
+/* Workspace surfaces */
+body { margin: 0; -webkit-font-smoothing: antialiased; }
+button, a, input, [tabindex="0"] { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.app-sidebar { width: 184px; flex-shrink: 0; }
+.library-content { background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 28px; }
+.library-header { padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+@media (max-width: 1100px) {
+  .app-sidebar { width: 152px; }
+  .library-content { padding: 20px; }
+  .library-header { flex-wrap: wrap; }
+}
+@media (max-width: 800px) {
+  .app-sidebar { width: 64px; padding-inline: 8px; }
+  .app-sidebar .nav-label, .app-sidebar .brand-label, .app-sidebar .sidebar-footer { display: none; }
+  .app-sidebar nav button { justify-content: center; padding-inline: 8px; }
+  .library-content { padding: 16px; }
+}
+
+@media (max-width: 800px) {
+  .library-folders { width: 140px; }
+}
+
+/* Conversation surfaces: readable answers and a single, resilient composer. */
+.chat-transcript { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.chat-assistant .prose { font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
+.chat-assistant .prose > :first-child { margin-top: 0; }
+.chat-assistant .prose > :last-child { margin-bottom: 0; }
+.chat-assistant .prose p { margin-block: 0.75em; }
+.chat-composer { flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); border-radius: 22px; padding: 12px; background: var(--card); box-shadow: 0 4px 18px rgb(0 0 0 / 6%); transition: border-color 150ms, box-shadow 150ms; }
+.chat-composer:focus-within { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); box-shadow: 0 6px 24px rgb(0 0 0 / 8%); }
+.chat-composer textarea { display: block; box-sizing: border-box; width: 100%; min-height: 48px; max-height: 180px; resize: none; border: 0; outline: none; background: transparent; padding: 2px 3px 8px; font: inherit; font-size: 14px; line-height: 23px; field-sizing: fixed; overflow-wrap: anywhere; }
+.chat-composer textarea::placeholder { color: var(--muted-foreground); }
+.chat-composer-actions { display: flex; align-items: flex-end; gap: 8px; }
+.chat-composer-options { flex: 1; min-width: 0; }
+.chat-send { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: white; }
+.chat-send:disabled { background: var(--border); color: var(--muted-foreground); }
+
+/* Comfortable headings in narrow reader columns. */
+.reading-prose { font-size: 15px; line-height: 1.85; }
+.reading-prose h1 { font-size: 1.65rem; line-height: 1.35; margin-block: 0.5em 1em; }
+.reading-prose h2 { font-size: 1.25rem; line-height: 1.45; }
+.reading-prose h3 { font-size: 1.05rem; line-height: 1.5; }

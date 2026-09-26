@@ -146,8 +146,9 @@ impl MineruClient {
                         p.extracted_pages = result["extract_progress"]["extracted_pages"]
                             .as_u64()
                             .map(|v| v as u32);
-                        p.total_pages =
-                            result["extract_progress"]["total_pages"].as_u64().map(|v| v as u32);
+                        p.total_pages = result["extract_progress"]["total_pages"]
+                            .as_u64()
+                            .map(|v| v as u32);
                     }
                     progress(p);
                     continue;
@@ -201,7 +202,10 @@ impl MineruClient {
             let raw_name = entry.name().to_string();
 
             // 去掉顶层目录前缀（若存在）
-            let name = raw_name.strip_prefix(&prefix).unwrap_or(&raw_name).to_string();
+            let name = raw_name
+                .strip_prefix(&prefix)
+                .unwrap_or(&raw_name)
+                .to_string();
 
             // 跳过重复的原始 PDF（MinerU 命名为 `origin.pdf` 或 `{hash}_origin.pdf`）
             if name.ends_with("origin.pdf") {
@@ -209,7 +213,9 @@ impl MineruClient {
             }
 
             if name == "full.md" {
-                entry.read_to_string(&mut markdown).context("读取 full.md 失败")?;
+                entry
+                    .read_to_string(&mut markdown)
+                    .context("读取 full.md 失败")?;
             } else {
                 let mut buf = Vec::new();
                 entry.read_to_end(&mut buf).context("读取 zip 文件失败")?;

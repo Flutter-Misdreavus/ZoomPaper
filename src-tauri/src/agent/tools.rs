@@ -10,13 +10,13 @@
 
 use crate::agent::{html_extract, web};
 use crate::db::Db;
-use std::io::Read;
 use crate::qa::{truncate, Citation, SelectionInput};
 use crate::rag;
 use crate::settings::Settings;
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -250,20 +250,17 @@ pub async fn execute_tool(
 fn resolve_paper(ctx: &ToolCtx<'_>, args: &Value) -> Result<String, String> {
     match args["paper_id"].as_str() {
         Some(p) if !p.is_empty() => Ok(p.to_string()),
-        _ => ctx
-            .paper_id
-            .map(str::to_string)
-            .ok_or_else(|| "未指定论文（可先调用 list_papers 查看论文 id 再传入 paper_id）".to_string()),
+        _ => ctx.paper_id.map(str::to_string).ok_or_else(|| {
+            "未指定论文（可先调用 list_papers 查看论文 id 再传入 paper_id）".to_string()
+        }),
     }
 }
 
 /// 查论文标题（不存在返回 None）。
 fn paper_title(conn: &rusqlite::Connection, paper_id: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT title FROM papers WHERE id = ?1",
-        [paper_id],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT title FROM papers WHERE id = ?1", [paper_id], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
 }
 
@@ -273,14 +270,20 @@ fn page_str(page: Option<i64>) -> String {
 }
 
 /// 把检索命中格式化为编号上下文 + 引用（纯函数，便于测试）。
-fn format_hits_context(hits: &[crate::db::models::SearchHit], offset: usize) -> (String, Vec<Citation>) {
+fn format_hits_context(
+    hits: &[crate::db::models::SearchHit],
+    offset: usize,
+) -> (String, Vec<Citation>) {
     let mut text = format!("【本地检索命中 {} 条】\n", hits.len());
     let mut citations = Vec::with_capacity(hits.len());
     for (i, h) in hits.iter().enumerate() {
         let idx = i + 1 + offset;
         text.push_str(&format!(
             "[{idx}] 论文《{}》· {} · {}：\n{}\n\n",
-            h.paper_title, page_str(h.page_idx), h.section, h.content
+            h.paper_title,
+            page_str(h.page_idx),
+            h.section,
+            h.content
         ));
         citations.push(Citation {
             index: idx,
@@ -305,12 +308,13 @@ fn search_papers(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolO
     let top_k = args["top_k"].as_u64().unwrap_or(5).min(10) as usize;
     let paper_id = args["paper_id"].as_str().map(str::to_string);
     let conn = ctx.db.conn();
-    let hits =
-        rag::search(&conn, query, top_k, paper_id.as_deref()).map_err(|e| format!("检索失败: {e}"))?;
+    let hits = rag::search(&conn, query, top_k, paper_id.as_deref())
+        .map_err(|e| format!("检索失败: {e}"))?;
     if hits.is_empty() {
         return Ok(ToolOutput {
-            text: "本地知识库没有检索到相关内容，可更换关键词、用 read_section 精读章节或联网搜索。"
-                .to_string(),
+            text:
+                "本地知识库没有检索到相关内容，可更换关键词、用 read_section 精读章节或联网搜索。"
+                    .to_string(),
             citations: vec![],
             summary: "未命中".to_string(),
         });
@@ -371,7 +375,9 @@ fn read_section(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolOu
         .map_err(|e| format!("检索失败: {e}"))?;
     if hits.is_empty() {
         return Ok(ToolOutput {
-            text: format!("论文中未检索到与「{topic}」相关的章节，可换关键词或查看 get_outline 的章节名。"),
+            text: format!(
+                "论文中未检索到与「{topic}」相关的章节，可换关键词或查看 get_outline 的章节名。"
+            ),
             citations: vec![],
             summary: "未命中章节".to_string(),
         });
@@ -469,9 +475,7 @@ fn list_papers(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
         .filter(|s| !s.is_empty());
     let conn = ctx.db.conn();
     let mut stmt = conn
-        .prepare(
-            "SELECT id, title, parse_status FROM papers ORDER BY created_at DESC LIMIT 50",
-        )
+        .prepare("SELECT id, title, parse_status FROM papers ORDER BY created_at DESC LIMIT 50")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -683,7 +687,8 @@ fn read_translation(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<To
             continue;
         }
         let idx = citations.len() + 1 + offset;
-        let block = format!("[{idx}] 论文《{}》· 中文译文：\n原文：{}\n译文：{}\n\n",
+        let block = format!(
+            "[{idx}] 论文《{}》· 中文译文：\n原文：{}\n译文：{}\n\n",
             paper_title(&ctx.db.conn(), &paper_id).unwrap_or_else(|| paper_id.clone()),
             truncate(en, 600),
             truncate(zh, 600),
@@ -727,10 +732,9 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "缺少 query 参数".to_string())?;
-    let (provider, model) = ctx
-        .settings
-        .web_search_available()
-        .ok_or_else(|| "联网搜索未启用，请先在设置页配置（复用 DeepSeek/Anthropic Key）".to_string())?;
+    let (provider, model) = ctx.settings.web_search_available().ok_or_else(|| {
+        "联网搜索未启用，请先在设置页配置（复用 DeepSeek/Anthropic Key）".to_string()
+    })?;
 
     // 从 providers 中查找对应的 API key
     let api_key = ctx
@@ -758,7 +762,12 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
     .await?;
     let text = web::format_search_result(&result);
     // 摘要收录前 2 个来源 URL（供研究记忆与轨迹展示）
-    let urls: Vec<&str> = result.sources.iter().take(2).map(|s| s.url.as_str()).collect();
+    let urls: Vec<&str> = result
+        .sources
+        .iter()
+        .take(2)
+        .map(|s| s.url.as_str())
+        .collect();
     let summary = if urls.is_empty() {
         format!("{} 条来源", result.sources.len())
     } else {
@@ -774,9 +783,7 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
 /// 9. 抓取网页正文（静态 HTML → markdown）。
 /// blocking 抓取 + 流式提取（在 spawn_blocking 内运行：
 /// html5ever Tokenizer 因 tendril 的 NonAtomic 引用计数而 !Send，不能跨 await 持有）。
-fn fetch_extract_blocking(
-    url: &str,
-) -> Result<(String, bool, reqwest::StatusCode), String> {
+fn fetch_extract_blocking(url: &str) -> Result<(String, bool, reqwest::StatusCode), String> {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     let client = CLIENT.get_or_init(reqwest::blocking::Client::new);
@@ -839,11 +846,10 @@ async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
     }
     // 下载 + 提取整体放入 spawn_blocking（HtmlExtractor 非 Send，不能跨 await 持有）
     let url_owned = url.to_string();
-    let (body, hit_cap, status) = tokio::task::spawn_blocking(move || {
-        fetch_extract_blocking(&url_owned)
-    })
-    .await
-    .map_err(|e| format!("抓取任务失败: {e}"))??;
+    let (body, hit_cap, status) =
+        tokio::task::spawn_blocking(move || fetch_extract_blocking(&url_owned))
+            .await
+            .map_err(|e| format!("抓取任务失败: {e}"))??;
 
     let status_note = if status.is_success() {
         String::new()
@@ -865,7 +871,10 @@ async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
         });
     }
     Ok(ToolOutput {
-        text: truncate(&format!("{status_note}{body}{cap_note}"), TOOL_RESULT_MAX_CHARS),
+        text: truncate(
+            &format!("{status_note}{body}{cap_note}"),
+            TOOL_RESULT_MAX_CHARS,
+        ),
         citations: vec![],
         summary: format!("抓取 {url}"),
     })
@@ -877,10 +886,12 @@ fn read_selection(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<Tool
         .as_u64()
         .and_then(|i| usize::try_from(i).ok())
         .ok_or_else(|| "缺少 index 参数".to_string())?;
-    let sel = ctx
-        .selections
-        .get(index)
-        .ok_or_else(|| format!("index 越界（共 {} 条选中段落，编号从 0 开始）", ctx.selections.len()))?;
+    let sel = ctx.selections.get(index).ok_or_else(|| {
+        format!(
+            "index 越界（共 {} 条选中段落，编号从 0 开始）",
+            ctx.selections.len()
+        )
+    })?;
     let text = sel.text.trim();
     if text.is_empty() {
         return Err("该选中段落为空".to_string());
@@ -1105,7 +1116,9 @@ mod tests {
             },
         ];
         let c = ctx(&db, &settings, &sel, &http);
-        let out = execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 1 }), 2).await.unwrap();
+        let out = execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 1 }), 2)
+            .await
+            .unwrap();
         assert_eq!(out.citations.len(), 1);
         assert_eq!(out.citations[0].index, 3); // offset 2 → 编号 3
         assert_eq!(out.citations[0].page_idx, Some(5));
@@ -1121,7 +1134,11 @@ mod tests {
         assert!(out3.text.contains("第 3 页"));
         assert_eq!(out3.citations[0].section, "用户选中段落");
         // 越界报错
-        assert!(execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 9 }), 0).await.is_err());
+        assert!(
+            execute_tool(ToolKind::ReadSelection, &c, &json!({ "index": 9 }), 0)
+                .await
+                .is_err()
+        );
     }
 
     /// 临时论文目录夹具：真实目录下建 paper.md，返回 (Db, 论文目录)。
@@ -1201,13 +1218,20 @@ mod tests {
         let settings = Settings::default();
         let http = reqwest::Client::new();
         let c = ctx(&db, &settings, &[], &http);
-        let out = execute_tool(ToolKind::GetPaperMeta, &c, &json!({}), 0).await.unwrap();
+        let out = execute_tool(ToolKind::GetPaperMeta, &c, &json!({}), 0)
+            .await
+            .unwrap();
         assert!(out.text.contains("测试论文"));
         assert!(out.text.contains("摘要文本"));
         // 不存在的论文报错
-        let err = execute_tool(ToolKind::GetPaperMeta, &c, &json!({ "paper_id": "nope" }), 0)
-            .await
-            .unwrap_err();
+        let err = execute_tool(
+            ToolKind::GetPaperMeta,
+            &c,
+            &json!({ "paper_id": "nope" }),
+            0,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("不存在"));
     }
 

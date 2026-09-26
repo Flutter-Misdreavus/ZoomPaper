@@ -99,7 +99,6 @@ export function FolderDialog({ state, onOpenChange, onSaved, onError }: Props) {
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="例如：深度学习"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void handleSave();
                 }}
@@ -133,7 +132,7 @@ export function FolderDialog({ state, onOpenChange, onSaved, onError }: Props) {
 
             {/* 标签 */}
             <div className="flex flex-col gap-1.5">
-              <Label>标签</Label>
+              <Label htmlFor="folder-tag">标签</Label>
               <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring">
                 {tags.map((t) => (
                   <span
@@ -153,6 +152,7 @@ export function FolderDialog({ state, onOpenChange, onSaved, onError }: Props) {
                   </span>
                 ))}
                 <input
+                  id="folder-tag"
                   value={tagInput}
                   onChange={(e) => setTagInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -163,8 +163,7 @@ export function FolderDialog({ state, onOpenChange, onSaved, onError }: Props) {
                       setTags(tags.slice(0, -1));
                     }
                   }}
-                  placeholder={tags.length ? "" : "输入标签后回车"}
-                  className="min-w-24 flex-1 bg-transparent py-0.5 text-sm outline-none placeholder:text-muted-foreground"
+                  className="min-w-24 flex-1 bg-transparent py-0.5 text-sm outline-none"
                 />
               </div>
             </div>

@@ -204,6 +204,18 @@ pub fn prepare(
     selections: &[SelectionInput],
 ) -> Result<Prepared> {
     let hits = crate::rag::search(conn, question, top_k, paper_id)?;
+    prepare_with_hits(conn, question, paper_id, history, selections, &hits)
+}
+
+/// Assemble context after embedding work completes outside the database lock.
+pub fn prepare_with_hits(
+    conn: &Connection,
+    question: &str,
+    paper_id: Option<&str>,
+    history: &[QaMessage],
+    selections: &[SelectionInput],
+    hits: &[SearchHit],
+) -> Result<Prepared> {
     // 阅读页会话绑定论文的标题：用于 system 提示「当前阅读论文」段与选中段落引用标注；
     // 查询失败回退「当前论文」。
     let paper_title: Option<String> = paper_id.map(|pid| {
@@ -347,7 +359,12 @@ mod tests {
         assert!(!msgs[0].content.contains("当前阅读论文"));
 
         // 绑定论文：system 追加「当前阅读论文」段（含标题）
-        let bound = build_messages("它为何有效？", "【上下文资料】\n[1] …", &history, Some("注意力论文"));
+        let bound = build_messages(
+            "它为何有效？",
+            "【上下文资料】\n[1] …",
+            &history,
+            Some("注意力论文"),
+        );
         assert!(bound[0].content.contains("当前阅读论文《注意力论文》"));
         assert!(bound[0].content.contains("优先锚定这篇论文的内容"));
         // 超长标题注入提示词前被截断
