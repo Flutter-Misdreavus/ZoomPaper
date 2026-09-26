@@ -40,6 +40,7 @@ import {
 } from "@/lib/api";
 import type { LibraryView } from "@/lib/folders";
 import { usePaperSelection } from "@/hooks/usePaperSelection";
+import { useDragPaperSelection } from "@/hooks/useDragPaperSelection";
 import { FolderSidebar } from "@/components/library/FolderSidebar";
 import { TopBar, type SortBy } from "@/components/library/TopBar";
 import { FilterBar, type PaperFilter } from "@/components/library/FilterBar";
@@ -72,7 +73,8 @@ export function Library({ onOpenPaper }: Props) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<SortBy>("created");
-  const { selected, toggle, clear, isSelected, size: selectedSize } = usePaperSelection();
+  const { selected, toggle, setSelectedState, clear, isSelected, size: selectedSize } = usePaperSelection();
+  const selectionDrag = useDragPaperSelection(setSelectedState);
 
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   const [folderDialog, setFolderDialog] = useState<FolderDialogState | null>(null);
@@ -192,6 +194,7 @@ export function Library({ onOpenPaper }: Props) {
     );
     try {
       await Promise.all(targets.map((p) => setPaperStatus(p.id, status)));
+      clear();
     } catch (e) {
       setError(String(e));
       await refresh();
@@ -285,6 +288,7 @@ export function Library({ onOpenPaper }: Props) {
         setError(`导入成功，但解析失败：${e}`);
       }
       await refresh();
+      clear();
     } catch (e) {
       setError(`导入失败：${e}`);
     } finally {
@@ -528,7 +532,15 @@ export function Library({ onOpenPaper }: Props) {
           )}
         </AnimatePresence>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+          onClick={(event) => {
+            if (selectedSize === 0) return;
+            const target = event.target as HTMLElement;
+            if (target.closest("[data-paper-item], button, a, input, textarea, select, [role='menuitem']")) return;
+            clear();
+          }}
+        >
           {error && (
             <div className="mb-3 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               {error}
@@ -572,6 +584,8 @@ export function Library({ onOpenPaper }: Props) {
                   progress={parseProgress[paper.id] ?? null}
                   currentFolderId={currentFolderId}
                   onToggle={toggle}
+                  onSelectionDragStart={selectionDrag.start}
+                  onSelectionDragEnter={selectionDrag.enter}
                   onOpen={onOpenPaper}
                   onStartRename={(p) => setRenaming({ kind: "paper", id: p.id })}
                   onCommitRename={handleCommitPaperRename}
