@@ -31,6 +31,7 @@ fn enable_pinch_zoom(app: &tauri::App) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -52,6 +53,8 @@ pub fn run() {
             commands::get_paper,
             commands::get_paper_md,
             commands::import_pdf,
+            commands::import_browser_download,
+            commands::import_pdf_url,
             commands::parse_pdf,
             commands::delete_paper,
             commands::index_paper,

@@ -270,6 +270,14 @@ export const setActiveProvider = (id: string) =>
 export const generateBlog = (paperId: string) =>
   invoke<string>("generate_blog", { paperId });
 
+export const importBrowserDownload = (
+  sourcePath: string,
+  suggestedTitle?: string | null,
+) => invoke<Paper>("import_browser_download", {
+  sourcePath,
+  suggestedTitle: suggestedTitle ?? null,
+});
+
 /** 解析进度（后端 parse_pdf 通过 Channel 推送） */
 export interface ParseProgress {
   /** uploading / pending / converting / running / downloading / indexing */
@@ -284,6 +292,8 @@ export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperI
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
+export const importPdfUrl = (url: string, suggestedTitle?: string | null) =>
+  invoke<Paper>("import_pdf_url", { url, suggestedTitle: suggestedTitle ?? null });
 export const parsePdf = (
   paperId: string,
   onProgress?: (p: ParseProgress) => void,
