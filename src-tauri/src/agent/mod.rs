@@ -370,6 +370,7 @@ async fn drive_loop<L: LlmChat>(
         let calls = resp.tool_calls;
         messages.push(AgentMsg::ToolCalls {
             content: resp.content.clone(),
+            reasoning: resp.reasoning.clone(),
             calls: calls.clone(),
         });
 
