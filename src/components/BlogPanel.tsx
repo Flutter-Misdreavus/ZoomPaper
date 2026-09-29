@@ -1,12 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
 import { HighlightNotePopover } from "@/components/HighlightNotePopover";
 import { SelectionToolbar, HIGHLIGHT_COLORS } from "@/components/SelectionToolbar";
-import { generateBlog, type Paper } from "@/lib/api";
+import type { Paper } from "@/lib/api";
 import { loadTextHighlights, saveTextHighlights } from "@/lib/annotations";
+import { blogJobs } from "@/lib/blogJobs";
 import { applyMarks, type TextHighlight } from "@/lib/textAnnotate";
 import { useTextSelection, type PendingSelection } from "@/lib/useTextSelection";
 import { copyTextToClipboard } from "@/lib/utils";
@@ -50,8 +58,44 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
   const [parsed, setParsed] = useState<ParsedBlog | null>(null);
   const [activeKey, setActiveKey] = useState<AnalysisKey>("task");
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const subscribeToJob = useCallback(
+    (listener: () => void) => blogJobs.subscribe(paper.id, listener),
+    [paper.id],
+  );
+  const getJobSnapshot = useCallback(
+    () => blogJobs.getSnapshot(paper.id),
+    [paper.id],
+  );
+  const job = useSyncExternalStore(
+    subscribeToJob,
+    getJobSnapshot,
+    getJobSnapshot,
+  );
   const [error, setError] = useState<string | null>(null);
+  const onBlogGeneratedRef = useRef(onBlogGenerated);
+
+  useEffect(() => {
+    onBlogGeneratedRef.current = onBlogGenerated;
+  }, [onBlogGenerated]);
+
+  // 切换论文时清掉上一篇的本地展示；任务状态由下面的应用级仓库恢复。
+  useEffect(() => {
+    setBlog(null);
+    setParsed(null);
+    setError(null);
+  }, [paper.id]);
+
+  useEffect(() => {
+    if (job.status === "completed") {
+      setBlog(job.markdown);
+      setParsed(parseBlog(job.markdown));
+      const blogPath = paper.md_path.replace(/[^/\\]+$/, "blog.md");
+      onBlogGeneratedRef.current(blogPath);
+      setError(null);
+    } else if (job.status === "failed") {
+      setError(job.error);
+    }
+  }, [job, paper.md_path]);
 
   // ---- 划选高亮 / 笔记（与 PDF 阅读一致） ----
   const [highlights, setHighlights] = useState<TextHighlight[]>([]);
@@ -154,21 +198,9 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
     };
   }, [sel]);
 
-  async function handleGenerate() {
-    setGenerating(true);
+  function handleGenerate() {
     setError(null);
-    try {
-      const md = await generateBlog(paper.id);
-      setBlog(md);
-      setParsed(parseBlog(md));
-      // blog.md 落盘在 paper.md 同级目录，与后端保持一致
-      const blogPath = paper.md_path.replace(/[^/\\]+$/, "blog.md");
-      onBlogGenerated(blogPath);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setGenerating(false);
-    }
+    void blogJobs.start(paper.id).catch(() => {});
   }
 
   /** 注册内容容器（callback ref；元素变化时更新 docKey 映射） */
@@ -231,6 +263,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
 
   // 论文目录：博客与 paper.md 同目录，相对图片路径（images/...）以此为基准解析
   const baseDir = paper.md_path.replace(/[^/\\]+$/, "").replace(/[\\/]+$/, "");
+  const generating = job.status === "running";
 
   if (loading) {
     return (
@@ -263,6 +296,11 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
           )}
           {generating ? "生成中…" : blog ? "重新生成" : "生成博客"}
         </Button>
+        {generating && (
+          <span className="text-xs text-muted-foreground">
+            正在后台生成，可放心切换论文
+          </span>
+        )}
         {blog && (
           <Button
             variant={showList ? "secondary" : "ghost"}
