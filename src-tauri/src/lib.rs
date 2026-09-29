@@ -59,6 +59,7 @@ pub fn run() {
             commands::search,
             commands::generate_blog,
             commands::translate_chunk,
+            commands::translate_selection,
             commands::save_translation,
             commands::get_translation,
             commands::get_annotations,

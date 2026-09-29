@@ -1275,6 +1275,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       {/* 划选浮动工具条（共享组件） */}
       {selToolbar && (
         <SelectionToolbar
+          text={selToolbar.text}
           x={selToolbar.x}
           y={selToolbar.y}
           onHighlight={(color) => createHighlights(color)}

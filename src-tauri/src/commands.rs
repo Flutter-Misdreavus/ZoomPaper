@@ -1461,6 +1461,28 @@ pub async fn translate_chunk(text: String) -> Result<String, String> {
     Ok(zh.trim().to_string())
 }
 
+/// 划选速译独立于全文翻译，不添加英文括注或解释。
+#[tauri::command]
+pub async fn translate_selection(text: String, context: Option<String>) -> Result<String, String> {
+    let text = text.trim();
+    if text.is_empty() || text.chars().count() > 2000 {
+        return Err("请选择 1–2000 个字符进行速译".into());
+    }
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let llm = crate::ai::llm::Llm::from_settings(&settings).map_err(|e| e.to_string())?;
+    let context: String = context.unwrap_or_default().chars().take(1000).collect();
+    let messages = crate::translate::build_selection_messages(text, &context);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(45), llm.chat(&messages))
+        .await
+        .map_err(|_| "翻译超时，请重试".to_string())?
+        .map_err(|e| e.to_string())?;
+    let result = result.trim();
+    if result.is_empty() {
+        return Err("未收到译文，请重试".into());
+    }
+    Ok(result.to_string())
+}
+
 /// 把翻译结果（en/zh 分块对）落盘为论文目录下的 translation.json。
 #[tauri::command]
 pub fn save_translation(
