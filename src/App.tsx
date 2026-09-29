@@ -7,6 +7,7 @@ import { SettingsPage } from "@/pages/Settings";
 import { SearchPage } from "@/pages/SearchPage";
 import { AskPage } from "@/pages/AskPage";
 import { TimelinePage } from "@/pages/TimelinePage";
+import { HelpPage } from "@/pages/HelpPage";
 import { NavRail, type NavItem } from "@/components/NavRail";
 import { BrowserImportNotice, type BrowserImportPhase } from "@/components/BrowserImportNotice";
 import { importBrowserDownload, importPdfUrl, parsePdf } from "@/lib/api";
@@ -17,7 +18,8 @@ type View =
   | { name: "search" }
   | { name: "ask" }
   | { name: "reader"; paperId: string; pageIdx?: number }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "help" };
 
 function App() {
   const [view, setView] = useState<View>({ name: "library" });
@@ -29,6 +31,12 @@ function App() {
   } | null>(null);
   const handledLinks = useRef(new Set<string>());
   const importQueue = useRef(Promise.resolve());
+
+  useEffect(() => {
+    const preventNativeMenu = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener("contextmenu", preventNativeMenu);
+    return () => document.removeEventListener("contextmenu", preventNativeMenu);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -47,6 +55,10 @@ function App() {
         const localFile = link.searchParams.get("file");
         if (!pdfUrl && !localFile) continue;
         const title = link.searchParams.get("title")?.trim() || "浏览器中的论文";
+        const sourceUrl = link.searchParams.get("source");
+        const githubUrl = link.searchParams.get("github");
+        const venue = link.searchParams.get("venue");
+        const sourceIconUrl = link.searchParams.get("icon");
         const requestId = link.searchParams.get("request") || rawLink;
         if (handledLinks.current.has(requestId)) continue;
         handledLinks.current.add(requestId);
@@ -57,8 +69,8 @@ function App() {
           setBrowserImport({ phase: "downloading", title, message: "正在安全下载 PDF…" });
           try {
             const paper = localFile
-              ? await importBrowserDownload(localFile, title)
-              : await importPdfUrl(pdfUrl!, title);
+              ? await importBrowserDownload(localFile, title, sourceUrl, githubUrl, venue, sourceIconUrl)
+              : await importPdfUrl(pdfUrl!, title, sourceUrl, githubUrl, venue, sourceIconUrl);
             if (disposed) return;
             setLibraryRefreshSignal((value) => value + 1);
             setBrowserImport({ phase: "parsing", title: paper.title, message: "已保存，正在提取正文与元数据…" });
@@ -66,7 +78,7 @@ function App() {
               await parsePdf(paper.id);
               if (disposed) return;
               setLibraryRefreshSignal((value) => value + 1);
-              setBrowserImport({ phase: "done", title: paper.title, message: "现在可以开始阅读、翻译和提问。" });
+              setBrowserImport({ phase: "done", title: paper.title, message: "" });
             } catch (error) {
               if (disposed) return;
               setLibraryRefreshSignal((value) => value + 1);
@@ -109,7 +121,7 @@ function App() {
         <Library onOpenPaper={openPaper} refreshSignal={libraryRefreshSignal} />
       ) : (
         /* 其余页面：主内容区自行控制滚动 */
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-6">
+        <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-white dark:bg-[#191919]" : "p-6"}`}>
           <motion.div
             key={view.name + ("paperId" in view ? view.paperId : "")}
             initial={{ opacity: 0 }}
@@ -128,6 +140,7 @@ function App() {
               />
             )}
             {view.name === "settings" && <SettingsPage />}
+            {view.name === "help" && <HelpPage />}
           </motion.div>
         </main>
       )}

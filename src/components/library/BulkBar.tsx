@@ -5,12 +5,13 @@
  */
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { motion, useReducedMotion } from "motion/react";
-import { ChevronDown, FolderPlus, Trash2, X } from "lucide-react";
+import { BookCheck, CircleDot, Download, FolderPlus, Trash2, X } from "lucide-react";
 import type { ReadingStatus } from "@/lib/api";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
 
 /** 次级按钮：灰阶 ghost，hover 浮起 */
 const BAR_BTN =
-  "pressable flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] text-zp-secondary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary";
+  "pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zp-secondary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary";
 
 const MENU_ITEM_CLASS =
   "flex w-full cursor-default select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
@@ -29,12 +30,22 @@ interface Props {
   onSetStatus: (status: ReadingStatus) => void;
   /** 添加到文件夹 */
   onPickFolder: () => void;
+  /** 单篇导出阅读笔记；多选时禁用，避免连续弹出保存窗口 */
+  onExport: () => void;
   onDelete: () => void;
   /** 关闭（清空选择） */
   onClose: () => void;
 }
 
-export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete, onClose }: Props) {
+export function BulkBar({
+  count,
+  onMarkRead,
+  onSetStatus,
+  onPickFolder,
+  onExport,
+  onDelete,
+  onClose,
+}: Props) {
   const reduceMotion = useReducedMotion();
 
   return (
@@ -51,25 +62,25 @@ export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete
         transition: { duration: 0.15, ease: [0.23, 1, 0.32, 1] },
       }}
       transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-2 rounded-xl border border-zp-border bg-white px-5 py-2 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-white/75 dark:bg-zp-surface/80"
+      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-white px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-white/75 dark:bg-zp-surface/80"
     >
       {/* 左区：计数 */}
       <span className="mr-1 shrink-0 text-sm font-medium text-zp-primary tabular-nums">
-        {count} 篇已选
+        {count} 篇
       </span>
       <span className="h-4 w-px shrink-0 bg-zp-border" aria-hidden />
 
       {/* 中区：操作按钮组 */}
-      <button type="button" className={BAR_BTN} onClick={onMarkRead}>
-        标记已读
-      </button>
+      <IconTooltip label="标记已读"><button type="button" className={BAR_BTN} onClick={onMarkRead} aria-label="标记已读">
+        <BookCheck className="h-4 w-4" />
+      </button></IconTooltip>
 
+      <IconTooltip label="修改阅读状态">
       <MenuPrimitive.Root>
         <MenuPrimitive.Trigger
           render={
-            <button type="button" className={BAR_BTN}>
-              标记状态
-              <ChevronDown className="h-3.5 w-3.5" />
+            <button type="button" className={BAR_BTN} aria-label="修改阅读状态">
+              <CircleDot className="h-4 w-4" />
             </button>
           }
         />
@@ -89,32 +100,47 @@ export function BulkBar({ count, onMarkRead, onSetStatus, onPickFolder, onDelete
           </MenuPrimitive.Positioner>
         </MenuPrimitive.Portal>
       </MenuPrimitive.Root>
+      </IconTooltip>
 
-      <button type="button" className={BAR_BTN} onClick={onPickFolder}>
+      <IconTooltip label="添加到文件夹"><button type="button" className={BAR_BTN} onClick={onPickFolder} aria-label="添加到文件夹">
         <FolderPlus className="h-4 w-4" />
-        添加到文件夹
+      </button></IconTooltip>
+
+      <IconTooltip label={count === 1 ? "导出阅读笔记" : "每次请选择一篇论文导出笔记"}>
+      <button
+        type="button"
+        className={`${BAR_BTN} disabled:cursor-not-allowed disabled:opacity-40`}
+        onClick={onExport}
+        disabled={count !== 1}
+        aria-label="导出阅读笔记"
+      >
+        <Download className="h-4 w-4" />
       </button>
+      </IconTooltip>
 
       {/* 删除：红字浅红底（危险可见但不过重） */}
+      <IconTooltip label="删除所选论文">
       <button
         type="button"
-        className="pressable flex items-center gap-1.5 rounded-md bg-red-500/10 px-3 py-1.5 text-[13px] text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400"
+        className="pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
         onClick={onDelete}
+        aria-label="删除所选论文"
       >
         <Trash2 className="h-4 w-4" />
-        删除
       </button>
+      </IconTooltip>
 
       {/* 右区：关闭（清空选择） */}
+      <IconTooltip label="清空选择" className="ml-auto">
       <button
         type="button"
-        title="清空选择"
         aria-label="清空选择"
         onClick={onClose}
-        className="pressable ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-zp-quaternary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary"
+        className="pressable flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-zp-quaternary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary"
       >
         <X className="h-4 w-4" />
       </button>
+      </IconTooltip>
     </motion.div>
   );
 }

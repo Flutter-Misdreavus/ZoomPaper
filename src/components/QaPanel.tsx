@@ -3,11 +3,11 @@ import { QaChat } from "@/components/QaChat";
 import { QuizPanel } from "@/components/QuizPanel";
 import { ConversationDeleteDialog } from "@/components/ConversationDeleteDialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
 import { deleteConversation, listConversations, type Conversation } from "@/lib/api";
 import { formatTime } from "@/lib/utils";
 import type { AnnotationRect } from "@/lib/api";
-import { History, PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
+import { CircleHelp, History, PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
 
 const WIDTH_KEY = "zoompaper.qaWidth";
 const COLLAPSED_KEY = "zoompaper.qaCollapsed";
@@ -26,11 +26,6 @@ function loadWidth(): number {
 /** 每篇论文「上次打开的会话」localStorage key */
 function lastConvKey(paperId: string): string {
   return `zoompaper.lastConv.${paperId}`;
-}
-
-/** 每篇论文「问答/测验」当前页的 localStorage key */
-function qaTabKey(paperId: string): string {
-  return `zoompaper.qaTab.${paperId}`;
 }
 
 /** PDF 选中段落（上下文引用条目；rects 为归一化矩形，用于「跳转到原文」精确定位） */
@@ -65,29 +60,26 @@ interface Props {
 const MAX_SELECTIONS = 5;
 
 /**
- * 阅读页右侧面板：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
+ * 阅读页右侧问答栏：可拖拽左缘分隔条调宽（1:1 跟踪，拖拽中无过渡），
  * 可收纳为 40px 竖条（宽度过渡 240ms ease-drawer）。
- * 面板内含「问答 | 测验」两页（头部分段切换，localStorage 按论文记住）；
- * QaChat 与 QuizPanel 均始终挂载（display:none 切换），切换/收纳都不丢状态。
- * 问答页头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
+ * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
+ * 头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
  * 用 localStorage 记住每篇论文上次打开的会话，重新进入自动恢复。
- * 划选文字（acceptSelection）时自动切回问答页。
- * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答与测验。
+ * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答。
  */
 export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   { paperId, onJumpPage, onJumpToSelection },
   ref,
 ) {
+  const [tab, setTab] = useState<"qa" | "quiz">(() => localStorage.getItem(`zoompaper.qaTab.${paperId}`) === "quiz" ? "quiz" : "qa");
+  function switchTab(next: "qa" | "quiz") { setTab(next); localStorage.setItem(`zoompaper.qaTab.${paperId}`, next); }
+  useEffect(() => { setTab(localStorage.getItem(`zoompaper.qaTab.${paperId}`) === "quiz" ? "quiz" : "qa"); }, [paperId]);
   const [width, setWidth] = useState(loadWidth);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSED_KEY) === "1",
   );
-  // 面板内当前页：问答 / 测验（localStorage 按论文记住，paperId 变化时恢复）
-  const [tab, setTab] = useState<"qa" | "quiz">(() =>
-    localStorage.getItem(qaTabKey(paperId)) === "quiz" ? "quiz" : "qa",
-  );
   const [dragging, setDragging] = useState(false);
-  // PDF 选中的段落列表（上下文引用区，可多条；提交后由 QaChat 回调清空并附着到消息）
+  // PDF 选中的段落列表（上下文引用区，可多条；发送成功后由 QaChat 回调清空）
   const [selections, setSelections] = useState<AskSelection[]>([]);
   const dragStart = useRef<{ x: number; width: number; max: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -96,8 +88,9 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   const [conversations, setConversations] = useState<Conversation[]>([]);
   /** null = 新会话 */
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [chatRevision, setChatRevision] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   /** 待删除确认的会话 */
   const [confirmDelete, setConfirmDelete] = useState<Conversation | null>(null);
@@ -113,7 +106,6 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
       location?: string,
     ) {
       setCollapsed(false);
-      // 划选文字是要提问：切回问答页
       switchTab("qa");
       setSelections((prev) => {
         // 同页同文本去重；达到上限后忽略
@@ -124,40 +116,17 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     },
   }));
 
-  /** 切换问答/测验页并持久化 */
-  function switchTab(next: "qa" | "quiz") {
-    setTab(next);
-    localStorage.setItem(qaTabKey(paperId), next);
-  }
-
-  /** 把引用加回输入框引用区：与 acceptSelection 同一套去重/上限规则（rects 不持久化，重引条目为跳页级定位） */
   function requoteSelection(sel: { text: string; pageIdx: number | null; location?: string }) {
-    setSelections((prev) => {
-      if (prev.some((s) => s.text === sel.text && s.pageIdx === sel.pageIdx)) return prev;
-      if (prev.length >= MAX_SELECTIONS) return prev;
-      return [...prev, { text: sel.text, pageIdx: sel.pageIdx, location: sel.location }];
-    });
+    setSelections((prev) => prev.length >= MAX_SELECTIONS || prev.some((item) => item.text === sel.text && item.pageIdx === sel.pageIdx) ? prev : [...prev, sel]);
+    switchTab("qa");
   }
-
-  /** 发送失败后批量恢复引用（同去重/上限规则） */
-  function restoreSelections(
-    sels: { text: string; pageIdx: number | null; location?: string }[],
-  ) {
+  function restoreSelections(items: { text: string; pageIdx: number | null; location?: string }[]) {
     setSelections((prev) => {
-      let next = prev;
-      for (const sel of sels) {
-        if (next.length >= MAX_SELECTIONS) break;
-        if (next.some((s) => s.text === sel.text && s.pageIdx === sel.pageIdx)) continue;
-        next = [...next, { text: sel.text, pageIdx: sel.pageIdx, location: sel.location }];
-      }
+      const next = [...prev];
+      for (const item of items) if (next.length < MAX_SELECTIONS && !next.some((x) => x.text === item.text && x.pageIdx === item.pageIdx)) next.push(item);
       return next;
     });
   }
-
-  // 论文切换时恢复该论文记住的页签
-  useEffect(() => {
-    setTab(localStorage.getItem(qaTabKey(paperId)) === "quiz" ? "quiz" : "qa");
-  }, [paperId]);
 
   // 当前允许的最大宽度：行容器宽 − 左列最小宽 − 分隔条宽，且不超过 MAX_WIDTH
   function currentMaxWidth(): number {
@@ -259,6 +228,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   function selectConversation(id: string) {
     if (sending) return;
     setActiveConvId(id);
+    setChatRevision((v) => v + 1);
     localStorage.setItem(lastConvKey(paperId), id);
     setSelections([]);
     setHistoryOpen(false);
@@ -268,6 +238,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   function startNew() {
     if (sending) return;
     setActiveConvId(null);
+    setChatRevision((v) => v + 1);
     localStorage.removeItem(lastConvKey(paperId));
     setSelections([]);
     setHistoryOpen(false);
@@ -281,6 +252,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
       await deleteConversation(confirmDelete.id);
       if (activeConvId === confirmDelete.id) {
         setActiveConvId(null);
+        setChatRevision((v) => v + 1);
         localStorage.removeItem(lastConvKey(paperId));
       }
       setConfirmDelete(null);
@@ -294,28 +266,24 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
 
   return (
     <div ref={rootRef} className="flex min-h-0 shrink-0">
-      {/* 分隔条：8px hit 区，hover/拖拽显示指示线；收纳时隐藏 */}
+      {/* 保留不可见拖拽热区，视觉上让正文与助手自然衔接。 */}
       {!collapsed && (
         <div
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
-          className="group relative w-2 shrink-0 cursor-col-resize touch-none"
+          className="relative w-2 shrink-0 cursor-col-resize touch-none"
           role="separator"
           aria-orientation="vertical"
           aria-label="调整问答栏宽度"
         >
-          <div
-            className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
-              dragging ? "bg-primary/60" : "bg-border group-hover:bg-primary/40"
-            }`}
-          />
+          <div className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 ${dragging ? "bg-primary/30" : "bg-transparent"}`} />
         </div>
       )}
 
       <aside
-        className="flex min-h-0 shrink-0 flex-col overflow-hidden rounded-lg border bg-card"
+        className="flex min-h-0 shrink-0 flex-col overflow-hidden bg-[#fbfbfa] dark:bg-[#191919]"
         style={{
           width: collapsed ? COLLAPSED_WIDTH : width,
           marginLeft: collapsed ? 8 : 0,
@@ -325,57 +293,31 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
         }}
       >
         {/* 收纳态：整根竖条可点击展开 */}
-        <button
+        {collapsed && <IconTooltip label="展开对话" side="left" className="flex flex-1"><button
           onClick={() => toggleCollapsed(false)}
-          title="展开对话"
-          className={`flex-col items-center gap-2 py-3 text-muted-foreground transition-colors hover:text-foreground ${
-            collapsed ? "flex flex-1" : "hidden"
-          }`}
+          aria-label="展开对话"
+          className="flex flex-1 items-start px-2 py-3 text-muted-foreground transition-colors hover:text-foreground"
         >
           <PanelRightOpen className="h-4 w-4" />
-          <span className="text-xs [writing-mode:vertical-rl]">对话</span>
-        </button>
+        </button></IconTooltip>}
 
         {/* 展开态：display:none 保持挂载，不丢会话状态 */}
         <div className={`min-h-0 flex-1 flex-col ${collapsed ? "hidden" : "flex"}`}>
-          <div className="flex items-center justify-between border-b px-2 py-1.5">
-            {/* 问答 / 测验 分段切换 */}
-            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
-              {(["qa", "quiz"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => switchTab(t)}
-                  className={`pressable rounded px-2 py-0.5 text-xs transition-colors ${
-                    tab === t
-                      ? "bg-accent font-medium text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {t === "qa" ? "问答" : "测验"}
-                </button>
-              ))}
-            </div>
+          <div className="flex h-12 items-center justify-between px-4">
+            <div className="flex items-center gap-1" role="tablist" aria-label="论文助手">{(["qa", "quiz"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => switchTab(item)} className={`rounded-md px-2.5 py-1 text-sm ${tab === item ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{item === "qa" ? "问答" : "测验"}</button>)}</div>
             <div className="flex items-center gap-0.5">
-              {/* 历史会话下拉：新对话 / 当前论文历史会话选择 / 删除（仅问答页） */}
-              {tab === "qa" && (
+              <IconTooltip label={sending ? "回复中，暂时无法新建对话" : "新对话"} side="bottom"><button onClick={startNew} disabled={sending} aria-label="新对话" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent disabled:opacity-50"><Plus className="h-4 w-4" /></button></IconTooltip>
+              {/* 历史会话下拉：当前论文历史会话选择 / 删除 */}
+              <IconTooltip label={sending ? "生成中不可切换会话" : "历史会话"} side="bottom">
               <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
                 <PopoverTrigger
                   disabled={sending}
-                  title={sending ? "生成中不可切换会话" : "历史会话"}
+                  aria-label="历史会话"
                   className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <History className="h-4 w-4" />
                 </PopoverTrigger>
                 <PopoverContent align="end" sideOffset={4} className="w-64 p-1">
-                  <button
-                    onClick={startNew}
-                    disabled={sending}
-                    className="pressable flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium text-primary transition-colors hover:bg-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    新对话
-                  </button>
-                  <Separator className="my-1" />
                   {historyError && (
                     <p className="px-2 py-1 text-[11px] text-destructive">{historyError}</p>
                   )}
@@ -404,57 +346,66 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
                               {formatTime(c.updated_at)}
                             </div>
                           </button>
-                          <button
+                          <IconTooltip label="删除会话" side="left" className="absolute top-1/2 right-1 -translate-y-1/2"><button
                             onClick={(e) => {
                               e.stopPropagation();
                               setConfirmDelete(c);
                             }}
-                            title="删除会话"
-                            className="pressable absolute top-1/2 right-1 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
+                            aria-label="删除会话"
+                            className="pressable rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover:opacity-100"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          </button></IconTooltip>
                         </div>
                       ))}
                     </div>
                   )}
                 </PopoverContent>
               </Popover>
-              )}
+              </IconTooltip>
+              <IconTooltip label="帮助" side="bottom">
+              <Popover>
+                <PopoverTrigger aria-label="帮助" className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+                  <CircleHelp className="h-4 w-4" />
+                </PopoverTrigger>
+                <PopoverContent align="end" sideOffset={6} className="w-72 space-y-2 p-3 text-xs leading-relaxed text-muted-foreground">
+                  <p><strong className="text-foreground">快捷键</strong>　Enter 发送，Shift + Enter 换行。</p>
+                  <p><strong className="text-foreground">模式</strong>　快速适合直接问答；深度会进行多步检索与分析。</p>
+                  <p><strong className="text-foreground">引用</strong>　在论文中划词后选择“提问”，原文会自动附到下一条消息。</p>
+                </PopoverContent>
+              </Popover>
+              </IconTooltip>
+              <IconTooltip label="收起对话" side="bottom">
               <button
                 onClick={() => toggleCollapsed(true)}
-                title="收起对话"
+                aria-label="收起对话"
                 className="pressable rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <PanelRightClose className="h-4 w-4" />
               </button>
+              </IconTooltip>
             </div>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col p-3">
-            {/* 两页均始终挂载（display:none 保活），切换不丢状态 */}
-            <div className={`min-h-0 flex-1 flex-col ${tab === "qa" ? "flex" : "hidden"}`}>
-              <QaChat
-                key={activeConvId ?? "new"}
-                paperId={paperId}
-                conversationId={activeConvId}
-                onJumpPage={onJumpPage}
-                onJumpToSelection={onJumpToSelection}
-                selections={selections}
-                maxSelections={MAX_SELECTIONS}
-                onClearSelections={() => setSelections([])}
-                onRemoveSelection={(i) =>
-                  setSelections((prev) => prev.filter((_, idx) => idx !== i))
-                }
-                onRequoteSelection={requoteSelection}
-                onRestoreSelections={restoreSelections}
-                onConversationCreated={handleConversationCreated}
-                onSendingChange={setSending}
-              />
-            </div>
-            <div className={`min-h-0 flex-1 flex-col ${tab === "quiz" ? "flex" : "hidden"}`}>
-              <QuizPanel paperId={paperId} />
-            </div>
+          <div className={`min-h-0 flex-1 flex-col px-3 pb-3 ${tab === "qa" ? "flex" : "hidden"}`}>
+            {historyLoading ? <div role="status" className="flex flex-1 items-center justify-center text-sm text-muted-foreground">正在恢复对话…</div> : <QaChat
+              key={`${paperId}:${chatRevision}`}
+              paperId={paperId}
+              conversationId={activeConvId}
+              onJumpPage={onJumpPage}
+              onJumpToSelection={onJumpToSelection}
+              selections={selections}
+              maxSelections={MAX_SELECTIONS}
+              onClearSelections={() => setSelections([])}
+              onRequoteSelection={requoteSelection}
+              onRestoreSelections={restoreSelections}
+              onRemoveSelection={(i) =>
+                setSelections((prev) => prev.filter((_, idx) => idx !== i))
+              }
+              onConversationCreated={handleConversationCreated}
+              onSendingChange={setSending}
+            />}
           </div>
+          <div className={`min-h-0 flex-1 flex-col px-3 pb-3 ${tab === "quiz" ? "flex" : "hidden"}`}><QuizPanel paperId={paperId} /></div>
         </div>
       </aside>
 

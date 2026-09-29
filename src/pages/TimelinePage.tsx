@@ -30,12 +30,14 @@ import {
   timelineStats,
   updateReadingPlan,
   type Paper,
+  type ReadingStatus,
   type ReadingPlan,
   type TimelineDay,
   type TimelineStats,
 } from "@/lib/api";
 import { cn, formatDuration, formatTime } from "@/lib/utils";
 import { dueBadge } from "@/components/library/planMenu";
+import { VenueBadge } from "@/components/library/VenueBadge";
 import {
   BookCheck,
   CalendarClock,
@@ -79,6 +81,14 @@ const HEAT_CLASSES = [
   "bg-[#216e39] dark:bg-[#39d353]",
 ];
 
+function readingTitleClass(status: string): string {
+  return status === "unread"
+    ? "font-semibold text-zp-primary"
+    : status === "read"
+      ? "font-normal text-zp-tertiary"
+      : "font-medium text-zp-primary";
+}
+
 export function TimelinePage({ onOpenPaper }: Props) {
   const [stats, setStats] = useState<TimelineStats | null>(null);
   const [plans, setPlans] = useState<ReadingPlan[]>([]);
@@ -91,7 +101,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
       .then(([s, pl, ps]) => {
         setStats(s);
         setPlans(pl);
-        setPapers(ps);
+        setPapers(ps.filter((paper) => paper.deleted_at == null));
       })
       .catch((e) => setError(String(e)));
   }, []);
@@ -138,6 +148,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
         .slice(0, 20),
     [papers],
   );
+  const paperById = useMemo(() => new Map(papers.map((paper) => [paper.id, paper])), [papers]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto pb-6">
@@ -233,17 +244,14 @@ export function TimelinePage({ onOpenPaper }: Props) {
                         onClick={() => onOpenPaper(p.paper_id)}
                         className="pressable flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zp-surface-hover"
                       >
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            p.reading_status === "read"
-                              ? "bg-emerald-500"
-                              : p.reading_status === "reading"
-                                ? "bg-amber-500"
-                                : "bg-zp-quaternary",
-                          )}
+                        <VenueBadge
+                          compact
+                          venue={paperById.get(p.paper_id)?.venue ?? null}
+                          sourceUrl={paperById.get(p.paper_id)?.source_url}
+                          iconUrl={paperById.get(p.paper_id)?.source_icon_url}
+                          status={p.reading_status as ReadingStatus}
                         />
-                        <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                        <span className={cn("min-w-0 flex-1 truncate", readingTitleClass(p.reading_status))}>{p.title}</span>
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {formatDuration(p.seconds)}
                         </span>
@@ -285,17 +293,8 @@ export function TimelinePage({ onOpenPaper }: Props) {
                   onClick={() => onOpenPaper(p.id)}
                   className="pressable flex w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-zp-surface-hover"
                 >
-                  <span
-                    className={cn(
-                      "h-1.5 w-1.5 shrink-0 rounded-full",
-                      p.reading_status === "read"
-                        ? "bg-emerald-500"
-                        : p.reading_status === "reading"
-                          ? "bg-amber-500"
-                          : "bg-zp-quaternary",
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-sm">{p.title}</span>
+                  <VenueBadge compact venue={p.venue} sourceUrl={p.source_url} iconUrl={p.source_icon_url} status={p.reading_status as ReadingStatus} />
+                  <span className={cn("min-w-0 flex-1 truncate text-sm", readingTitleClass(p.reading_status))}>{p.title}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     累计 {formatDuration(p.total_read_seconds)}
                   </span>

@@ -2,15 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { Reorder } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ChatComposer } from "@/components/ChatComposer";
+import { useStickyScroll } from "@/hooks/useStickyScroll";
+import { Input } from "@/components/ui/input";
 import { MarkdownView } from "@/components/MarkdownView";
 import { LiveClock } from "@/components/LiveClock";
 import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { TimingLine } from "@/components/TimingLine";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import { WebToggle } from "@/components/WebToggle";
-import { useStickyScroll } from "@/hooks/useStickyScroll";
 import {
   cancelGeneration,
   feynmanConfirmPlan,
@@ -31,7 +31,6 @@ import {
   isWebSearchConfigured,
 } from "@/lib/api";
 import {
-  ArrowDown,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -147,22 +146,7 @@ export function FeynmanChat({ paperId }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editObjective, setEditObjective] = useState("");
-  // 吸底滚动：用户上翻时停止跟随，浮出「回到底部」
-  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([
-    conceptMessages,
-    activeIndex,
-    sending,
-    review,
-    starting,
-    judging,
-    quizzing,
-    nexting,
-    planning,
-    liveText,
-    liveThinking,
-    fs,
-    legacyMessages,
-  ]);
+  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([conceptMessages, activeIndex, sending, review, starting, judging, quizzing, nexting, planning, liveText, liveThinking, fs, legacyMessages]);
 
   // 恢复该论文最近的费曼会话（主行 + 状态 + 当前概念消息）
   useEffect(() => {
@@ -228,8 +212,6 @@ export function FeynmanChat({ paperId }: Props) {
     }
   }, [fs]);
 
-  // 新消息滚动到底部由 useStickyScroll 承担（仅贴底时跟随）
-
   // 派生状态
   const isPlanning = fs?.status === "planning" && !legacy;
   const activeIdx = activeIndex ?? (fs ? fs.current_index : null);
@@ -260,9 +242,9 @@ export function FeynmanChat({ paperId }: Props) {
   const switchConcept = useCallback(
     async (i: number) => {
       if (!fs || legacy) return;
+      stick();
       setActiveIndex(i);
       setReview(null);
-      stick(); // 切换概念：吸附回底部
       if (conceptMessages[i]) return;
       const sessionId = fs.concepts[i]?.session_id;
       if (!sessionId) return;
@@ -294,7 +276,6 @@ export function FeynmanChat({ paperId }: Props) {
       setLegacyMessages([]);
       setActiveIndex(null);
       setConceptMessages({});
-      stick();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -327,7 +308,6 @@ export function FeynmanChat({ paperId }: Props) {
             : [],
         }));
         setTurnThinking((prev) => ({ ...prev, 0: turn.thinking ?? "" }));
-        stick();
       }
     } catch (e) {
       setError(String(e));
@@ -379,6 +359,7 @@ export function FeynmanChat({ paperId }: Props) {
   }
 
   async function handleSend() {
+    stick();
     const content = input.trim();
     if (!content || sending || !activeSessionId || activeIdx === null) return;
     const idx = activeIdx; // 捕获，防异步竞态
@@ -393,7 +374,6 @@ export function FeynmanChat({ paperId }: Props) {
       ...prev,
       [idx]: [...(prev[idx] ?? []), { role: "user", content }],
     }));
-    stick(); // 自己发送：恢复吸附，滚到底
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -439,7 +419,6 @@ export function FeynmanChat({ paperId }: Props) {
     setPausedNote(false);
     cancelTokenRef.current = crypto.randomUUID();
     resetLive();
-    stick(); // 用户发起的生成：恢复吸附
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -473,7 +452,6 @@ export function FeynmanChat({ paperId }: Props) {
     setPausedNote(false);
     cancelTokenRef.current = crypto.randomUUID();
     resetLive();
-    stick(); // 用户发起的生成：恢复吸附
     try {
       const ch = new Channel<AgentEvent>();
       ch.onmessage = onAgentEvent;
@@ -523,7 +501,6 @@ export function FeynmanChat({ paperId }: Props) {
             : [],
         }));
         setTurnThinking((prev) => ({ ...prev, [nextIdx]: turn.thinking ?? "" }));
-        stick(); // 切换到新概念：吸附回底部
       }
     } catch (e) {
       setError(String(e));
@@ -897,12 +874,7 @@ export function FeynmanChat({ paperId }: Props) {
       )}
 
       {/* 消息区 */}
-      <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2"
-      >
+      <div ref={scrollRef} onScroll={onScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-2">
         {loadingHistory ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -921,10 +893,6 @@ export function FeynmanChat({ paperId }: Props) {
         ) : !fs ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center text-muted-foreground">
             <GraduationCap className="h-10 w-10" />
-            <p className="max-w-md text-sm">
-              用费曼学习法把这篇论文讲明白：AI 先生成一份概念教学计划，每个概念一个独立会话，
-              逐个讲解，学生追问并用测验检验你是否真的讲透了。
-            </p>
             <Button
               onClick={() => void handleStart()}
               disabled={starting}
@@ -941,62 +909,63 @@ export function FeynmanChat({ paperId }: Props) {
         ) : (
           activeMessages.map((m, i) =>
             m.role === "user" ? (
-              <div
-                key={i}
-                className={`zp-msg-in flex justify-end ${
-                  i > 0 ? "mt-1 border-t border-border/50 pt-4" : ""
-                }`}
-              >
-                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground shadow-sm">
+              <div key={i} className="flex justify-end">
+                <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
                   {m.content}
                 </div>
               </div>
             ) : (
-              /* 学生回答：通栏无气泡，长文/公式直接排版 */
-              <div key={i} className="zp-msg-in">
-                {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
-                {(m.role === "assistant" &&
-                  i === activeMessages.length - 1 &&
-                  thinking) ||
-                (m.trace && m.trace.length > 0) ? (
-                  <div className="mb-2 flex flex-col gap-1.5">
-                    {m.role === "assistant" &&
-                      i === activeMessages.length - 1 &&
-                      thinking && (
-                        <ThinkingPanel text={thinking} streaming={false} />
-                      )}
-                    {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
-                  </div>
-                ) : null}
-                <MarkdownView markdown={m.content} className="prose-sm" />
-                <TimingLine timing={m.timing} />
+              <div key={i} className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  {/* 回答上方 meta 区：思考胶囊（本轮）+ 工具调用胶囊（均默认收纳） */}
+                  {(m.role === "assistant" &&
+                    i === activeMessages.length - 1 &&
+                    thinking) ||
+                  (m.trace && m.trace.length > 0) ? (
+                    <div className="mb-2 flex flex-col gap-1.5">
+                      {m.role === "assistant" &&
+                        i === activeMessages.length - 1 &&
+                        thinking && (
+                          <ThinkingPanel text={thinking} streaming={false} />
+                        )}
+                      {m.trace && m.trace.length > 0 && <ToolTrace trace={m.trace} />}
+                    </div>
+                  ) : null}
+                  <MarkdownView markdown={m.content} className="prose-sm" />
+                  <TimingLine timing={m.timing} />
+                </div>
               </div>
             ),
           )
         )}
-        {/* 实时生成区：思考胶囊 + 工具卡片 + 流式回答（通栏）；无实时内容时三点占位 */}
+        {/* 实时生成区：思考胶囊（默认收纳）+ 工具卡片 + 流式回答；无实时内容时显示加载提示 */}
         {(sending || quizzing || judging || nexting || planning) && (
-          <div className="zp-msg-in flex flex-col gap-2">
+          <>
             {liveThinking && <ThinkingPanel text={liveThinking} streaming />}
-            {liveTrace.length > 0 && <ToolTrace trace={liveTrace} />}
+            {liveTrace.length > 0 && (
+              <div className="flex justify-start">
+                <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
+                  <ToolTrace trace={liveTrace} />
+                </div>
+              </div>
+            )}
             {liveText && (
-              <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                {liveText}
-                <span className="animate-pulse text-zp-ai">▍</span>
+              <div className="flex justify-start">
+                <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm">
+                  {liveText}
+                </div>
               </div>
             )}
             {!liveThinking && liveTrace.length === 0 && !liveText && (
-              <div className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
-                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
-                  <span className="zp-typing-dot h-1.5 w-1.5 rounded-full bg-zp-ai" />
-                </span>
-                学生正在研读论文并思考…
-                <LiveClock />
+              <div className="flex justify-start">
+                <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  学生正在研读论文并思考…
+                  <LiveClock />
+                </div>
               </div>
             )}
-          </div>
+          </>
         )}
         {/* 已暂停提示（本轮被用户暂停且无正文可提交时） */}
         {pausedNote && !busy && (
@@ -1006,10 +975,10 @@ export function FeynmanChat({ paperId }: Props) {
         )}
 
         {review && (
-          <div className="zp-msg-in flex justify-start">
-            <div className="max-w-[95%] rounded-xl border border-zp-ai/25 bg-zp-ai-soft px-4 py-3">
+          <div className="flex justify-start">
+            <div className="max-w-[95%] rounded-2xl border border-primary/20 bg-accent/40 px-4 py-3">
               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
-                <Sparkles className="h-3.5 w-3.5 text-zp-ai" />
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
                 教学复盘
               </div>
               <MarkdownView markdown={review} className="prose-sm" />
@@ -1017,18 +986,7 @@ export function FeynmanChat({ paperId }: Props) {
           </div>
         )}
       </div>
-      {/* 回到底部：上翻阅读时浮出，点击恢复吸附 */}
-      {!atBottom && (
-        <button
-          type="button"
-          onClick={scrollToBottom}
-          title="回到底部"
-          className="zp-msg-in pressable absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full border bg-card text-muted-foreground shadow-md transition-colors hover:text-foreground"
-        >
-          <ArrowDown className="h-4 w-4" />
-        </button>
-      )}
-      </div>
+      {!atBottom && <button type="button" onClick={scrollToBottom} className="mx-auto rounded-full border bg-background px-3 py-1 text-xs text-muted-foreground shadow-sm">回到底部</button>}
 
       {error && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -1036,71 +994,44 @@ export function FeynmanChat({ paperId }: Props) {
         </div>
       )}
 
-      {/* 输入壳：左侧联网/出题/交卷，右侧发送（生成中变暂停）；legacy 只读禁用 */}
-      <ChatComposer
-        value={input}
-        onChange={setInput}
-        onSend={() => void handleSend()}
-        sending={busy}
-        onStop={() => {
-          if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current);
-        }}
-        sendDisabled={!input.trim() || legacy || !activeSessionId}
-        disabled={legacy || !activeSessionId}
-        placeholder={
-          legacy
-            ? "旧版会话仅可查看"
-            : !activeSessionId
-              ? "先制定教学计划并确认，开始闯关"
-              : isQuiz
-                ? "作答测验题…（答完点「交卷」）"
-                : "讲解你理解的论文概念…（Enter 发送，Shift+Enter 换行）"
-        }
-        left={
-          <WebToggle
-            on={webOn}
-            onChange={setWebOn}
-            configured={webConfigured}
-            disabled={legacy || !activeSessionId}
-          />
-        }
-        rightExtra={
-          <>
-            {canQuiz && (
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => void handleQuiz()}
-                disabled={quizzing}
-                title="学生出题，检验当前概念是否讲明白"
-                className="pressable h-8 w-8 shrink-0 rounded-full"
-              >
-                {quizzing ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ClipboardList className="h-4 w-4" />
-                )}
-              </Button>
+      <ChatComposer value={input} onChange={setInput} onSend={() => void handleSend()}
+        sending={busy} disabled={legacy || !activeSessionId}
+        onStop={() => { if (cancelTokenRef.current) void cancelGeneration(cancelTokenRef.current).catch((e) => setError(String(e))); }}
+        placeholder={legacy ? "旧版会话仅可查看" : !activeSessionId ? "确认教学计划后开始讲解" : isQuiz ? "在这里回答测验题…" : "讲讲你对这个概念的理解…"}
+        controls={<div className="flex flex-wrap items-center gap-2"><WebToggle on={webOn} onChange={setWebOn} configured={webConfigured} disabled={legacy || !activeSessionId || busy} />
+        {canQuiz && (
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => void handleQuiz()}
+            disabled={quizzing}
+            title="学生出题，检验当前概念是否讲明白"
+            className="pressable h-11 w-11 shrink-0"
+          >
+            {quizzing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ClipboardList className="h-4 w-4" />
             )}
-            {isQuiz && (
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => void handleJudge()}
-                disabled={!canJudge}
-                title={hasQuizAnswers ? "交卷并判定" : "先在对话中作答测验题"}
-                className="pressable h-8 w-8 shrink-0 rounded-full"
-              >
-                {judging ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4" />
-                )}
-              </Button>
+          </Button>
+        )}
+        {isQuiz && (
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={() => void handleJudge()}
+            disabled={!canJudge}
+            title={hasQuizAnswers ? "交卷并判定" : "先在对话中作答测验题"}
+            className="pressable h-11 w-11 shrink-0"
+          >
+            {judging ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" />
             )}
-          </>
-        }
-      />
+          </Button>
+        )}
+        </div>} />
     </div>
   );
 }

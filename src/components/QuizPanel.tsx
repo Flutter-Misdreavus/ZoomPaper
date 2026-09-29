@@ -568,11 +568,7 @@ function HistoryView({
         ) : quizzes.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <ClipboardList className="h-8 w-8 text-muted-foreground/50" />
-            <p className="text-[13px] text-muted-foreground">
-              还没有测验记录
-              <br />
-              点击「新建测验」，让 AI 出题检验你的理解
-            </p>
+            <p className="text-[13px] text-muted-foreground">还没有测验记录</p>
           </div>
         ) : (
           <div className="flex flex-col gap-1.5 py-0.5">

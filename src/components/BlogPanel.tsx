@@ -25,7 +25,6 @@ import {
   type ParsedBlog,
 } from "@/lib/blog";
 import {
-  FileText,
   List,
   Loader2,
   RefreshCw,
@@ -140,20 +139,21 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
   // 加载 / 保存博客标注（blog_annotations.json）
   useEffect(() => {
     let cancelled = false;
+    setHighlightsLoaded(false);
     loadTextHighlights(paper.id, "blog")
       .then((hs) => {
         if (cancelled) return;
         setHighlights(hs);
         setHighlightsLoaded(true);
       })
-      .catch(() => {});
+      .catch((e) => { if (!cancelled) setError(`无法读取标注：${e}`); });
     return () => {
       cancelled = true;
     };
   }, [paper.id]);
   useEffect(() => {
     if (!highlightsLoaded) return;
-    void saveTextHighlights(paper.id, "blog", highlights);
+    void saveTextHighlights(paper.id, "blog", highlights).catch((e) => setError(`标注保存失败：${e}`));
   }, [highlights, highlightsLoaded, paper.id]);
 
   // 划选监听：定位到所属容器并映射偏移
@@ -189,7 +189,10 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
       const s = window.getSelection();
       if (!s || s.isCollapsed) setSel(null);
     };
-    const onScroll = () => setSel(null);
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Element && e.target.closest("[data-selection-toolbar]")) return;
+      setSel(null);
+    };
     document.addEventListener("selectionchange", hide);
     window.addEventListener("scroll", onScroll, true);
     return () => {
@@ -457,14 +460,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
             <MarkdownView markdown={parsed?.body ?? blog} baseDir={baseDir} />
           </div>
         </>
-      ) : (
-        !error && (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
-            <FileText className="h-10 w-10" />
-            <p className="text-sm">还没有博客，点击「生成博客」即可获得科普版正文与深度剖析</p>
-          </div>
-        )
-      )}
+      ) : null}
 
       {/* 划选浮动工具条 */}
       {sel && (
