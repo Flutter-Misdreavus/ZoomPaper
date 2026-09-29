@@ -1,6 +1,6 @@
 /**
  * 论文卡片（PaperCard）：状态驱动极简卡片。
- * 结构：复选框 + 状态圆点 + 标题(2行截断) + 作者(1行) + 解析 pill + 星标 + 更多。
+ * 结构：复选框 + 状态圆点 + 标题(2行截断) + 期刊/会议 + 解析状态 + 星标 + 更多。
  * 交互：单击主体无操作（不进入选择）；复选框为选择唯一入口（toggle）；
  * 双击主体打开；星标独立响应不触发选择；拖拽未选中卡片时自动并入选择。
  */
@@ -21,12 +21,12 @@ import {
 } from "./planMenu";
 import { RenameInput } from "./RenameInput";
 
-/** 解析状态 pill：已解析深色填充，其余弱化 */
+/** 解析状态作为次要元信息显示；失败时保留警示色。 */
 const PARSE_STYLE: Record<string, { label: string; className: string }> = {
-  ready: { label: "已解析", className: "bg-zp-primary text-white" },
-  parsing: { label: "解析中…", className: "bg-zp-surface-hover text-zp-tertiary" },
-  unparsed: { label: "未解析", className: "bg-zp-surface-hover text-zp-tertiary" },
-  failed: { label: "解析失败", className: "bg-red-500/10 text-red-600" },
+  ready: { label: "已解析", className: "text-zp-quaternary" },
+  parsing: { label: "解析中…", className: "text-zp-secondary" },
+  unparsed: { label: "未解析", className: "text-zp-quaternary" },
+  failed: { label: "解析失败", className: "text-red-600 dark:text-red-400" },
 };
 
 /** 阅读状态圆点：未读=实心黑 / 在读=实心灰 / 已读=浅灰描边 */
@@ -313,11 +313,11 @@ export function PaperCard(props: PaperCardProps) {
                 </p>
               )}
 
-              {/* footer：解析状态 pill + 归属文件夹 pill（最多 3 个，点击跳转） */}
+              {/* footer：低强调的解析状态 + 归属文件夹（最多 3 个，点击跳转） */}
               <div className="mt-1 flex flex-wrap items-center gap-1.5 pl-[42px]">
                 <span
                   className={cn(
-                    "inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] leading-[1.3] font-medium",
+                    "inline-flex h-5 items-center text-[11px] leading-none",
                     st.className
                   )}
                 >
