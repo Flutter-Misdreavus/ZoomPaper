@@ -3,10 +3,12 @@
  */
 import type { Folder, Paper } from "./api";
 
-/** 论文库内容区视图：全部 / 未分类 / 某文件夹 */
+/** 论文库内容区视图：智能分类 / 回收站 / 某文件夹 */
 export type LibraryView =
   | { type: "all" }
+  | { type: "starred" }
   | { type: "uncategorized" }
+  | { type: "trash" }
   | { type: "folder"; folderId: string };
 
 /** 拖拽论文时写入 dataTransfer 的 MIME 类型（JSON: paperIds[]） */

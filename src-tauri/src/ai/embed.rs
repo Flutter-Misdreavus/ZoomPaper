@@ -39,7 +39,7 @@ fn ensure_model_downloaded() -> Result<PathBuf> {
     }
 
     std::fs::create_dir_all(&dir).context("创建模型目录失败")?;
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder().connect_timeout(std::time::Duration::from_secs(15)).timeout(std::time::Duration::from_secs(90)).build()?;
     for (src, dst) in FILES {
         let url = format!("{MIRROR_BASE}/{MODEL_REPO}/resolve/main/{src}");
         eprintln!("下载 embedding 模型: {src}");

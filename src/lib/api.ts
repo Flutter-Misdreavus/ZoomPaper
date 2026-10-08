@@ -22,14 +22,12 @@ export interface ProviderConfig {
 export interface Settings {
   providers: ProviderConfig[];
   active_provider_id: string;
-  // 兼容字段（用于迁移）
-  api_keys?: ApiKeys | null;
-  llm_provider?: string | null;
-  llm_model?: string | null;
-  // MinerU API Key（保留在顶层）
   mineru_api_key: string;
+  api_keys?: ApiKeys | null;
   paper_library_path: string | null;
   embedding_model: string;
+  llm_provider?: string | null;
+  llm_model?: string | null;
   /** 联网搜索 provider：none / auto / deepseek / anthropic（复用对应 API Key） */
   web_search_provider: string;
   /** 原生搜索用模型名；null = 用 provider 默认 */
@@ -39,8 +37,10 @@ export interface Settings {
 export interface Paper {
   id: string;
   title: string;
+  title_zh: string | null;
   authors: string | null;
   abstract: string | null;
+  abstract_zh: string | null;
   pdf_path: string;
   md_path: string;
   blog_md_path: string | null;
@@ -53,12 +53,20 @@ export interface Paper {
   starred: boolean;
   /** 最近一次标记已读时间（epoch 秒）；null = 未读完/已取消 */
   finished_at: number | null;
+  /** 浏览器导入时的论文来源页 */
+  source_url: string | null;
+  /** 论文关联的 GitHub 仓库 */
+  github_url: string | null;
+  /** 发表期刊或会议 */
+  venue: string | null;
+  /** 删除时间；非空表示位于回收站 */
+  deleted_at: number | null;
+  /** 来源网站图标 */
+  source_icon_url: string | null;
   /** 累计阅读时长（秒），由阅读会话聚合 */
   total_read_seconds: number;
   /** 所属文件夹 id 列表（多归属；空数组 = 未分类） */
   folder_ids: string[];
-  /** 论文中的 GitHub 仓库链接；null/空串 = 无 */
-  github_url: string | null;
 }
 
 /** 虚拟文件夹（多归属集合式整理容器；不对应磁盘目录） */
@@ -106,7 +114,6 @@ export interface QaMessage {
   trace?: ToolStep[] | null;
   /** AI 耗时记录（仅 assistant 消息携带；旧数据为 null） */
   timing?: Timing | null;
-  /** 用户消息携带的引用段落（仅 user 消息；旧数据为 null/缺省） */
   selections?: { text: string; pageIdx: number | null; location?: string }[] | null;
 }
 
@@ -241,36 +248,50 @@ export const getSettings = () => invoke<Settings>("get_settings");
 /** 判断联网搜索是否已配置可用：provider 非 none 且对应 API Key 非空（auto 时任一 Key） */
 export function isWebSearchConfigured(s: Settings): boolean {
   const p = (s.web_search_provider ?? "").toLowerCase();
-  if (!p || p === "none") return false;
-
-  const findProvider = (id: string) =>
-    s.providers.some(provider => provider.id === id && provider.enabled && !!provider.api_key);
-
-  if (p === "deepseek") return findProvider("deepseek");
-  if (p === "anthropic") return findProvider("anthropic");
-  if (p === "auto") return findProvider("deepseek") || findProvider("anthropic");
-  return false;
+  const has = (id: string) => s.providers.some((provider) => provider.id === id && provider.enabled && !!provider.api_key);
+  if (p === "deepseek" || p === "anthropic") return has(p);
+  return p === "auto" && (has("deepseek") || has("anthropic"));
 }
-
+export const generateBlog = (paperId: string) =>
+  invoke<string>("generate_blog", { paperId });
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
-export const addProvider = (config: ProviderConfig) =>
-  invoke<Settings>("add_provider", { config });
-
-export const updateProvider = (id: string, config: ProviderConfig) =>
-  invoke<Settings>("update_provider", { id, config });
-
-export const deleteProvider = (id: string) =>
-  invoke<Settings>("delete_provider", { id });
-
-export const setActiveProvider = (id: string) =>
-  invoke<Settings>("set_active_provider", { id });
-
-export const generateBlog = (paperId: string) =>
-  invoke<string>("generate_blog", { paperId });
-
-/** 解析进度（后端 parse_pdf 通过 Channel 推送） */
+export const listPapers = () => invoke<Paper[]>("list_papers");
+export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
+export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
+export const importPdf = (sourcePath: string) =>
+  invoke<Paper>("import_pdf", { sourcePath });
+export const importPdfUrl = (
+  url: string,
+  suggestedTitle?: string | null,
+  sourceUrl?: string | null,
+  githubUrl?: string | null,
+  venue?: string | null,
+  sourceIconUrl?: string | null,
+) => invoke<Paper>("import_pdf_url", {
+  url,
+  suggestedTitle: suggestedTitle ?? null,
+  sourceUrl: sourceUrl ?? null,
+  githubUrl: githubUrl ?? null,
+  venue: venue ?? null,
+  sourceIconUrl: sourceIconUrl ?? null,
+});
+export const importBrowserDownload = (
+  sourcePath: string,
+  suggestedTitle?: string | null,
+  sourceUrl?: string | null,
+  githubUrl?: string | null,
+  venue?: string | null,
+  sourceIconUrl?: string | null,
+) => invoke<Paper>("import_browser_download", {
+  sourcePath,
+  suggestedTitle: suggestedTitle ?? null,
+  sourceUrl: sourceUrl ?? null,
+  githubUrl: githubUrl ?? null,
+  venue: venue ?? null,
+  sourceIconUrl: sourceIconUrl ?? null,
+});
 export interface ParseProgress {
   /** uploading / pending / converting / running / downloading / indexing */
   stage: string;
@@ -279,11 +300,6 @@ export interface ParseProgress {
   total_pages: number | null;
 }
 
-export const listPapers = () => invoke<Paper[]>("list_papers");
-export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
-export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
-export const importPdf = (sourcePath: string) =>
-  invoke<Paper>("import_pdf", { sourcePath });
 export const parsePdf = (
   paperId: string,
   onProgress?: (p: ParseProgress) => void,
@@ -293,7 +309,16 @@ export const parsePdf = (
   ch.onmessage = (p) => onProgress?.(p);
   return invoke<Paper>("parse_pdf", { paperId, onProgress: ch });
 };
+
+/** Translate and cache the paper title and abstract for the library preview. */
+export const translatePaperMetadata = (paperId: string) =>
+  invoke<Paper>("translate_paper_metadata", { paperId });
+
 export const deletePaper = (paperId: string) => invoke<void>("delete_paper", { paperId });
+export const restorePaper = (paperId: string) => invoke<void>("restore_paper", { paperId });
+export const permanentlyDeletePaper = (paperId: string) => invoke<void>("permanently_delete_paper", { paperId });
+export const emptyTrash = () => invoke<number>("empty_trash");
+export const askAppHelp = (question: string) => invoke<string>("ask_app_help", { question });
 
 // ---------- 论文整理（虚拟文件夹） ----------
 
@@ -453,9 +478,6 @@ export const timelineStats = (days: number) =>
   invoke<TimelineStats>("timeline_stats", { days });
 
 export const indexPaper = (paperId: string) => invoke<number>("index_paper", { paperId });
-
-/** 重建所有已解析论文的向量索引；返回 [成功篇数, 失败篇数] */
-export const reindexAllPapers = () => invoke<[number, number]>("reindex_all_papers");
 
 export const search = (query: string, topK: number, paperId?: string | null) =>
   invoke<SearchHit[]>("search", { query, topK, paperId: paperId ?? null });
@@ -659,12 +681,39 @@ export const getAnnotations = (paperId: string, kind?: string) =>
   invoke<string | null>("get_annotations", { paperId, kind: kind ?? null });
 
 /** 把阅读标注 JSON 落盘为论文目录对应文件（kind 同上） */
-export const saveAnnotations = (paperId: string, data: string, kind?: string) =>
-  invoke<void>("save_annotations", { paperId, data, kind: kind ?? null });
+const annotationWrites = new Map<string, Promise<void>>();
+export const saveAnnotations = (paperId: string, data: string, kind?: string) => {
+  const key = `${paperId}:${kind ?? "annotations"}`;
+  const previous = annotationWrites.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(() => invoke<void>("save_annotations", { paperId, data, kind: kind ?? null }));
+  annotationWrites.set(key, next);
+  void next.finally(() => { if (annotationWrites.get(key) === next) annotationWrites.delete(key); }).catch(() => {});
+  return next;
+};
 
-// ---------- 论文阅读理解测验 ----------
+export const translateSelection = (text: string, context = "") =>
+  invoke<string>("translate_selection", { text, context });
 
-/** 出题配置（生成前由用户选择） */
+export const openPaperForReading = (paperId: string) => invoke<Paper>("open_paper", { paperId });
+
+export const setReadingStatus = (paperIds: string[], status: string) => invoke<void>("set_reading_status", { paperIds, status });
+export const exportNotes = (paperId: string, destination: string) => invoke<void>("export_notes", { paperId, destination });
+
+export const keywordSearch = (query: string, paperId: string | null) => invoke<SearchHit[]>("keyword_search", { query, paperId });
+
+export const addProvider = (config: ProviderConfig) =>
+  invoke<Settings>("add_provider", { config });
+
+export const updateProvider = (id: string, config: ProviderConfig) =>
+  invoke<Settings>("update_provider", { id, config });
+
+export const deleteProvider = (id: string) =>
+  invoke<Settings>("delete_provider", { id });
+
+export const setActiveProvider = (id: string) =>
+  invoke<Settings>("set_active_provider", { id });
+
+
 export interface QuizConfig {
   /** 选择题数量（0-10） */
   choice_count: number;
@@ -772,3 +821,5 @@ export const quizGet = (quizId: string) => invoke<Quiz>("quiz_get", { quizId });
 /** 删除一份测验记录 */
 export const quizDelete = (quizId: string) =>
   invoke<void>("quiz_delete", { quizId });
+
+export const reindexAllPapers = () => invoke<[number, number]>("reindex_all_papers");

@@ -157,20 +157,21 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   // 加载 / 保存译文标注（translation_annotations.json）
   useEffect(() => {
     let cancelled = false;
+    setHighlightsLoaded(false);
     loadTextHighlights(paperId, "translate")
       .then((hs) => {
         if (cancelled) return;
         setHighlights(hs);
         setHighlightsLoaded(true);
       })
-      .catch(() => {});
+      .catch((e) => { if (!cancelled) setError(`无法读取标注：${e}`); });
     return () => {
       cancelled = true;
     };
   }, [paperId]);
   useEffect(() => {
     if (!highlightsLoaded) return;
-    void saveTextHighlights(paperId, "translate", highlights);
+    void saveTextHighlights(paperId, "translate", highlights).catch((e) => setError(`标注保存失败：${e}`));
   }, [highlights, highlightsLoaded, paperId]);
 
   // 划选监听
@@ -207,7 +208,10 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
       const s = window.getSelection();
       if (!s || s.isCollapsed) setSel(null);
     };
-    const onScroll = () => setSel(null);
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Element && e.target.closest("[data-selection-toolbar]")) return;
+      setSel(null);
+    };
     document.addEventListener("selectionchange", hide);
     window.addEventListener("scroll", onScroll, true);
     return () => {
@@ -706,6 +710,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
       {/* 划选浮动工具条 */}
       {sel && (
         <SelectionToolbar
+          text={sel.text}
           x={sel.x}
           y={sel.y}
           onHighlight={(color) => addHighlight(color, false)}

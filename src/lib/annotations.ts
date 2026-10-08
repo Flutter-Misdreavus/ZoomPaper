@@ -14,17 +14,16 @@ export interface TextAnnotationsFile {
   highlights: TextHighlight[];
 }
 
-/** 加载某类文本标注（无文件 / 解析失败 → 空列表）。 */
+/** 加载某类文本标注（仅无文件返回空列表，损坏文件阻止覆盖）。 */
 export async function loadTextHighlights(
   paperId: string,
   kind: AnnotationKind,
 ): Promise<TextHighlight[]> {
-  try {
     const raw = await getAnnotations(paperId, kind);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as TextAnnotationsFile;
-    if (!Array.isArray(parsed.highlights)) return [];
-    return parsed.highlights.filter(
+    if (!Array.isArray(parsed.highlights)) throw new Error("标注文件格式无效，已停止自动保存以保护原文件");
+    const valid = parsed.highlights.every(
       (h): h is TextHighlight =>
         !!h &&
         typeof h.id === "string" &&
@@ -35,9 +34,8 @@ export async function loadTextHighlights(
         typeof h.text === "string" &&
         typeof h.color === "string",
     );
-  } catch {
-    return [];
-  }
+    if (!valid) throw new Error("标注条目损坏，已停止自动保存以保护原文件");
+    return parsed.highlights;
 }
 
 /** 保存某类文本标注（全量覆盖对应文件）。 */

@@ -50,7 +50,10 @@ impl Db {
         let conn = open(&dir.join("database.sqlite"))?;
         // 解析在进程内进行：上次运行中途退出（崩溃/关应用）会残留 parsing 状态，启动时复位为 failed
         let stale = conn
-            .execute("UPDATE papers SET parse_status = 'failed' WHERE parse_status = 'parsing'", [])
+            .execute(
+                "UPDATE papers SET parse_status = 'failed' WHERE parse_status = 'parsing'",
+                [],
+            )
             .context("复位中断的解析状态失败")?;
         if stale > 0 {
             eprintln!("复位 {stale} 篇中断解析的论文为 failed");

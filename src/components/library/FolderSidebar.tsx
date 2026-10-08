@@ -5,6 +5,7 @@
  */
 import { useRef, useState } from "react";
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
 import { motion, useReducedMotion } from "motion/react";
 import {
   ChevronRight,
@@ -16,6 +17,7 @@ import {
   Pencil,
   Palette,
   Plus,
+  Star,
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -156,7 +158,7 @@ function FolderRow({
               }}
             >
               {hasChildren ? (
-                <button
+                <IconTooltip label={isOpen ? "收起文件夹" : "展开文件夹"} side="right"><button
                   type="button"
                   aria-label={isOpen ? "收起" : "展开"}
                   onClick={(e) => {
@@ -176,7 +178,7 @@ function FolderRow({
                   >
                     <ChevronRight className="h-3.5 w-3.5" />
                   </motion.span>
-                </button>
+                </button></IconTooltip>
               ) : (
                 <span className="h-4 w-4 shrink-0" />
               )}
@@ -197,11 +199,9 @@ function FolderRow({
                     )}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{f.name}</span>
-                  {count > 0 && (
-                    <span className="shrink-0 text-xs tabular-nums text-zp-quaternary">
-                      {count}
-                    </span>
-                  )}
+                  <span className="shrink-0 text-xs tabular-nums text-zp-quaternary">
+                    {count}
+                  </span>
                 </>
               )}
             </div>
@@ -288,6 +288,7 @@ function SidebarEntry({
   dropActive,
   onClick,
   handlers,
+  onCreateFolder,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -296,8 +297,9 @@ function SidebarEntry({
   dropActive?: boolean;
   onClick: () => void;
   handlers?: DropHandlers;
+  onCreateFolder?: () => void;
 }) {
-  return (
+  const entry = (
     <button
       type="button"
       onClick={onClick}
@@ -316,6 +318,22 @@ function SidebarEntry({
       <span className="flex-1 text-left">{label}</span>
       <span className="text-xs tabular-nums text-zp-quaternary">{count}</span>
     </button>
+  );
+  if (!onCreateFolder) return entry;
+  return (
+    <ContextMenuPrimitive.Root>
+      <ContextMenuPrimitive.Trigger render={entry} />
+      <ContextMenuPrimitive.Portal>
+        <ContextMenuPrimitive.Positioner alignOffset={4} className="isolate z-50">
+          <ContextMenuPrimitive.Popup className="z-50 min-w-40 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none">
+            <ContextMenuPrimitive.Item className={MENU_ITEM_CLASS} onClick={onCreateFolder}>
+              <FolderPlus className="h-4 w-4 text-muted-foreground" />
+              新建文件夹
+            </ContextMenuPrimitive.Item>
+          </ContextMenuPrimitive.Popup>
+        </ContextMenuPrimitive.Positioner>
+      </ContextMenuPrimitive.Portal>
+    </ContextMenuPrimitive.Root>
   );
 }
 
@@ -338,34 +356,57 @@ export function FolderSidebar(props: FolderSidebarProps) {
   } = props;
 
   const tree = buildFolderTree(folders);
-  const uncategorizedCount = papers.filter((p) => p.folder_ids.length === 0).length;
+  const activePapers = papers.filter((paper) => paper.deleted_at == null);
+  const trashCount = papers.length - activePapers.length;
+  const uncategorizedCount = activePapers.filter((p) => p.folder_ids.length === 0).length;
+  const starredCount = activePapers.filter((p) => p.starred).length;
   const allDrop = useDropHighlight((ids) => onDropPapers(ids, null));
 
   return (
-    <aside className="flex w-[220px] shrink-0 flex-col border-r border-zp-border">
-      {/* 文件夹小标题：12px uppercase，quaternary */}
-      <div className="px-3 pt-5 pb-2 text-[12px] font-medium tracking-[0.05em] text-zp-quaternary uppercase">
-        文件夹
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-2">
+    <aside className="flex w-[208px] shrink-0 flex-col border-r border-zp-border bg-[#f3f4f1] dark:bg-[#1d1d1c]">
+      <div className="flex-1 overflow-y-auto px-2 pt-3">
         <div className="flex flex-col gap-0.5">
           <SidebarEntry
             icon={<LibraryIcon className="h-4 w-4" />}
             label="全部论文"
-            count={papers.length}
+            count={activePapers.length}
             active={view.type === "all"}
             onClick={() => onSelectView({ type: "all" })}
+            onCreateFolder={() => onCreateSubfolder("__root__")}
+          />
+          <SidebarEntry
+            icon={<Star className="h-4 w-4" />}
+            label="收藏"
+            count={starredCount}
+            active={view.type === "starred"}
+            onClick={() => onSelectView({ type: "starred" })}
+            onCreateFolder={() => onCreateSubfolder("__root__")}
+          />
+          <SidebarEntry
+            icon={<FileText className="h-4 w-4" />}
+            label="未分类"
+            count={uncategorizedCount}
+            active={view.type === "uncategorized"}
+            dropActive={allDrop.active}
+            onClick={() => onSelectView({ type: "uncategorized" })}
+            handlers={allDrop.handlers}
+          />
+          <SidebarEntry
+            icon={<Trash2 className="h-4 w-4" />}
+            label="回收站"
+            count={trashCount}
+            active={view.type === "trash"}
+            onClick={() => onSelectView({ type: "trash" })}
           />
 
-          {/* 文件夹树 */}
-          <div className="mt-1 flex flex-col">
+          <div className="mb-1 mt-4 px-2.5 text-[11px] font-medium text-zp-quaternary">文件夹</div>
+          <div className="flex flex-col">
             {tree.map((node) => (
               <FolderRow
                 key={node.folder.id}
                 node={node}
                 depth={0}
-                papers={papers}
+                papers={activePapers}
                 view={view}
                 onSelectView={onSelectView}
                 expanded={expanded}
@@ -382,28 +423,20 @@ export function FolderSidebar(props: FolderSidebarProps) {
             ))}
           </div>
 
-          <SidebarEntry
-            icon={<FileText className="h-4 w-4" />}
-            label="未分类"
-            count={uncategorizedCount}
-            active={view.type === "uncategorized"}
-            dropActive={allDrop.active}
-            onClick={() => onSelectView({ type: "uncategorized" })}
-            handlers={allDrop.handlers}
-          />
         </div>
       </div>
 
-      {/* 新建文件夹：底部弱操作，留白区隔（无显式分割线） */}
-      <div className="px-2 pb-4 pt-3">
+      <div className="flex justify-end px-2 pb-3 pt-2">
+        <IconTooltip label="新建文件夹" side="right">
         <button
           type="button"
           onClick={() => onCreateSubfolder("__root__")}
-          className="pressable flex w-full items-center gap-2 rounded-md px-2.5 py-1 text-[13px] text-zp-quaternary transition-colors hover:text-zp-primary"
+          aria-label="新建文件夹"
+          className="pressable flex h-7 w-7 items-center justify-center rounded-md text-zp-quaternary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary"
         >
           <Plus className="h-4 w-4" />
-          新建文件夹
         </button>
+        </IconTooltip>
       </div>
     </aside>
   );
