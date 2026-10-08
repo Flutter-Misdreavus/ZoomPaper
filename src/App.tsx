@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Library } from "@/pages/Library";
-import { Reader } from "@/pages/Reader";
+import { ReaderHost } from "@/pages/ReaderHost";
 import { SettingsPage } from "@/pages/Settings";
 import { SearchPage } from "@/pages/SearchPage";
 import { AskPage } from "@/pages/AskPage";
@@ -11,18 +11,28 @@ import { HelpPage } from "@/pages/HelpPage";
 import { NavRail, type NavItem } from "@/components/NavRail";
 import { BrowserImportNotice, type BrowserImportPhase } from "@/components/BrowserImportNotice";
 import { importBrowserDownload, importPdfUrl, parsePdf } from "@/lib/api";
+import {
+  closeTab,
+  loadReaderTabs,
+  openTab,
+  saveReaderTabs,
+  setTabTitle,
+  type ReaderTabsState,
+} from "@/lib/readerTabs";
+import { displayPaperTitle } from "@/lib/utils";
 
 type View =
   | { name: "library" }
   | { name: "timeline" }
   | { name: "search" }
   | { name: "ask" }
-  | { name: "reader"; paperId: string; pageIdx?: number }
+  | { name: "reader" }
   | { name: "settings" }
   | { name: "help" };
 
 function App() {
   const [view, setView] = useState<View>({ name: "library" });
+  const [readerState, setReaderState] = useState<ReaderTabsState>(loadReaderTabs);
   const [libraryRefreshSignal, setLibraryRefreshSignal] = useState(0);
   const [browserImport, setBrowserImport] = useState<{
     phase: BrowserImportPhase;
@@ -103,8 +113,27 @@ function App() {
     };
   }, []);
 
-  const openPaper = (paperId: string, pageIdx?: number) =>
-    setView({ name: "reader", paperId, pageIdx });
+  const openPaper = (paperId: string, pageIdx?: number) => {
+    setReaderState((s) => openTab(s, paperId, pageIdx));
+    setView({ name: "reader" });
+  };
+  const activateReaderTab = (tabId: string) =>
+    setReaderState((s) => ({ ...s, activeTabId: tabId }));
+  const closeReaderTab = (tabId: string) =>
+    setReaderState((s) => closeTab(s, tabId));
+
+  // 标签条变更即持久化，重启应用后恢复
+  useEffect(() => {
+    saveReaderTabs(readerState);
+  }, [readerState]);
+
+  // 最后一个标签关闭后回到论文库
+  useEffect(() => {
+    if (view.name === "reader" && readerState.activeTabId === null) {
+      setView({ name: "library" });
+    }
+  }, [view.name, readerState.activeTabId]);
+
   // 阅读页归属「论文库」导航高亮
   const activeNav: NavItem = view.name === "reader" ? "library" : view.name;
 
@@ -123,7 +152,7 @@ function App() {
         /* 其余页面：主内容区自行控制滚动 */
         <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-white dark:bg-[#191919]" : "p-6"}`}>
           <motion.div
-            key={view.name + ("paperId" in view ? view.paperId : "")}
+            key={view.name}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
@@ -133,10 +162,15 @@ function App() {
             {view.name === "timeline" && <TimelinePage onOpenPaper={openPaper} />}
             {view.name === "ask" && <AskPage onOpenPaper={openPaper} />}
             {view.name === "reader" && (
-              <Reader
-                paperId={view.paperId}
-                initialPageIdx={view.pageIdx}
+              <ReaderHost
+                tabs={readerState.tabs}
+                activeTabId={readerState.activeTabId}
+                onActivate={activateReaderTab}
+                onClose={closeReaderTab}
                 onBack={() => setView({ name: "library" })}
+                onPaperLoaded={(tabId, paper) =>
+                  setReaderState((s) => setTabTitle(s, tabId, displayPaperTitle(paper.title)))
+                }
               />
             )}
             {view.name === "settings" && <SettingsPage />}

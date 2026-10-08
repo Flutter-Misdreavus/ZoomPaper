@@ -21,6 +21,13 @@ import {
 } from "@/lib/api";
 import { PROVIDER_TEMPLATES, createProviderFromTemplate, type ProviderTemplate } from "@/lib/providerTemplates";
 import {
+  DEFAULT_KEEP_ALIVE,
+  MAX_KEEP_ALIVE,
+  MIN_KEEP_ALIVE,
+  getReaderKeepAlive,
+  setReaderKeepAlive,
+} from "@/lib/readerTabs";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -41,6 +48,8 @@ export function SettingsPage() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null);
+  // 阅读器保活标签数：前端 UI 偏好，存 localStorage，即时生效
+  const [keepAlive, setKeepAlive] = useState(getReaderKeepAlive);
 
   useEffect(() => {
     loadSettings();
@@ -263,6 +272,34 @@ export function SettingsPage() {
             </div>
             <p className="text-xs text-muted-foreground">
               对已解析的论文重新分块并生成向量。升级后若 AI 问答缺少公式等内容，可点此重建（耗时取决于论文数量）。
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">阅读器</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-1.5">
+            <Label htmlFor="reader-keep-alive">同时保活的标签数</Label>
+            <Input
+              id="reader-keep-alive"
+              type="number"
+              min={MIN_KEEP_ALIVE}
+              max={MAX_KEEP_ALIVE}
+              className="w-32"
+              value={keepAlive}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                if (!Number.isFinite(n)) return;
+                setKeepAlive(n);
+                setReaderKeepAlive(n);
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              默认 {DEFAULT_KEEP_ALIVE} 个，即时生效。超出数量的标签切回时会重新加载 PDF（自动回到上次阅读页）。
             </p>
           </div>
         </CardContent>
