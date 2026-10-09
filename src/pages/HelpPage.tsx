@@ -131,12 +131,12 @@ export function HelpPage() {
     <section className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-y-auto px-8 py-7">
       <header><h1 className="text-xl font-semibold text-zp-primary">帮助</h1></header>
 
-      <div className="mt-5 grid min-h-[520px] grid-cols-[168px_260px_minmax(0,1fr)] overflow-hidden rounded-xl border border-zp-border bg-white dark:bg-zp-surface">
+      <div className="mt-5 grid min-h-[520px] grid-cols-[168px_260px_minmax(0,1fr)] overflow-hidden rounded-xl border border-zp-border bg-card">
         <nav className="border-r border-zp-border bg-zp-surface/70 p-2.5" aria-label="帮助分类">
           {guideSections.map((item) => {
             const Icon = item.icon;
             const active = item.id === section.id;
-            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-white font-medium text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
+            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-card font-medium text-zp-primary shadow-sm" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
           })}
         </nav>
 
@@ -146,7 +146,7 @@ export function HelpPage() {
             {section.items.map((item) => {
               const Icon = item.icon;
               const active = item.id === selected.id;
-              return <button key={item.id} type="button" onClick={() => setFeatureId(item.id)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors", active ? "bg-zp-surface-hover font-medium text-zp-primary" : "text-zp-secondary hover:bg-zp-surface-hover/70 hover:text-zp-primary")}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zp-border bg-white dark:bg-zp-surface"><Icon className="h-4 w-4" /></span>{item.title}</button>;
+              return <button key={item.id} type="button" onClick={() => setFeatureId(item.id)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors", active ? "bg-zp-surface-hover font-medium text-zp-primary" : "text-zp-secondary hover:bg-zp-surface-hover/70 hover:text-zp-primary")}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zp-border bg-card"><Icon className="h-4 w-4" /></span>{item.title}</button>;
             })}
           </div>
         </div>
@@ -161,7 +161,7 @@ export function HelpPage() {
         </article>
       </div>
 
-      <div className="mt-5 rounded-xl border border-zp-border bg-white p-4 dark:bg-zp-surface">
+      <div className="mt-5 rounded-xl border border-zp-border bg-card p-4">
         <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-zp-tertiary" /><h2 className="text-sm font-medium">问 AI</h2></div>
         {answer && <div className="prose prose-sm mt-4 max-w-none text-zp-secondary dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>}
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}

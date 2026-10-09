@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,8 @@ import {
   updateProvider,
   deleteProvider,
   setActiveProvider,
+  getThemesDir,
+  listCustomThemes,
   type Settings,
   type ProviderConfig,
 } from "@/lib/api";
@@ -27,6 +30,7 @@ import {
   getReaderKeepAlive,
   setReaderKeepAlive,
 } from "@/lib/readerTabs";
+import { THEME_PRESETS, getCustomTheme, getTheme, setCustomTheme, setTheme, type CustomTheme } from "@/lib/theme";
 import {
   Dialog,
   DialogContent,
@@ -50,10 +54,58 @@ export function SettingsPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null);
   // 阅读器保活标签数：前端 UI 偏好，存 localStorage，即时生效
   const [keepAlive, setKeepAlive] = useState(getReaderKeepAlive);
+  // 配色方案：前端 UI 偏好，存 localStorage，即时生效
+  const [theme, setThemeState] = useState(getTheme);
+  // JSON 高级主题：主题文件在后端数据目录，选中项缓存在 localStorage
+  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  const [themesDir, setThemesDir] = useState<string | null>(null);
+  const [activeCustomTheme, setActiveCustomTheme] = useState(() => getCustomTheme()?.name ?? "");
 
   useEffect(() => {
     loadSettings();
+    loadThemes();
   }, []);
+
+  /** 拉取 themes 目录的 JSON 主题；选中项文件被编辑过时重放最新内容，被删除则清除 */
+  async function loadThemes() {
+    try {
+      const [dir, list] = await Promise.all([getThemesDir(), listCustomThemes()]);
+      setThemesDir(dir);
+      setCustomThemes(list);
+      const current = getCustomTheme();
+      if (current) {
+        const fresh = list.find((t) => t.name === current.name);
+        if (fresh) {
+          setCustomTheme(fresh);
+        } else {
+          setCustomTheme(null);
+          setActiveCustomTheme("");
+        }
+      }
+    } catch {
+      // 高级主题不可用（如目录无权限）时静默跳过
+    }
+  }
+
+  function handleSelectCustomTheme(name: string) {
+    setActiveCustomTheme(name);
+    if (!name) {
+      setCustomTheme(null);
+      return;
+    }
+    const t = customThemes.find((x) => x.name === name);
+    if (t) setCustomTheme(t);
+  }
+
+  async function openThemesDir() {
+    try {
+      const dir = themesDir ?? (await getThemesDir());
+      setThemesDir(dir);
+      await openPath(dir);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   async function loadSettings() {
     try {
@@ -187,6 +239,111 @@ export function SettingsPage() {
           <span>{error}</span>
         </div>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">外观</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid gap-1.5">
+            <Label>配色方案</Label>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="配色方案">
+              {THEME_PRESETS.map((preset) => {
+                const active = theme.scheme === preset.key;
+                return (
+                  <button
+                    key={preset.key}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setThemeState(setTheme(preset.key))}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                      active
+                        ? "border-primary bg-primary/5 font-medium"
+                        : "border-border hover:bg-muted"
+                    }`}
+                  >
+                    <span
+                      className="h-4 w-4 rounded-full border border-black/10"
+                      style={{ background: preset.swatch }}
+                    />
+                    {preset.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={theme.scheme === "custom"}
+                onClick={() => setThemeState(setTheme("custom"))}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                  theme.scheme === "custom"
+                    ? "border-primary bg-primary/5 font-medium"
+                    : "border-border hover:bg-muted"
+                }`}
+              >
+                <span
+                  className="h-4 w-4 rounded-full border border-black/10"
+                  style={{
+                    background:
+                      theme.scheme === "custom"
+                        ? theme.customColor
+                        : "conic-gradient(#c62828, #f5a524, #30a46c, #3e8ef7, #8e4ec6, #c62828)",
+                  }}
+                />
+                自定义
+              </button>
+            </div>
+            {theme.scheme === "custom" && (
+              <div className="mt-2 flex items-center gap-3">
+                <input
+                  type="color"
+                  aria-label="自定义主色"
+                  value={theme.customColor}
+                  onChange={(e) => setThemeState(setTheme("custom", e.target.value))}
+                  className="h-8 w-12 cursor-pointer rounded-md border border-border bg-transparent p-0.5"
+                />
+                <span className="text-sm text-muted-foreground">{theme.customColor}</span>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              即时生效，重启后保持；「深色」方案即原深色模式。
+            </p>
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label htmlFor="custom-theme">高级主题（JSON）</Label>
+            <div className="flex items-center gap-2">
+              <Select
+                value={activeCustomTheme || "none"}
+                onValueChange={(v) => handleSelectCustomTheme(!v || v === "none" ? "" : v)}
+              >
+                <SelectTrigger id="custom-theme" className="w-56">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">无</SelectItem>
+                  {customThemes.map((t) => (
+                    <SelectItem key={t.name} value={t.name}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" onClick={openThemesDir}>
+                打开主题目录
+              </Button>
+              <Button variant="ghost" size="sm" onClick={loadThemes}>
+                重新加载
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              把 JSON 主题文件放入主题目录后点「重新加载」。主题可覆盖当前方案的任意变量（如
+              background、zp-trans-zh），dark 段仅深色方案下生效。格式见用户指南「自定义主题」。
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">

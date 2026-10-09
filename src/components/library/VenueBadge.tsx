@@ -21,7 +21,7 @@ export function VenueBadge({ venue, sourceUrl, iconUrl, compact = false, status 
   let sourceHost: string | null = null;
   try { sourceHost = sourceUrl ? new URL(sourceUrl).hostname : null; } catch { /* fall through */ }
   return (
-    <span title={venue || sourceHost || "未识别来源网站"} className={cn(compact ? "h-7 w-7" : "h-8 w-8", "relative flex shrink-0 items-center justify-center rounded-lg border bg-white dark:bg-zp-surface", status === "unread" ? "border-zp-tertiary" : "border-zp-border")}>
+    <span title={venue || sourceHost || "未识别来源网站"} className={cn(compact ? "h-7 w-7" : "h-8 w-8", "relative flex shrink-0 items-center justify-center rounded-lg border bg-card", status === "unread" ? "border-zp-tertiary" : "border-zp-border")}>
       {src ? <img src={src} alt="" className={cn(compact ? "h-4 w-4" : "h-[18px] w-[18px]", "object-contain")} onError={() => setCandidateIndex((index) => index + 1)} /> : <FileText className={cn(compact ? "h-3.5 w-3.5" : "h-4 w-4", "text-zp-quaternary")} />}
       <StatusMark status={status} />
     </span>

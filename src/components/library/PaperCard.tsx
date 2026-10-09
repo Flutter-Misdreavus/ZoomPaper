@@ -218,8 +218,7 @@ export function PaperCard(props: PaperCardProps) {
                 }
               }}
               className={cn(
-                "group relative flex cursor-default flex-col gap-1 rounded-[10px] border bg-white p-4 outline-none transition-all select-none",
-                "dark:bg-zp-surface",
+                "group relative flex cursor-default flex-col gap-1 rounded-[10px] border bg-card p-4 outline-none transition-all select-none",
                 selected
                   ? "border-zp-primary shadow-[0_0_0_1px] shadow-zp-primary"
                   : "border-zp-border hover:border-[#d4d4d4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] focus-visible:ring-2 focus-visible:ring-ring"
@@ -244,7 +243,7 @@ export function PaperCard(props: PaperCardProps) {
                     "mt-0.5 flex h-[18px] w-[18px] touch-none shrink-0 items-center justify-center rounded-[5px] border transition-all",
                     selected
                       ? "border-zp-primary bg-zp-primary text-white opacity-100"
-                      : "border-zp-border bg-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100 dark:bg-zp-surface",
+                      : "border-zp-border bg-card opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                     "opacity-100"
                   )}
                 >

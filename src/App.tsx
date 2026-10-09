@@ -160,7 +160,7 @@ function App() {
       />
 
       {/* 主内容区：各页面自行控制滚动；workspace 为主页标签（论文库）+ 论文标签 */}
-      <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-white dark:bg-[#191919]" : "p-6"}`}>
+      <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-card" : "p-6"}`}>
         <motion.div
           key={view.name}
           initial={{ opacity: 0 }}

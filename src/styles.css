@@ -5,7 +5,7 @@
 
 @plugin "@tailwindcss/typography";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is([data-scheme="dark"] *));
 
 @theme inline {
     --font-heading: var(--font-sans);
@@ -95,12 +95,181 @@
     --sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
+/* ===== 配色方案：<html data-scheme="xxx"> 全量覆盖色板 =====
+   参考 GitHub Primer：每个主题定义完整 functional token 集（文字/背景/边框/强调），
+   且中性色阶向主题色方向轻微偏移，界面才统一。:root[data-scheme] 提 specificity，
+   保证压过下方 :root 中的 zp-* 默认值。 */
+:root[data-scheme="mono"] {
+    --background: #fafafa;
+    --foreground: #171717;
+    --muted: #f5f5f5;
+    --muted-foreground: #737373;
+    --secondary: #f5f5f5;
+    --secondary-foreground: #262626;
+    --primary: #171717;
+    --primary-foreground: #fafafa;
+    --accent: #f0f0f0;
+    --accent-foreground: #171717;
+    --border: #e5e5e5;
+    --input: #ebebeb;
+    --ring: #a3a3a3;
+    --sidebar: #f0f0f0;
+    --sidebar-border: #e5e5e5;
+    --card: #ffffff;
+    --card-foreground: #171717;
+    --popover: #ffffff;
+    --popover-foreground: #171717;
+    --zp-trans-zh: oklch(0.45 0 0);
+}
+:root[data-scheme="red"] {
+    --background: oklch(0.978 0.004 27);
+    --foreground: oklch(0.29 0.03 27);
+    --muted: oklch(0.966 0.006 27);
+    --muted-foreground: oklch(0.50 0.025 27);
+    --secondary: oklch(0.966 0.006 27);
+    --secondary-foreground: oklch(0.30 0.03 27);
+    --primary: #c62828;
+    --primary-foreground: #ffffff;
+    --accent: oklch(0.945 0.018 27);
+    --accent-foreground: #8f1d1a;
+    --border: oklch(0.910 0.010 27);
+    --input: oklch(0.928 0.008 27);
+    --ring: oklch(0.72 0.05 27);
+    --sidebar: oklch(0.952 0.007 27);
+    --sidebar-border: oklch(0.910 0.010 27);
+    --zp-primary: oklch(0.25 0.025 27);
+    --zp-secondary: oklch(0.44 0.028 27);
+    --zp-tertiary: oklch(0.71 0.022 27);
+    --zp-quaternary: oklch(0.56 0.028 27);
+    --zp-border: oklch(0.905 0.010 27);
+    --zp-surface: oklch(0.981 0.004 27);
+    --zp-surface-hover: oklch(0.966 0.006 27);
+    --zp-surface-active: oklch(0.950 0.009 27);
+    --card: oklch(0.995 0.003 27);
+    --card-foreground: oklch(0.29 0.03 27);
+    --popover: oklch(0.995 0.003 27);
+    --popover-foreground: oklch(0.29 0.03 27);
+    --zp-trans-zh: oklch(0.48 0.10 27);
+}
+/* green = 默认方案：显式复制 :root 值，保持现有观感 */
+:root[data-scheme="green"] {
+    --background: #f7f8f6;
+    --foreground: #243330;
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: #65736d;
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --primary: #27665b;
+    --primary-foreground: oklch(0.985 0 0);
+    --accent: #e8f0ec;
+    --accent-foreground: #24584f;
+    --border: #e1e7e3;
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --sidebar: #edf1ed;
+    --sidebar-border: oklch(0.922 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --zp-trans-zh: #32685e;
+}
+:root[data-scheme="blue"] {
+    --background: oklch(0.978 0.004 262);
+    --foreground: oklch(0.29 0.03 262);
+    --muted: oklch(0.966 0.006 262);
+    --muted-foreground: oklch(0.50 0.025 262);
+    --secondary: oklch(0.966 0.006 262);
+    --secondary-foreground: oklch(0.30 0.03 262);
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --accent: oklch(0.945 0.018 262);
+    --accent-foreground: #1d4ed8;
+    --border: oklch(0.910 0.010 262);
+    --input: oklch(0.928 0.008 262);
+    --ring: oklch(0.72 0.05 262);
+    --sidebar: oklch(0.952 0.007 262);
+    --sidebar-border: oklch(0.910 0.010 262);
+    --zp-primary: oklch(0.25 0.025 262);
+    --zp-secondary: oklch(0.44 0.028 262);
+    --zp-tertiary: oklch(0.71 0.022 262);
+    --zp-quaternary: oklch(0.56 0.028 262);
+    --zp-border: oklch(0.905 0.010 262);
+    --zp-surface: oklch(0.981 0.004 262);
+    --zp-surface-hover: oklch(0.966 0.006 262);
+    --zp-surface-active: oklch(0.950 0.009 262);
+    --card: oklch(0.995 0.003 262);
+    --card-foreground: oklch(0.29 0.03 262);
+    --popover: oklch(0.995 0.003 262);
+    --popover-foreground: oklch(0.29 0.03 262);
+    --zp-trans-zh: oklch(0.48 0.10 262);
+}
+:root[data-scheme="purple"] {
+    --background: oklch(0.978 0.004 305);
+    --foreground: oklch(0.29 0.03 305);
+    --muted: oklch(0.966 0.006 305);
+    --muted-foreground: oklch(0.50 0.025 305);
+    --secondary: oklch(0.966 0.006 305);
+    --secondary-foreground: oklch(0.30 0.03 305);
+    --primary: #6d28d9;
+    --primary-foreground: #ffffff;
+    --accent: oklch(0.945 0.018 305);
+    --accent-foreground: #5b21b6;
+    --border: oklch(0.910 0.010 305);
+    --input: oklch(0.928 0.008 305);
+    --ring: oklch(0.72 0.05 305);
+    --sidebar: oklch(0.952 0.007 305);
+    --sidebar-border: oklch(0.910 0.010 305);
+    --zp-primary: oklch(0.25 0.025 305);
+    --zp-secondary: oklch(0.44 0.028 305);
+    --zp-tertiary: oklch(0.71 0.022 305);
+    --zp-quaternary: oklch(0.56 0.028 305);
+    --zp-border: oklch(0.905 0.010 305);
+    --zp-surface: oklch(0.981 0.004 305);
+    --zp-surface-hover: oklch(0.966 0.006 305);
+    --zp-surface-active: oklch(0.950 0.009 305);
+    --card: oklch(0.995 0.003 305);
+    --card-foreground: oklch(0.29 0.03 305);
+    --popover: oklch(0.995 0.003 305);
+    --popover-foreground: oklch(0.29 0.03 305);
+    --zp-trans-zh: oklch(0.48 0.10 305);
+}
+/* 自定义：--primary 与 --primary-foreground 由 JS 内联注入，其余按 color-mix 派生 */
+:root[data-scheme="custom"] {
+    --accent: color-mix(in oklch, var(--primary) 10%, #ffffff);
+    --accent-foreground: color-mix(in oklch, var(--primary) 55%, #000000);
+    --background: color-mix(in oklch, var(--primary) 2.5%, #fdfdfd);
+    --foreground: color-mix(in oklch, var(--primary) 20%, #26262a);
+    --muted: color-mix(in oklch, var(--primary) 4%, #f7f7f7);
+    --muted-foreground: color-mix(in oklch, var(--primary) 22%, #6b6f75);
+    --secondary: color-mix(in oklch, var(--primary) 4%, #f5f5f5);
+    --secondary-foreground: color-mix(in oklch, var(--primary) 25%, #333333);
+    --border: color-mix(in oklch, var(--primary) 9%, #e6e6e6);
+    --input: color-mix(in oklch, var(--primary) 8%, #ececec);
+    --ring: color-mix(in oklch, var(--primary) 35%, #a8a8a8);
+    --sidebar: color-mix(in oklch, var(--primary) 4%, #f2f2f2);
+    --sidebar-border: color-mix(in oklch, var(--primary) 9%, #e6e6e6);
+    --zp-primary: color-mix(in oklch, var(--primary) 22%, #1a1a1a);
+    --zp-secondary: color-mix(in oklch, var(--primary) 20%, #525252);
+    --zp-tertiary: color-mix(in oklch, var(--primary) 16%, #a3a3a3);
+    --zp-quaternary: color-mix(in oklch, var(--primary) 20%, #737373);
+    --zp-border: color-mix(in oklch, var(--primary) 9%, #e5e5e5);
+    --zp-surface: color-mix(in oklch, var(--primary) 3%, #fafafa);
+    --zp-surface-hover: color-mix(in oklch, var(--primary) 5%, #f5f5f5);
+    --zp-surface-active: color-mix(in oklch, var(--primary) 8%, #f0f0f0);
+    --card: color-mix(in oklch, var(--primary) 2%, #ffffff);
+    --card-foreground: color-mix(in oklch, var(--primary) 20%, #26262a);
+    --popover: color-mix(in oklch, var(--primary) 2%, #ffffff);
+    --popover-foreground: color-mix(in oklch, var(--primary) 20%, #26262a);
+    --zp-trans-zh: color-mix(in oklch, var(--primary) 70%, #1a1a1a);
+}
+
+:root[data-scheme="dark"] {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
+    --card: oklch(0.19 0 0);
     --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
+    --popover: oklch(0.19 0 0);
     --popover-foreground: oklch(0.985 0 0);
     --primary: oklch(0.922 0 0);
     --primary-foreground: oklch(0.205 0 0);
@@ -161,9 +330,12 @@
   /* AI 工作状态点缀色（靛蓝）：仅用于思考/工具执行中/流式光标/回顾卡等「AI 正在工作」元素 */
   --zp-ai: oklch(0.51 0.19 277);
   --zp-ai-soft: oklch(0.51 0.19 277 / 8%);
+
+  /* 中英对照：中文段文字色（可被配色方案覆盖） */
+  --zp-trans-zh: #32685e;
 }
 
-.dark {
+:root[data-scheme="dark"] {
   --zp-primary: #f5f5f5;
   --zp-secondary: #d4d4d4;
   --zp-tertiary: #737373;
@@ -175,6 +347,8 @@
 
   --zp-ai: oklch(0.7 0.15 277);
   --zp-ai-soft: oklch(0.7 0.15 277 / 14%);
+
+  --zp-trans-zh: #7dd3fc; /* sky-300，深色下略亮 */
 }
 
 /* 批量操作栏入场：材质到达（opacity + scale 同步），200ms 强 ease-out */
@@ -231,7 +405,7 @@
     background: white;
     backdrop-filter: none;
   }
-  .dark .zp-bulk-bar {
+  [data-scheme="dark"] .zp-bulk-bar {
     background: #171717;
   }
 }
@@ -285,11 +459,11 @@
   }
 }
 
-/* 中英对照：中文段浅蓝色（英文段保持默认黑色）。
+/* 中英对照：中文段颜色走 --zp-trans-zh token（随配色方案变化，英文段保持默认）。
    注意：必须放在 @layer 之外（unlayered）——typography 的 .prose{color:...} 也是 unlayered，
    非 layer 样式按特异性取胜，写进 @layer base 会被 typography 的黑色按层序压过。 */
 .prose.trans-zh {
-  color: #32685e; /* 保持长文阅读所需的对比度 */
+  color: var(--zp-trans-zh); /* 保持长文阅读所需的对比度 */
 }
 .prose.trans-zh h1,
 .prose.trans-zh h2,
@@ -298,9 +472,6 @@
 .prose.trans-zh strong,
 .prose.trans-zh a {
   color: inherit;
-}
-.dark .prose.trans-zh {
-  color: #7dd3fc; /* sky-300，深色下略亮 */
 }
 
 /* 减少动态：位移/弹簧降级为短 cross-fade，保留有助理解的透明度变化 */

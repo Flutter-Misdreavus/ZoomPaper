@@ -4,6 +4,51 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ZoomPaper</title>
+    <script>
+      // 配色方案防闪烁：CSS 应用前读出 localStorage 并写到 <html data-scheme>
+      (function () {
+        try {
+          var raw = localStorage.getItem("zoompaper.theme");
+          var scheme = "green", color = "#27665b";
+          if (raw) {
+            if (raw.charAt(0) === "{") {
+              var p = JSON.parse(raw);
+              if (p.scheme) scheme = p.scheme;
+              if (p.customColor) color = p.customColor;
+            } else {
+              scheme = raw;
+            }
+          }
+          document.documentElement.dataset.scheme = scheme;
+          if (scheme === "custom") {
+            document.documentElement.style.setProperty("--primary", color);
+            // 与 src/lib/theme.ts 的 luminance 逻辑保持一致：浅色主色用深色文字
+            var m = /^#?([0-9a-f]{6})$/i.exec(color);
+            if (m) {
+              var n = parseInt(m[1], 16);
+              var f = function (v) { var c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+              var lum = 0.2126 * f(n >> 16) + 0.7152 * f((n >> 8) & 255) + 0.0722 * f(n & 255);
+              document.documentElement.style.setProperty("--primary-foreground", lum > 0.4 ? "#1a1a1a" : "#ffffff");
+            }
+          }
+          // JSON 高级主题缓存：与 src/lib/theme.ts applyCustomTheme 同一校验规则
+          var ct = localStorage.getItem("zoompaper.customTheme");
+          if (ct) {
+            var theme = JSON.parse(ct);
+            var sections = [theme.vars, scheme === "dark" ? theme.dark : null];
+            for (var i = 0; i < sections.length; i++) {
+              var section = sections[i];
+              if (!section) continue;
+              for (var key in section) {
+                var value = section[key];
+                if (!/^[a-z0-9-]+$/.test(key) || typeof value !== "string" || /[{};]/.test(value)) continue;
+                document.documentElement.style.setProperty("--" + key, value);
+              }
+            }
+          }
+        } catch (e) { /* 回退 :root 默认绿色 */ }
+      })();
+    </script>
   </head>
 
   <body>
