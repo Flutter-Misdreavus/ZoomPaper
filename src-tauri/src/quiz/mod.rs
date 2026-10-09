@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// 喂给 LLM 的论文内容字符上限（全文或选中章节拼接后统一截断）。
 pub const CONTENT_MAX_CHARS: usize = 120_000;
 
-/// 单套卷的题数上限（选择 30 + 主观 5，合计上限，防御性截断）。
+/// 单套卷的题数上限（选择 30 + 主观 5，防御性截断）。
 pub const MAX_QUESTIONS: usize = 35;
 
 /// 每道题的满分（选择 / 主观统一，总分为百分制折算）。

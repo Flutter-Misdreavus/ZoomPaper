@@ -1,5 +1,5 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
 import type { CustomTheme } from "./theme";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export interface ApiKeys {
   mineru: string;
@@ -20,7 +20,10 @@ export interface ProviderConfig {
   enabled: boolean;
 }
 
+export interface WorkflowSettings { autoParse: boolean; parseConcurrency: number; autoDoi: boolean; autoMetadataTranslation: boolean; autoFullTranslation: boolean; }
+export const DEFAULT_WORKFLOW: WorkflowSettings = {autoParse:true,parseConcurrency:2,autoDoi:true,autoMetadataTranslation:true,autoFullTranslation:false};
 export interface Settings {
+  workflow?: WorkflowSettings;
   providers: ProviderConfig[];
   active_provider_id: string;
   mineru_api_key: string;
@@ -258,11 +261,9 @@ export const generateBlog = (paperId: string) =>
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
-export const getThemesDir = () => invoke<string>("get_themes_dir");
-export const listCustomThemes = () => invoke<CustomTheme[]>("list_custom_themes");
-
 export const listPapers = () => invoke<Paper[]>("list_papers");
 export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
+export const refreshPaperPublication = (paperId: string) => invoke<Paper>("refresh_paper_publication", { paperId });
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
   invoke<Paper>("import_pdf", { sourcePath });
@@ -273,6 +274,8 @@ export const importPdfUrl = (
   githubUrl?: string | null,
   venue?: string | null,
   sourceIconUrl?: string | null,
+  doi?: string | null,
+  requestId?: string | null,
 ) => invoke<Paper>("import_pdf_url", {
   url,
   suggestedTitle: suggestedTitle ?? null,
@@ -280,6 +283,8 @@ export const importPdfUrl = (
   githubUrl: githubUrl ?? null,
   venue: venue ?? null,
   sourceIconUrl: sourceIconUrl ?? null,
+  doi: doi ?? null,
+  requestId: requestId ?? null,
 });
 export const importBrowserDownload = (
   sourcePath: string,
@@ -288,6 +293,8 @@ export const importBrowserDownload = (
   githubUrl?: string | null,
   venue?: string | null,
   sourceIconUrl?: string | null,
+  doi?: string | null,
+  requestId?: string | null,
 ) => invoke<Paper>("import_browser_download", {
   sourcePath,
   suggestedTitle: suggestedTitle ?? null,
@@ -295,6 +302,8 @@ export const importBrowserDownload = (
   githubUrl: githubUrl ?? null,
   venue: venue ?? null,
   sourceIconUrl: sourceIconUrl ?? null,
+  doi: doi ?? null,
+  requestId: requestId ?? null,
 });
 export interface ParseProgress {
   /** uploading / pending / converting / running / downloading / indexing */
@@ -391,6 +400,7 @@ export interface ReadingPlan {
 
 /** 时间线某天的论文明细条目 */
 export interface TimelineDayPaper {
+  title_zh?: string|null;
   paper_id: string;
   title: string;
   seconds: number;
@@ -827,3 +837,18 @@ export const quizDelete = (quizId: string) =>
   invoke<void>("quiz_delete", { quizId });
 
 export const reindexAllPapers = () => invoke<[number, number]>("reindex_all_papers");
+
+export interface BackgroundJob {
+  id: string; paper_id: string; title: string; kind: "parse" | "index" | "translate" | "doi" | "full_translation";
+  status: "queued" | "running" | "canceling" | "done" | "failed" | "canceled";
+  stage: string; completed_pages: number | null; total_pages: number | null;
+  error: string | null; created_at: number; updated_at: number;
+}
+export const listJobs = () => invoke<BackgroundJob[]>("list_jobs");
+export const cancelJob = (jobId: string) => invoke<void>("cancel_job", { jobId });
+export const retryJob = (jobId: string) => invoke<void>("retry_job", { jobId });
+
+export const enqueueMetadataTranslations = (paperIds: string[]) => invoke<void>("enqueue_metadata_translations", {paperIds});
+
+export const getThemesDir = () => invoke<string>("get_themes_dir");
+export const listCustomThemes = () => invoke<CustomTheme[]>("list_custom_themes");

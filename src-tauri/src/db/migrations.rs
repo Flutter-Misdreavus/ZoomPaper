@@ -258,6 +258,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
         conn.pragma_update(None, "user_version", 17)?;
     }
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 18 {
+        conn.execute_batch(crate::jobs::SCHEMA)?;
+        conn.execute_batch("ALTER TABLE papers ADD COLUMN content_hash TEXT; ALTER TABLE papers ADD COLUMN parse_revision INTEGER NOT NULL DEFAULT 0; CREATE INDEX IF NOT EXISTS paper_hash ON papers(content_hash);")?;
+        conn.pragma_update(None, "user_version", 18)?;
+    }
     Ok(())
 }
 
@@ -291,7 +297,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
 
         // 论文数据无损
@@ -456,7 +462,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
 
         let items: Vec<(String, Option<i64>)> = conn
@@ -495,7 +501,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
     }
 
     #[test]
@@ -526,7 +532,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
     }
 

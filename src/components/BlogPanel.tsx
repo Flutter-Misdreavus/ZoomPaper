@@ -299,11 +299,6 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
           )}
           {generating ? "生成中…" : blog ? "重新生成" : "生成博客"}
         </Button>
-        {generating && (
-          <span className="text-xs text-muted-foreground">
-            正在后台生成，可放心切换论文
-          </span>
-        )}
         {blog && (
           <Button
             variant={showList ? "secondary" : "ghost"}

@@ -4,13 +4,18 @@ mod agent;
 mod ai;
 mod blog;
 mod commands;
+mod companion;
+mod connector;
 mod db;
 mod feynman;
 mod fs;
+mod jobs;
+mod publication;
 mod qa;
 mod quiz;
 mod rag;
 mod settings;
+mod storage;
 mod translate;
 
 use tauri::Manager;
@@ -46,8 +51,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 初始化数据库（建目录 + 建表）并放入应用状态
+            if let Err(error) = storage::apply_pending() {
+                eprintln!("恢复备份失败：{error}");
+                if let Ok(data) = settings::app_data_dir() {
+                    let _ = std::fs::write(data.join("restore-error.txt"), error.to_string());
+                    let _ = std::fs::remove_file(data.join("restore-request.json"));
+                }
+            }
             let db = db::Db::init()?;
             app.manage(db);
+            if let (Some(main), Some(companion)) = (
+                app.get_webview_window("main"),
+                app.get_webview_window("companion"),
+            ) {
+                if let (Ok(position), Ok(size), Ok(scale)) = (
+                    main.outer_position(),
+                    main.outer_size(),
+                    main.scale_factor(),
+                ) {
+                    let _ = companion.set_position(tauri::PhysicalPosition::new(
+                        position.x + size.width as i32 - (360.0 * scale) as i32,
+                        position.y + (60.0 * scale) as i32,
+                    ));
+                }
+            }
+            companion::start(app.handle().clone());
+            jobs::start(app.handle().clone());
+            connector::start(app.handle().clone());
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -57,11 +87,32 @@ pub fn run() {
             enable_pinch_zoom(app);
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(companion) = window.app_handle().get_webview_window("companion") {
+                    let _ = companion.close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            companion::companion_regions,
+            companion::companion_press,
+            companion::companion_release,
             commands::get_settings,
             commands::update_settings,
             commands::get_themes_dir,
             commands::list_custom_themes,
+            commands::enqueue_metadata_translations,
+            jobs::claim_frontend_translation,
+            jobs::finish_frontend_translation,
+            storage::export_library_backup,
+            storage::stage_library_restore,
+            storage::take_restored_preferences,
+            storage::relocate_library,
+            storage::clear_library_cache,
+            storage::prepare_browser_extension,
+            storage::library_storage_path,
+            connector::browser_extension_status,
             commands::add_provider,
             commands::update_provider,
             commands::delete_provider,
@@ -76,7 +127,11 @@ pub fn run() {
             commands::import_browser_download,
             commands::import_pdf_url,
             commands::parse_pdf,
+            jobs::list_jobs,
+            jobs::cancel_job,
+            jobs::retry_job,
             commands::translate_paper_metadata,
+            commands::refresh_paper_publication,
             commands::delete_paper,
             commands::index_paper,
             commands::reindex_all_papers,

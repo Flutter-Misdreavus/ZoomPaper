@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { usePreferences, paperTitle } from "@/lib/preferences";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { IconTooltip } from "@/components/ui/icon-tooltip";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -40,7 +42,7 @@ import { dueBadge } from "@/components/library/planMenu";
 import { VenueBadge } from "@/components/library/VenueBadge";
 import {
   BookCheck,
-  CalendarClock,
+  ChevronDown, Pause, Play,
   Clock,
   Flame,
   Plus,
@@ -90,6 +92,7 @@ function readingTitleClass(status: string): string {
 }
 
 export function TimelinePage({ onOpenPaper }: Props) {
+  const prefs=usePreferences();
   const [stats, setStats] = useState<TimelineStats | null>(null);
   const [plans, setPlans] = useState<ReadingPlan[]>([]);
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -172,7 +175,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
       {/* 热力图 + 当日明细 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold">阅读热力图</h2>
-        <div className="overflow-x-auto rounded-md border border-zp-border bg-card p-4">
+        <div className="overflow-x-auto rounded-md border border-zp-border bg-white p-4 dark:bg-zp-surface">
           <div className="w-max min-w-full">
             <div className="mb-1 ml-7 flex gap-[3px]">
               {weeks.map((col, wi) => {
@@ -251,7 +254,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
                           iconUrl={paperById.get(p.paper_id)?.source_icon_url}
                           status={p.reading_status as ReadingStatus}
                         />
-                        <span className={cn("min-w-0 flex-1 truncate", readingTitleClass(p.reading_status))}>{p.title}</span>
+                        <span className={cn("min-w-0 flex-1 truncate", readingTitleClass(p.reading_status))}>{paperTitle(p,"history",prefs)}</span>
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {formatDuration(p.seconds)}
                         </span>
@@ -294,7 +297,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
                   className="pressable flex w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-zp-surface-hover"
                 >
                   <VenueBadge compact venue={p.venue} sourceUrl={p.source_url} iconUrl={p.source_icon_url} status={p.reading_status as ReadingStatus} />
-                  <span className={cn("min-w-0 flex-1 truncate text-sm", readingTitleClass(p.reading_status))}>{p.title}</span>
+                  <span className={cn("min-w-0 flex-1 truncate text-sm", readingTitleClass(p.reading_status))}>{paperTitle(p,"history",prefs)}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     累计 {formatDuration(p.total_read_seconds)}
                   </span>
@@ -324,13 +327,15 @@ interface PlansProps {
 function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: PlansProps) {
   const [showForm, setShowForm] = useState(false);
   const [deleting, setDeleting] = useState<ReadingPlan | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const paperMap = useMemo(() => new Map(papers.map((p) => [p.id, p])), [papers]);
 
   const confirmDelete = () => {
     if (!deleting) return;
+    setDeleteError(null);
     deleteReadingPlan(deleting.id)
       .then(onChanged)
-      .catch(() => {})
+      .catch(e => setDeleteError(String(e)))
       .finally(() => setDeleting(null));
   };
 
@@ -349,7 +354,7 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
         </Button>
       </div>
 
-      {showForm && (
+      <Dialog open={showForm} onOpenChange={setShowForm}><DialogContent><DialogHeader><DialogTitle>新建阅读计划</DialogTitle></DialogHeader>
         <PlanForm
           papers={papers}
           onCreated={() => {
@@ -358,10 +363,10 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
           }}
           onCancel={() => setShowForm(false)}
         />
-      )}
+      </DialogContent></Dialog>
 
       {plans.length > 0 && (
-        <div className="flex flex-col gap-3">
+        <div className="divide-y divide-zp-border overflow-hidden rounded-xl border border-zp-border bg-white dark:bg-zp-surface">
           {plans.map((plan) => (
             <PlanCard
               key={plan.id}
@@ -376,6 +381,7 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
         </div>
       )}
 
+      {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
       <AlertDialog open={deleting != null} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -388,7 +394,7 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               onClick={confirmDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              className="bg-[#b42318] text-white hover:bg-[#912018]"
             >
               删除
             </AlertDialogAction>
@@ -399,206 +405,41 @@ function PlansSection({ plans, papers, todayFinished, onChanged, onOpenPaper }: 
   );
 }
 
-function PlanCard({
-  plan,
-  paperMap,
-  todayFinished,
-  onChanged,
-  onDelete,
-  onOpenPaper,
-}: {
-  plan: ReadingPlan;
-  paperMap: Map<string, Paper>;
-  todayFinished: number;
-  onChanged: () => void;
-  onDelete: () => void;
-  onOpenPaper: (paperId: string) => void;
+function PlanCard({ plan, paperMap, todayFinished, onChanged, onDelete, onOpenPaper }: {
+  plan: ReadingPlan; paperMap: Map<string, Paper>; todayFinished: number;
+  onChanged: () => void; onDelete: () => void; onOpenPaper: (id: string) => void;
 }) {
-  const toggleActive = () => {
-    updateReadingPlan(plan.id, { active: !plan.active })
-      .then(onChanged)
-      .catch(() => {});
-  };
-
-  if (plan.type === "daily") {
-    const target = plan.target_count ?? 1;
-    const done = todayFinished >= target;
-    return (
-      <Card>
-        <CardContent className="flex items-center gap-4 p-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="font-medium">每天读完 {target} 篇</span>
-              {!plan.active && <Badge variant="secondary">已停用</Badge>}
-              {plan.active &&
-                (done ? (
-                  <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">
-                    今日已达标
-                  </Badge>
-                ) : (
-                  <Badge variant="destructive">今日未达标</Badge>
-                ))}
-            </div>
-            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zp-surface">
-              <div
-                className={cn(
-                  "h-full rounded-full transition-all",
-                  done ? "bg-emerald-500" : "bg-zp-primary",
-                )}
-                style={{ width: `${Math.min(100, (todayFinished / target) * 100)}%` }}
-              />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              今日进度 {todayFinished} / {target} 篇
-            </p>
-          </div>
-          <Button variant="ghost" size="sm" onClick={toggleActive} className="pressable shrink-0">
-            {plan.active ? "停用" : "启用"}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onDelete}
-            className="pressable shrink-0 text-muted-foreground hover:text-destructive"
-          >
-            <Trash2 className="h-4 w-4" strokeWidth={1.8} />
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  // papers 计划：指派论文清单（条目级截止日期）
-  const total = plan.items.length;
-  const doneCount = plan.items.filter(
-    (it) => paperMap.get(it.paper_id)?.reading_status === "read",
-  ).length;
-  const allDone = total > 0 && doneCount >= total;
-  // 汇总徽章由未读条目的最近 due 驱动
-  const now = Date.now() / 1000;
-  const unreadDues = plan.items
-    .filter(
-      (it) =>
-        it.due_date != null &&
-        paperMap.get(it.paper_id)?.reading_status !== "read",
-    )
-    .map((it) => it.due_date as number)
-    .sort((a, b) => a - b);
-  const hasOverdue = unreadDues.some((d) => d < now);
-  const nearestDue = unreadDues[0] ?? null;
-
-  const removeItem = (paperId: string) => {
-    removePaperFromPlan(plan.id, paperId)
-      .then(onChanged)
-      .catch(() => {});
-  };
-
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-2 p-4">
-        <div className="flex items-center gap-2">
-          <span className="font-medium">
-            读完 {total} 篇论文（已完成 {doneCount} / {total}）
-          </span>
-          {allDone ? (
-            <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">已完成</Badge>
-          ) : hasOverdue ? (
-            <Badge variant="destructive">
-              <CalendarClock className="mr-1 h-3 w-3" />
-              有逾期
-            </Badge>
-          ) : nearestDue != null && nearestDue - now <= 3 * 86400 ? (
-            <Badge className="bg-amber-500 text-white hover:bg-amber-500">
-              <CalendarClock className="mr-1 h-3 w-3" />
-              还剩 {Math.max(1, Math.ceil((nearestDue - now) / 86400))} 天
-            </Badge>
-          ) : nearestDue != null ? (
-            <Badge variant="secondary">最近截止 {formatTime(nearestDue)}</Badge>
-          ) : null}
-          {!plan.active && <Badge variant="secondary">已停用</Badge>}
-          <div className="ml-auto flex shrink-0 items-center">
-            {!allDone && (
-              <Button variant="ghost" size="sm" onClick={toggleActive} className="pressable">
-                {plan.active ? "停用" : "启用"}
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onDelete}
-              className="pressable text-muted-foreground hover:text-destructive"
-            >
-              <Trash2 className="h-4 w-4" strokeWidth={1.8} />
-            </Button>
-          </div>
-        </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zp-surface">
-          <div
-            className={cn(
-              "h-full rounded-full transition-all",
-              allDone ? "bg-emerald-500" : "bg-zp-primary",
-            )}
-            style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }}
-          />
-        </div>
-        <ul className="flex flex-col">
-          {plan.items.map((item) => {
-            const p = paperMap.get(item.paper_id);
-            const read = p?.reading_status === "read";
-            const due = dueBadge(item.due_date, read);
-            return (
-              <li key={item.paper_id} className="group/item flex items-center">
-                <button
-                  type="button"
-                  onClick={() => onOpenPaper(item.paper_id)}
-                  className="pressable flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zp-surface-hover"
-                >
-                  <BookCheck
-                    className={cn(
-                      "h-4 w-4 shrink-0",
-                      read ? "text-emerald-500" : "text-zp-quaternary",
-                    )}
-                    strokeWidth={1.8}
-                  />
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate",
-                      read && "text-muted-foreground line-through",
-                    )}
-                  >
-                    {p?.title ?? "（论文已删除）"}
-                  </span>
-                  {due && (
-                    <span
-                      className={cn(
-                        "shrink-0 text-xs",
-                        due.tone === "red"
-                          ? "text-red-600"
-                          : due.tone === "amber"
-                            ? "text-amber-600"
-                            : "text-muted-foreground",
-                      )}
-                    >
-                      {due.text}
-                    </span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  title="从计划移除"
-                  aria-label="从计划移除"
-                  onClick={() => removeItem(item.paper_id)}
-                  className="pressable ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-zp-quaternary opacity-0 transition-opacity group-hover/item:opacity-100 hover:bg-zp-surface-hover hover:text-destructive"
-                >
-                  <X className="h-3.5 w-3.5" strokeWidth={1.8} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </CardContent>
-    </Card>
-  );
+  const [expanded, setExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const total = plan.type === "daily" ? plan.target_count ?? 1 : plan.items.length;
+  const done = plan.type === "daily" ? todayFinished : plan.items.filter(item => paperMap.get(item.paper_id)?.reading_status === "read").length;
+  const nextDue = plan.items.filter(item => item.due_date && paperMap.get(item.paper_id)?.reading_status !== "read").map(item => item.due_date!).sort((a,b) => a-b)[0];
+  const toggle = () => updateReadingPlan(plan.id, { active: !plan.active }).then(onChanged).catch(e => setError(String(e)));
+  return <article className="px-4 py-3">
+    <div className="flex items-center gap-3">
+      <button aria-label="展开计划论文" aria-expanded={expanded} disabled={plan.type === "daily"} onClick={() => setExpanded(value => !value)} className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-medium disabled:cursor-default">
+        {plan.type === "papers" ? <ChevronDown size={16} className={expanded ? "rotate-180" : ""} /> : <BookCheck size={16} className="text-zp-tertiary" />}
+        <span className="truncate">{plan.type === "daily" ? `每天读完 ${total} 篇` : `阅读 ${total} 篇论文`}</span>
+      </button>
+      <span className="shrink-0 text-xs text-zp-tertiary">{!plan.active ? "已暂停" : nextDue ? formatTime(nextDue) : plan.type === "daily" ? "今日" : ""}</span>
+      <span className="w-16 shrink-0 text-right text-xs tabular-nums text-zp-secondary">{done} / {total}</span>
+      <IconTooltip label={plan.active ? "暂停计划" : "恢复计划"}><button aria-label={plan.active ? "暂停计划" : "恢复计划"} onClick={toggle} className="rounded-md p-2 text-zp-tertiary hover:bg-zp-subtle">{plan.active ? <Pause size={15} /> : <Play size={15} />}</button></IconTooltip>
+      <IconTooltip label="删除计划"><button aria-label="删除计划" onClick={onDelete} className="rounded-md p-2 text-zp-tertiary hover:bg-red-50 hover:text-red-700"><Trash2 size={15} /></button></IconTooltip>
+    </div>
+    <div role="progressbar" aria-label="计划进度" aria-valuemin={0} aria-valuemax={total || 1} aria-valuenow={Math.min(done,total)} className="mt-2 h-1 overflow-hidden rounded-full bg-zp-subtle"><div className="h-full rounded-full bg-emerald-600" style={{width: `${total ? Math.min(100,done/total*100) : 0}%`}} /></div>
+    {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}
+    {expanded && <ul className="mt-3 divide-y divide-zp-border">{plan.items.map(item => {
+      const paper = paperMap.get(item.paper_id); const read = paper?.reading_status === "read"; const due = dueBadge(item.due_date, read);
+      return <li key={item.paper_id} className="flex items-center gap-2 py-2">
+        <button onClick={() => onOpenPaper(item.paper_id)} className="flex min-w-0 flex-1 items-center gap-3 text-left text-sm">
+          <VenueBadge compact venue={paper?.venue ?? null} sourceUrl={paper?.source_url} iconUrl={paper?.source_icon_url} status={paper?.reading_status as ReadingStatus} />
+          <span className={cn("truncate", read && "text-zp-tertiary")}>{paper ? paperTitle(paper,"history") : "论文已删除"}</span>
+        </button>
+        {due && <span className={cn("shrink-0 text-xs", due.tone === "red" ? "text-red-700" : "text-zp-tertiary")}>{due.text}</span>}
+        <IconTooltip label="从计划移除"><button aria-label="从计划移除" onClick={() => { void removePaperFromPlan(plan.id,item.paper_id).then(onChanged).catch(e => setError(String(e))); }} className="rounded p-1 text-zp-tertiary hover:bg-zp-subtle"><X size={14} /></button></IconTooltip>
+      </li>;
+    })}</ul>}
+  </article>;
 }
 
 /** 新建计划表单（inline）：daily = 目标篇数；papers = 选论文 + 截止日期 */
@@ -646,8 +487,7 @@ function PlanForm({
   const candidates = papers.filter((p) => p.reading_status !== "read");
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3 p-4">
+    <div className="flex flex-col gap-3">
         <div className="flex items-end gap-3">
           <div className="flex flex-col gap-1.5">
             <Label>计划类型</Label>
@@ -714,7 +554,7 @@ function PlanForm({
                       onChange={() => togglePaper(p.id)}
                       className="accent-zp-primary"
                     />
-                    <span className="min-w-0 flex-1 truncate">{p.title}</span>
+                    <span className="min-w-0 flex-1 truncate">{paperTitle(p,"history")}</span>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {p.reading_status === "reading" ? "在读" : "未读"}
                     </span>
@@ -740,7 +580,6 @@ function PlanForm({
             {submitting ? "创建中…" : "创建计划"}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+    </div>
   );
 }

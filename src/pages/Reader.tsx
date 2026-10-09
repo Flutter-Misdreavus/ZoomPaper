@@ -1,3 +1,4 @@
+import { usePreferences, paperTitle } from "@/lib/preferences";
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
@@ -13,72 +14,83 @@ import {
   addReadingTime,
   markPaperRead,
   openPaperForReading,
+  getPaper,
+  refreshPaperPublication,
   setPaperStatus,
   type Paper,
 } from "@/lib/api";
-import { displayPaperTitle, formatDuration } from "@/lib/utils";
-import { BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
+import { formatDuration } from "@/lib/utils";
+import { ArrowLeft, BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
 
 interface Props {
   paperId: string;
+  active?: boolean;
+  onBusyChange?: (busy: boolean) => void;
   /** 外部跳入的目标页（0-based），如搜索结果/引用定位 */
   initialPageIdx?: number;
-  /** 复用已有标签并带页码跳转时递增，触发 jumpToPage */
-  jumpNonce: number;
-  /** 是否为当前激活标签：非激活标签不计阅读时长 */
-  active: boolean;
-  /** 论文元数据加载完成后回调（标签条回填标题） */
-  onPaperLoaded: (paper: Paper) => void;
+  onBack: () => void;
+  refreshSignal?: number;
+  onTitleChange?: (title: string) => void;
 }
 
-export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoaded }: Props) {
+export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitleChange, active = true, onBusyChange }: Props) {
+  const prefs=usePreferences();
+  const endMarked=useRef(false);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [visited, setVisited] = useState(active);
+  useEffect(() => { if (active) setVisited(true); }, [active]);
   const pdfRef = useRef<PdfViewerHandle>(null);
   const qaRef = useRef<QaPanelHandle>(null);
 
   useEffect(() => {
     let cancelled = false;
-    openPaperForReading(paperId)
+    getPaper(paperId)
       .then((p) => {
         if (cancelled) return;
         setPaper(p);
-        onPaperLoaded(p);
+        refreshPaperPublication(paperId).then((updated) => {
+          if (!cancelled) setPaper((current) => current?.id === updated.id ? { ...current, venue: updated.venue, authors: updated.authors } : current);
+        }).catch(() => {});
       })
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onPaperLoaded 由父组件稳定传入
   }, [paperId]);
 
-  // 复用已有标签并指定页码时，在已挂载的阅读器内跳页
-  const lastJumpNonceRef = useRef(jumpNonce);
   useEffect(() => {
-    if (jumpNonce === lastJumpNonceRef.current) return;
-    lastJumpNonceRef.current = jumpNonce;
-    if (initialPageIdx != null) pdfRef.current?.jumpToPage(initialPageIdx);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅以 jumpNonce 为跳转信号
-  }, [jumpNonce]);
+    let canceled = false;
+    getPaper(paperId).then((updated) => { if (!canceled) setPaper(updated); }).catch(() => {});
+    return () => { canceled = true; };
+  }, [paperId, refreshSignal]);
+  useEffect(() => { if (paper) onTitleChange?.(paperTitle(paper,"tab",prefs)); }, [paper?.title, paper?.title_zh, onTitleChange, prefs]);
+
+  useEffect(() => {
+    if (!active) return;
+    let canceled = false;
+    void openPaperForReading(paperId).then(updated => { if (!canceled) setPaper(updated); }).catch(() => {});
+    return () => { canceled = true; };
+  }, [active, paperId]);
 
   // 打开论文即进入「在读」状态（未读 → 在读；已读保持不变）。失败静默，不影响阅读。
   useEffect(() => {
-    if (!paper || paper.reading_status === "reading" || paper.reading_status === "read") return;
+    if (!prefs.markReading || !active || !paper || paper.reading_status === "reading" || paper.reading_status === "read") return;
     setPaperStatus(paper.id, "reading").catch(() => {});
-  }, [paper]);
+  }, [paper, active, prefs.markReading]);
 
-  // 阅读时长累计：仅页面可见且为激活标签时计时，每 30s 上报一次，卸载/换论文/切标签时上报零头。失败静默。
+  // 阅读时长累计：仅页面可见时计时，每 30s 上报一次，卸载/换论文时上报零头。失败静默。
   const [sessionSeconds, setSessionSeconds] = useState(0);
   useEffect(() => {
-    if (!paper) return;
+    if (!paper || !active) return;
     const pid = paper.id;
     setSessionSeconds(0);
     let pending = 0;
-    let visible = document.visibilityState === "visible" && active;
+    let visible = document.visibilityState === "visible";
     const onVis = () => {
-      visible = document.visibilityState === "visible" && active;
+      visible = document.visibilityState === "visible";
     };
     const flush = () => {
       if (pending <= 0) return;
@@ -100,7 +112,7 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
       document.removeEventListener("visibilitychange", onVis);
       flush();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 与激活状态为计时边界
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 为计时边界
   }, [paper?.id, active]);
 
   // 标记/取消已读（时间线统计口径）
@@ -111,14 +123,24 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
       .catch(() => {});
   };
 
+  const [readerMode, setReaderMode] = useState(() => localStorage.getItem(`zoompaper.readerMode.${paperId}`) ?? "pdf");
   const ready = paper?.parse_status === "ready";
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
+        <IconTooltip label="返回论文库" side="bottom"><Button
+          variant="ghost"
+          size="icon"
+          onClick={onBack}
+          aria-label="返回论文库"
+          className="pressable"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button></IconTooltip>
         <div className="min-w-0">
           <h1 className="truncate text-xl font-bold tracking-tight">
-            {paper ? displayPaperTitle(paper.title) : "加载中…"}
+            {paper ? paperTitle(paper,"tab",prefs) : "加载中…"}
           </h1>
           {paper?.authors && (
             <p className="text-sm text-muted-foreground">{paper.authors}</p>
@@ -169,7 +191,7 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
       ) : paper ? (
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* 左列：原文 PDF / AI 博客 */}
-          <Tabs defaultValue="pdf" className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <Tabs value={readerMode} onValueChange={value => { setReaderMode(String(value)); localStorage.setItem(`zoompaper.readerMode.${paperId}`, String(value)); }} className="flex min-h-0 min-w-0 flex-1 flex-col">
             <TabsList>
               <TabsTrigger value="pdf">原文</TabsTrigger>
               <TabsTrigger
@@ -195,15 +217,17 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
               </TabsTrigger>
             </TabsList>
             <TabsContent value="pdf" keepMounted className="flex min-h-0 flex-col">
-              <PdfViewer
+              {visited && <PdfViewer
                 ref={pdfRef}
+                active={active && readerMode === "pdf"}
+                onReachEnd={() => {if(prefs.markReadAtEnd && active && !endMarked.current && paper.reading_status!=="read"){endMarked.current=true;void markPaperRead(paper.id,true).then(setPaper).catch(()=>{endMarked.current=false;});}}}
                 pdfPath={paper.pdf_path}
                 paperId={paperId}
                 initialPageIdx={initialPageIdx}
                 onAskSelection={(text, pageIdx, rects) =>
                   qaRef.current?.acceptSelection(text, pageIdx, rects)
                 }
-              />
+              />}
             </TabsContent>
             <TabsContent value="blog" keepMounted className="min-h-0 overflow-y-auto pt-4 pr-4">
               {ready && (
@@ -238,10 +262,10 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
             <QaPanel
               ref={qaRef}
               paperId={paperId}
-              onJumpPage={(idx) => pdfRef.current?.jumpToPage(idx)}
-              onJumpToSelection={(pageIdx, rects) =>
-                pdfRef.current?.jumpToSelection(pageIdx, rects)
-              }
+              defaultOpen={prefs.showAssistant}
+              onBusyChange={onBusyChange}
+              onJumpPage={(idx) => { setReaderMode("pdf"); requestAnimationFrame(() => pdfRef.current?.jumpToPage(idx)); }}
+              onJumpToSelection={(pageIdx, rects) => { setReaderMode("pdf"); requestAnimationFrame(() => pdfRef.current?.jumpToSelection(pageIdx, rects)); }}
             />
           ) : (
             <div className="ml-2 flex w-10 shrink-0 items-start justify-center py-3 text-muted-foreground" title="解析完成后可用论文助手">

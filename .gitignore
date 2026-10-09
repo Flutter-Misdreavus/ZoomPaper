@@ -66,3 +66,5 @@ ZoomPaper-Connector_*/
 *.njsproj
 *.sln
 *.sw?
+
+/ZoomPaper-Connector/
