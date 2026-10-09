@@ -13,7 +13,7 @@ export interface ReaderTab {
 
 export interface ReaderTabsState {
   tabs: ReaderTab[];
-  /** null 表示没有打开的标签 */
+  /** null 表示主页标签（论文库）激活 */
   activeTabId: string | null;
 }
 
@@ -56,7 +56,7 @@ export function openTab(
   return { tabs: [...state.tabs, tab], activeTabId: tab.id };
 }
 
-/** 关闭标签：关闭激活标签时激活相邻标签（优先右侧）；无剩余标签时 activeTabId 为 null */
+/** 关闭标签：关闭激活标签时激活相邻标签（优先右侧）；无剩余标签时 activeTabId 为 null（落回主页标签） */
 export function closeTab(state: ReaderTabsState, tabId: string): ReaderTabsState {
   const index = state.tabs.findIndex((t) => t.id === tabId);
   if (index < 0) return state;
@@ -127,10 +127,13 @@ export function loadReaderTabs(): ReaderTabsState {
         const tabs = parsed.tabs.filter(
           (t) => t && typeof t.id === "string" && typeof t.paperId === "string",
         );
+        // null 是合法值（主页标签激活）；string 但标签已不存在时回退第一个标签
         const activeTabId =
-          parsed.activeTabId && tabs.some((t) => t.id === parsed.activeTabId)
-            ? parsed.activeTabId
-            : (tabs[0]?.id ?? null);
+          parsed.activeTabId === null || parsed.activeTabId === undefined
+            ? null
+            : tabs.some((t) => t.id === parsed.activeTabId)
+              ? parsed.activeTabId
+              : (tabs[0]?.id ?? null);
         return { tabs, activeTabId };
       }
     }

@@ -1,5 +1,4 @@
-import { ArrowLeft, FileText, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { FileText, House, X } from "lucide-react";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
 import type { ReaderTab } from "@/lib/readerTabs";
 import { cn } from "@/lib/utils";
@@ -9,29 +8,35 @@ interface Props {
   activeTabId: string | null;
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
-  onBack: () => void;
+  onActivateHome: () => void;
 }
 
-/** 阅读页顶部标签条：仿浏览器标签，可切换/关闭，左端固定返回论文库 */
-export function ReaderTabBar({ tabs, activeTabId, onActivate, onClose, onBack }: Props) {
+/** 工作区顶部标签条：最左固定「主页」标签（论文库，不可关闭），右侧为论文标签 */
+export function ReaderTabBar({ tabs, activeTabId, onActivate, onClose, onActivateHome }: Props) {
+  const homeActive = activeTabId === null;
   return (
     <div className="flex shrink-0 items-center gap-1 border-b border-border pb-1">
-      <IconTooltip label="返回论文库（保留标签）" side="bottom">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onBack}
-          aria-label="返回论文库"
-          className="pressable h-8 w-8 shrink-0"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-      </IconTooltip>
       <div
         role="tablist"
-        aria-label="阅读标签"
+        aria-label="工作区标签"
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
+        <IconTooltip label="主页" side="bottom">
+          <div
+            role="tab"
+            aria-selected={homeActive}
+            aria-label="主页"
+            onClick={onActivateHome}
+            className={cn(
+              "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md select-none",
+              homeActive
+                ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <House className="h-4 w-4" strokeWidth={1.8} />
+          </div>
+        </IconTooltip>
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
           return (

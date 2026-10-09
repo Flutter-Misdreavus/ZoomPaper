@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Reader } from "@/pages/Reader";
 import { ReaderTabBar } from "@/components/ReaderTabBar";
 import {
@@ -13,15 +13,18 @@ import type { Paper } from "@/lib/api";
 
 interface Props {
   tabs: ReaderTab[];
+  /** null = 主页标签（论文库）激活 */
   activeTabId: string | null;
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
-  onBack: () => void;
+  onActivateHome: () => void;
+  /** 主页标签内容（论文库），常驻挂载保活 */
+  home: ReactNode;
   onPaperLoaded: (tabId: string, paper: Paper) => void;
 }
 
-/** 阅读标签容器：标签条 + keep-alive 的 Reader 实例集合，LRU 控制保活数量 */
-export function ReaderHost({ tabs, activeTabId, onActivate, onClose, onBack, onPaperLoaded }: Props) {
+/** 工作区容器：标签条 + 主页（论文库）与论文标签的 keep-alive 实例集合，LRU 控制论文标签保活数量 */
+export function WorkspaceHost({ tabs, activeTabId, onActivate, onClose, onActivateHome, home, onPaperLoaded }: Props) {
   // lruOrder：按最近激活排序（末尾最新）；只有激活过的标签才会挂载（懒挂载）
   const [lruOrder, setLruOrder] = useState<string[]>(() => (activeTabId ? [activeTabId] : []));
   const [keepAlive, setKeepAlive] = useState(getReaderKeepAlive);
@@ -48,8 +51,15 @@ export function ReaderHost({ tabs, activeTabId, onActivate, onClose, onBack, onP
         activeTabId={activeTabId}
         onActivate={onActivate}
         onClose={onClose}
-        onBack={onBack}
+        onActivateHome={onActivateHome}
       />
+      {/* 主页（论文库）常驻挂载：切到论文标签再回来时滚动/多选状态保留 */}
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col"
+        style={{ display: activeTabId === null ? "flex" : "none" }}
+      >
+        {home}
+      </div>
       {tabs
         .filter((tab) => mounted.has(tab.id))
         .map((tab) => (

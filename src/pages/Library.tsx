@@ -603,7 +603,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
   // ---------- 渲染 ----------
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden">
       <FolderSidebar
         folders={folders}
         papers={papers}
@@ -628,7 +628,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
         onDropPapers={(ids, fid) => void handleDropPapers(ids, fid)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col bg-zp-surface">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zp-border bg-white dark:bg-zp-surface">
         <TopBar
           title={title}
           count={visiblePapers.length}

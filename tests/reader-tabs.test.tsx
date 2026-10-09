@@ -116,6 +116,32 @@ it("标签状态 localStorage 持久化 round-trip，损坏数据回退空状态
   expect(loadReaderTabs()).toEqual({ tabs: [], activeTabId: null });
 });
 
+it("loadReaderTabs 原样恢复主页激活态（activeTabId: null）", () => {
+  const state = stateWith("p1");
+  saveReaderTabs({ tabs: state.tabs, activeTabId: null });
+  const loaded = loadReaderTabs();
+  expect(loaded.tabs).toHaveLength(1);
+  expect(loaded.activeTabId).toBeNull();
+});
+
+it("TabBar 主页标签固定最左、不可关闭，点击触发 onActivateHome", () => {
+  const onActivateHome = vi.fn();
+  render(
+    <ReaderTabBar
+      tabs={[{ id: "a", paperId: "p1", title: "第一篇", jumpNonce: 0 }]}
+      activeTabId="a"
+      onActivate={() => {}}
+      onClose={() => {}}
+      onActivateHome={onActivateHome}
+    />,
+  );
+  const homeTab = screen.getByRole("tab", { name: "主页" });
+  expect(homeTab.getAttribute("aria-selected")).toBe("false");
+  expect(screen.queryByRole("button", { name: "关闭 主页" })).toBeNull();
+  fireEvent.click(homeTab);
+  expect(onActivateHome).toHaveBeenCalledTimes(1);
+});
+
 it("TabBar 点击切换与中键/按钮关闭", () => {
   const tabs: ReaderTab[] = [
     { id: "a", paperId: "p1", title: "第一篇", jumpNonce: 0 },
@@ -129,7 +155,7 @@ it("TabBar 点击切换与中键/按钮关闭", () => {
       activeTabId="a"
       onActivate={onActivate}
       onClose={onClose}
-      onBack={() => {}}
+      onActivateHome={() => {}}
     />,
   );
   fireEvent.click(screen.getByRole("tab", { name: /第二篇/ }));
