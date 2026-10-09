@@ -715,7 +715,7 @@ export const setActiveProvider = (id: string) =>
 
 
 export interface QuizConfig {
-  /** 选择题数量（0-10） */
+  /** 选择题数量（0-30） */
   choice_count: number;
   /** 主观题数量（0-5） */
   subjective_count: number;

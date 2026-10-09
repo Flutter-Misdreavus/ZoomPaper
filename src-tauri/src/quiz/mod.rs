@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 /// 喂给 LLM 的论文内容字符上限（全文或选中章节拼接后统一截断）。
 pub const CONTENT_MAX_CHARS: usize = 120_000;
 
-/// 单套卷的题数上限（选择 + 主观合计，防御性截断）。
-pub const MAX_QUESTIONS: usize = 15;
+/// 单套卷的题数上限（选择 30 + 主观 5，合计上限，防御性截断）。
+pub const MAX_QUESTIONS: usize = 35;
 
 /// 每道题的满分（选择 / 主观统一，总分为百分制折算）。
 pub const QUESTION_MAX_SCORE: f64 = 10.0;
@@ -42,7 +42,7 @@ const GRADE_ALL_PROMPT: &str = "你是一位论文阅读理解测验的阅卷人
 /// 出题配置（生成前由用户选择）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuizConfig {
-    /// 选择题数量（0-10）。
+    /// 选择题数量（0-30）。
     pub choice_count: usize,
     /// 主观题数量（0-5）。
     pub subjective_count: usize,
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn normalize_reids_sequentially_and_caps() {
-        let raw: Vec<RawQuestion> = (0..20)
+        let raw: Vec<RawQuestion> = (0..MAX_QUESTIONS + 5)
             .map(|_| RawQuestion {
                 qtype: "subjective".into(),
                 question: "Q".into(),

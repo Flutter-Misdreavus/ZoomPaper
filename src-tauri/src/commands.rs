@@ -4528,7 +4528,7 @@ pub async fn quiz_generate(
         return Err(format!("未知答题模式: {mode}"));
     }
     let mut config = config;
-    config.choice_count = config.choice_count.min(10);
+    config.choice_count = config.choice_count.min(30);
     config.subjective_count = config.subjective_count.min(5);
     if config.choice_count + config.subjective_count == 0 {
         return Err("请至少选择一道题".to_string());
