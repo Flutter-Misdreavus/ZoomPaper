@@ -62,7 +62,7 @@ export function BulkBar({
         transition: { duration: 0.15, ease: [0.23, 1, 0.32, 1] },
       }}
       transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-white px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-white/75 dark:bg-zp-surface/80"
+      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-card px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-card/75"
     >
       {/* 左区：计数 */}
       <span className="mr-1 shrink-0 text-sm font-medium text-zp-primary tabular-nums">

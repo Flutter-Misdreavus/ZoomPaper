@@ -114,7 +114,7 @@ export function PaperTable(props: PaperTableProps) {
               className={cn(
                 "group grid min-h-11 cursor-default select-none items-center border-b border-zp-border/70 px-2 outline-none transition-colors",
                 columns,
-                (props.selectionMode ? selected : focused) ? "bg-[#eceeeb] dark:bg-zp-surface-active" : "hover:bg-zp-surface-hover",
+                (props.selectionMode ? selected : focused) ? "bg-zp-surface-active" : "hover:bg-zp-surface-hover",
               )}
             />}>
               {props.selectionMode && <div className="flex items-center justify-center">
@@ -134,7 +134,7 @@ export function PaperTable(props: PaperTableProps) {
                   }}
                   className={cn(
                     "flex h-4 w-4 touch-none items-center justify-center rounded-[4px] border transition-colors",
-                    selected ? "border-zp-primary bg-zp-primary text-white" : "border-zp-border bg-white dark:bg-zp-surface",
+                    selected ? "border-zp-primary bg-zp-primary text-white" : "border-zp-border bg-card",
                   )}
                 >
                   {selected && <Check className="h-3 w-3" strokeWidth={3} />}
@@ -162,7 +162,7 @@ export function PaperTable(props: PaperTableProps) {
                       props.onToggleStar(paper);
                     }}
                     className={cn(
-                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-all hover:bg-white dark:hover:bg-zp-surface",
+                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-all hover:bg-card",
                       paper.starred
                         ? "text-amber-500"
                         : "text-zp-quaternary opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
@@ -183,7 +183,7 @@ export function PaperTable(props: PaperTableProps) {
               </div>
               <span className="truncate text-xs text-zp-quaternary">{paper.last_read_at ? formatTime(paper.last_read_at) : "—"}</span>
               <IconTooltip label="更多操作"><MenuPrimitive.Root>
-                <MenuPrimitive.Trigger render={<button type="button" aria-label="更多操作" onClick={(event) => event.stopPropagation()} className="flex h-7 w-7 items-center justify-center rounded-md text-zp-quaternary opacity-0 hover:bg-white hover:text-zp-primary group-hover:opacity-100 focus-visible:opacity-100 dark:hover:bg-zp-surface"><MoreHorizontal className="h-4 w-4" /></button>} />
+                <MenuPrimitive.Trigger render={<button type="button" aria-label="更多操作" onClick={(event) => event.stopPropagation()} className="flex h-7 w-7 items-center justify-center rounded-md text-zp-quaternary opacity-0 hover:bg-card hover:text-zp-primary group-hover:opacity-100 focus-visible:opacity-100"><MoreHorizontal className="h-4 w-4" /></button>} />
                 <MenuPrimitive.Portal>
                   <MenuPrimitive.Positioner align="end" sideOffset={4} className="isolate z-50">
                     <MenuPrimitive.Popup className="z-50 min-w-44 rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-none">

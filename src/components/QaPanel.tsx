@@ -283,7 +283,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
       )}
 
       <aside
-        className="flex min-h-0 shrink-0 flex-col overflow-hidden bg-[#fbfbfa] dark:bg-[#191919]"
+        className="flex min-h-0 shrink-0 flex-col overflow-hidden bg-zp-surface"
         style={{
           width: collapsed ? COLLAPSED_WIDTH : width,
           marginLeft: collapsed ? 8 : 0,

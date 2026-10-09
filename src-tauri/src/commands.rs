@@ -145,6 +145,55 @@ pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
     Ok(new_settings)
 }
 
+/// JSON 高级主题（nuclear 式）：用户放在 `<app_data>/themes/*.json` 的自定义配色文件。
+/// `vars` 覆盖浅色方案，`dark` 仅深色方案下生效；key 为不带 `--` 前缀的 CSS 变量名。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomTheme {
+    pub name: String,
+    #[serde(default)]
+    pub vars: HashMap<String, String>,
+    #[serde(default)]
+    pub dark: Option<HashMap<String, String>>,
+}
+
+/// 主题目录：`<app_data>/themes`，不存在则创建。
+#[tauri::command]
+pub fn get_themes_dir() -> Result<String, String> {
+    let dir = crate::settings::app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("themes");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建主题目录失败: {e}"))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// 列出 themes 目录下所有可解析的 JSON 主题；坏文件跳过。
+#[tauri::command]
+pub fn list_custom_themes() -> Result<Vec<CustomTheme>, String> {
+    let dir = crate::settings::app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("themes");
+    let mut themes = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(themes),
+        Err(e) => return Err(format!("读取主题目录失败: {e}")),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(theme) = serde_json::from_str::<CustomTheme>(&raw) {
+            themes.push(theme);
+        }
+    }
+    themes.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(themes)
+}
+
 /// 添加 provider 配置
 #[tauri::command]
 pub fn add_provider(config: crate::settings::ProviderConfig) -> Result<Settings, String> {
@@ -4528,7 +4577,7 @@ pub async fn quiz_generate(
         return Err(format!("未知答题模式: {mode}"));
     }
     let mut config = config;
-    config.choice_count = config.choice_count.min(10);
+    config.choice_count = config.choice_count.min(30);
     config.subjective_count = config.subjective_count.min(5);
     if config.choice_count + config.subjective_count == 0 {
         return Err("请至少选择一道题".to_string());

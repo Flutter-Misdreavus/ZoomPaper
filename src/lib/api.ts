@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { CustomTheme } from "./theme";
 
 export interface ApiKeys {
   mineru: string;
@@ -256,6 +257,9 @@ export const generateBlog = (paperId: string) =>
   invoke<string>("generate_blog", { paperId });
 export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
+
+export const getThemesDir = () => invoke<string>("get_themes_dir");
+export const listCustomThemes = () => invoke<CustomTheme[]>("list_custom_themes");
 
 export const listPapers = () => invoke<Paper[]>("list_papers");
 export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
@@ -715,7 +719,7 @@ export const setActiveProvider = (id: string) =>
 
 
 export interface QuizConfig {
-  /** 选择题数量（0-10） */
+  /** 选择题数量（0-30） */
   choice_count: number;
   /** 主观题数量（0-5） */
   subjective_count: number;

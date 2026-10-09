@@ -55,7 +55,7 @@ const DIFFICULTIES = ["基础", "进阶", "挑战"];
 const FOCUSES = ["全面", "方法", "实验", "结论"];
 /** 选择题选项字母（后端 options 不含前缀，渲染时自行添加） */
 const LETTERS = "ABCDEFGHIJ";
-const MAX_CHOICE = 10;
+const MAX_CHOICE = 30;
 const MAX_SUBJECTIVE = 5;
 /** 章节列表超过该数量时折叠为可滚动区域 */
 const SECTION_SCROLL_THRESHOLD = 6;
@@ -92,8 +92,8 @@ export function QuizPanel({ paperId }: Props) {
 
   // ---- 出题配置 ----
   const [mode, setMode] = useState<QuizMode>("practice");
-  const [choiceCount, setChoiceCount] = useState(3);
-  const [subjectiveCount, setSubjectiveCount] = useState(2);
+  const [choiceCount, setChoiceCount] = useState(5);
+  const [subjectiveCount, setSubjectiveCount] = useState(0);
   const [difficulty, setDifficulty] = useState(DIFFICULTIES[0]);
   const [focus, setFocus] = useState(FOCUSES[0]);
   const [sections, setSections] = useState<string[]>([]);

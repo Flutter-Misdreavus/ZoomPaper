@@ -172,7 +172,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
       {/* 热力图 + 当日明细 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold">阅读热力图</h2>
-        <div className="overflow-x-auto rounded-md border border-zp-border bg-white p-4 dark:bg-zp-surface">
+        <div className="overflow-x-auto rounded-md border border-zp-border bg-card p-4">
           <div className="w-max min-w-full">
             <div className="mb-1 ml-7 flex gap-[3px]">
               {weeks.map((col, wi) => {

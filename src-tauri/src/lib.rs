@@ -60,6 +60,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
+            commands::get_themes_dir,
+            commands::list_custom_themes,
             commands::add_provider,
             commands::update_provider,
             commands::delete_provider,

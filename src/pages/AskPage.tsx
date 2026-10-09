@@ -68,7 +68,7 @@ export function AskPage({ onOpenPaper }: Props) {
   }
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-white dark:bg-[#191919]">
+    <section className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-card">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-zp-border px-7">
         <h1 className="text-sm font-medium">知识库问答</h1>
         <div className="flex items-center gap-0.5">

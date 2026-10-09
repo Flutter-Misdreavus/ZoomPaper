@@ -17,16 +17,21 @@ import {
   type Paper,
 } from "@/lib/api";
 import { displayPaperTitle, formatDuration } from "@/lib/utils";
-import { ArrowLeft, BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
+import { BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
 
 interface Props {
   paperId: string;
   /** 外部跳入的目标页（0-based），如搜索结果/引用定位 */
   initialPageIdx?: number;
-  onBack: () => void;
+  /** 复用已有标签并带页码跳转时递增，触发 jumpToPage */
+  jumpNonce: number;
+  /** 是否为当前激活标签：非激活标签不计阅读时长 */
+  active: boolean;
+  /** 论文元数据加载完成后回调（标签条回填标题） */
+  onPaperLoaded: (paper: Paper) => void;
 }
 
-export function Reader({ paperId, initialPageIdx, onBack }: Props) {
+export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoaded }: Props) {
   const [paper, setPaper] = useState<Paper | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,13 +41,27 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
   useEffect(() => {
     let cancelled = false;
     openPaperForReading(paperId)
-      .then((p) => !cancelled && setPaper(p))
+      .then((p) => {
+        if (cancelled) return;
+        setPaper(p);
+        onPaperLoaded(p);
+      })
       .catch((e) => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onPaperLoaded 由父组件稳定传入
   }, [paperId]);
+
+  // 复用已有标签并指定页码时，在已挂载的阅读器内跳页
+  const lastJumpNonceRef = useRef(jumpNonce);
+  useEffect(() => {
+    if (jumpNonce === lastJumpNonceRef.current) return;
+    lastJumpNonceRef.current = jumpNonce;
+    if (initialPageIdx != null) pdfRef.current?.jumpToPage(initialPageIdx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅以 jumpNonce 为跳转信号
+  }, [jumpNonce]);
 
   // 打开论文即进入「在读」状态（未读 → 在读；已读保持不变）。失败静默，不影响阅读。
   useEffect(() => {
@@ -50,16 +69,16 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
     setPaperStatus(paper.id, "reading").catch(() => {});
   }, [paper]);
 
-  // 阅读时长累计：仅页面可见时计时，每 30s 上报一次，卸载/换论文时上报零头。失败静默。
+  // 阅读时长累计：仅页面可见且为激活标签时计时，每 30s 上报一次，卸载/换论文/切标签时上报零头。失败静默。
   const [sessionSeconds, setSessionSeconds] = useState(0);
   useEffect(() => {
     if (!paper) return;
     const pid = paper.id;
     setSessionSeconds(0);
     let pending = 0;
-    let visible = document.visibilityState === "visible";
+    let visible = document.visibilityState === "visible" && active;
     const onVis = () => {
-      visible = document.visibilityState === "visible";
+      visible = document.visibilityState === "visible" && active;
     };
     const flush = () => {
       if (pending <= 0) return;
@@ -81,8 +100,8 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
       document.removeEventListener("visibilitychange", onVis);
       flush();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 为计时边界
-  }, [paper?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 与激活状态为计时边界
+  }, [paper?.id, active]);
 
   // 标记/取消已读（时间线统计口径）
   const toggleRead = () => {
@@ -97,15 +116,6 @@ export function Reader({ paperId, initialPageIdx, onBack }: Props) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
-        <IconTooltip label="返回论文库" side="bottom"><Button
-          variant="ghost"
-          size="icon"
-          onClick={onBack}
-          aria-label="返回论文库"
-          className="pressable"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Button></IconTooltip>
         <div className="min-w-0">
           <h1 className="truncate text-xl font-bold tracking-tight">
             {paper ? displayPaperTitle(paper.title) : "加载中…"}

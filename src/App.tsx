@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { Library } from "@/pages/Library";
-import { Reader } from "@/pages/Reader";
+import { WorkspaceHost } from "@/pages/WorkspaceHost";
 import { SettingsPage } from "@/pages/Settings";
 import { SearchPage } from "@/pages/SearchPage";
 import { AskPage } from "@/pages/AskPage";
@@ -11,18 +11,27 @@ import { HelpPage } from "@/pages/HelpPage";
 import { NavRail, type NavItem } from "@/components/NavRail";
 import { BrowserImportNotice, type BrowserImportPhase } from "@/components/BrowserImportNotice";
 import { importBrowserDownload, importPdfUrl, parsePdf } from "@/lib/api";
+import {
+  closeTab,
+  loadReaderTabs,
+  openTab,
+  saveReaderTabs,
+  setTabTitle,
+  type ReaderTabsState,
+} from "@/lib/readerTabs";
+import { displayPaperTitle } from "@/lib/utils";
 
 type View =
-  | { name: "library" }
+  | { name: "workspace" }
   | { name: "timeline" }
   | { name: "search" }
   | { name: "ask" }
-  | { name: "reader"; paperId: string; pageIdx?: number }
   | { name: "settings" }
   | { name: "help" };
 
 function App() {
-  const [view, setView] = useState<View>({ name: "library" });
+  const [view, setView] = useState<View>({ name: "workspace" });
+  const [readerState, setReaderState] = useState<ReaderTabsState>(loadReaderTabs);
   const [libraryRefreshSignal, setLibraryRefreshSignal] = useState(0);
   const [browserImport, setBrowserImport] = useState<{
     phase: BrowserImportPhase;
@@ -65,7 +74,8 @@ function App() {
 
         importQueue.current = importQueue.current.then(async () => {
           if (disposed) return;
-          setView({ name: "library" });
+          setView({ name: "workspace" });
+          setReaderState((s) => ({ ...s, activeTabId: null }));
           setBrowserImport({ phase: "downloading", title, message: "正在安全下载 PDF…" });
           try {
             const paper = localFile
@@ -103,47 +113,81 @@ function App() {
     };
   }, []);
 
-  const openPaper = (paperId: string, pageIdx?: number) =>
-    setView({ name: "reader", paperId, pageIdx });
-  // 阅读页归属「论文库」导航高亮
-  const activeNav: NavItem = view.name === "reader" ? "library" : view.name;
+  const openPaper = (paperId: string, pageIdx?: number) => {
+    setReaderState((s) => openTab(s, paperId, pageIdx));
+    setView({ name: "workspace" });
+  };
+  const activateReaderTab = (tabId: string) =>
+    setReaderState((s) => ({ ...s, activeTabId: tabId }));
+  const activateHomeTab = () =>
+    setReaderState((s) => ({ ...s, activeTabId: null }));
+  const closeReaderTab = (tabId: string) =>
+    setReaderState((s) => closeTab(s, tabId));
+
+  // 标签条变更即持久化，重启应用后恢复
+  useEffect(() => {
+    saveReaderTabs(readerState);
+  }, [readerState]);
+
+  // 从论文标签回到主页标签时刷新论文库（阅读页可能改了在读/已读状态）
+  const prevActiveTabRef = useRef<string | null>(readerState.activeTabId);
+  useEffect(() => {
+    const prev = prevActiveTabRef.current;
+    prevActiveTabRef.current = readerState.activeTabId;
+    if (prev !== null && readerState.activeTabId === null) {
+      setLibraryRefreshSignal((v) => v + 1);
+    }
+  }, [readerState.activeTabId]);
+
+  // 工作区（含主页标签与论文标签）归属「论文库」导航高亮
+  const activeNav: NavItem = view.name === "workspace" ? "library" : view.name;
+
+  const handleNavSelect = (name: NavItem) => {
+    if (name === "library") {
+      setView({ name: "workspace" });
+      activateHomeTab();
+    } else {
+      setView({ name } as View);
+    }
+  };
 
   return (
     <div className="flex h-screen overflow-hidden">
       {/* 56px 图标导航（全局） */}
       <NavRail
         active={activeNav}
-        onSelect={(name) => setView({ name } as View)}
+        onSelect={handleNavSelect}
       />
 
-      {view.name === "library" ? (
-        /* 论文库工作台：文件夹侧栏 + 内容区由 Library 自行组织 */
-        <Library onOpenPaper={openPaper} refreshSignal={libraryRefreshSignal} />
-      ) : (
-        /* 其余页面：主内容区自行控制滚动 */
-        <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-white dark:bg-[#191919]" : "p-6"}`}>
-          <motion.div
-            key={view.name + ("paperId" in view ? view.paperId : "")}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="flex min-h-0 min-w-0 flex-1 flex-col"
-          >
-            {view.name === "search" && <SearchPage onOpenPaper={openPaper} />}
-            {view.name === "timeline" && <TimelinePage onOpenPaper={openPaper} />}
-            {view.name === "ask" && <AskPage onOpenPaper={openPaper} />}
-            {view.name === "reader" && (
-              <Reader
-                paperId={view.paperId}
-                initialPageIdx={view.pageIdx}
-                onBack={() => setView({ name: "library" })}
-              />
-            )}
-            {view.name === "settings" && <SettingsPage />}
-            {view.name === "help" && <HelpPage />}
-          </motion.div>
-        </main>
-      )}
+      {/* 主内容区：各页面自行控制滚动；workspace 为主页标签（论文库）+ 论文标签 */}
+      <main className={`flex min-h-0 min-w-0 flex-1 flex-col ${view.name === "ask" ? "bg-card" : "p-6"}`}>
+        <motion.div
+          key={view.name}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          {view.name === "workspace" && (
+            <WorkspaceHost
+              tabs={readerState.tabs}
+              activeTabId={readerState.activeTabId}
+              onActivate={activateReaderTab}
+              onClose={closeReaderTab}
+              onActivateHome={activateHomeTab}
+              home={<Library onOpenPaper={openPaper} refreshSignal={libraryRefreshSignal} />}
+              onPaperLoaded={(tabId, paper) =>
+                setReaderState((s) => setTabTitle(s, tabId, displayPaperTitle(paper.title)))
+              }
+            />
+          )}
+          {view.name === "search" && <SearchPage onOpenPaper={openPaper} />}
+          {view.name === "timeline" && <TimelinePage onOpenPaper={openPaper} />}
+          {view.name === "ask" && <AskPage onOpenPaper={openPaper} />}
+          {view.name === "settings" && <SettingsPage />}
+          {view.name === "help" && <HelpPage />}
+        </motion.div>
+      </main>
       {browserImport && (
         <BrowserImportNotice {...browserImport} onClose={() => setBrowserImport(null)} />
       )}

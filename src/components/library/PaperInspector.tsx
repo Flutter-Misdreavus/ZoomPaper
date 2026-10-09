@@ -88,7 +88,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
   const shownAbstract = translated && previewPaper.abstract_zh ? previewPaper.abstract_zh : previewPaper.abstract;
 
   return (
-    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l border-zp-border bg-[#fbfbfa] dark:bg-[#191919]">
+    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l border-zp-border bg-zp-surface">
       <button
         type="button"
         aria-label="调整论文预览宽度"
@@ -102,7 +102,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         }}
         className="group absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize outline-none"
       >
-        <span className="absolute left-1/2 top-1/2 flex h-9 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-zp-border bg-white text-zp-quaternary opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 dark:bg-zp-surface">
+        <span className="absolute left-1/2 top-1/2 flex h-9 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-zp-border bg-card text-zp-quaternary opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           <GripVertical className="h-3 w-3" />
         </span>
       </button>
@@ -111,8 +111,8 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         <span className="shrink-0 text-xs font-medium text-zp-quaternary">论文信息</span>
         <div className="flex items-center gap-1.5">
           <div className="flex rounded-md bg-zp-surface p-0.5 text-[11px]">
-            <button type="button" onClick={() => { setLanguage("original"); localStorage.setItem(LANGUAGE_KEY, "original"); }} className={cn("rounded px-2 py-1", language === "original" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-tertiary")}>原文</button>
-            <button type="button" onClick={() => { setLanguage("zh"); localStorage.setItem(LANGUAGE_KEY, "zh"); }} title={translationError ?? undefined} className={cn("flex items-center gap-1 rounded px-2 py-1", language === "zh" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-tertiary")}>中文{translating && <Loader2 className="h-3 w-3 animate-spin" />}</button>
+            <button type="button" onClick={() => { setLanguage("original"); localStorage.setItem(LANGUAGE_KEY, "original"); }} className={cn("rounded px-2 py-1", language === "original" ? "bg-card text-zp-primary shadow-sm" : "text-zp-tertiary")}>原文</button>
+            <button type="button" onClick={() => { setLanguage("zh"); localStorage.setItem(LANGUAGE_KEY, "zh"); }} title={translationError ?? undefined} className={cn("flex items-center gap-1 rounded px-2 py-1", language === "zh" ? "bg-card text-zp-primary shadow-sm" : "text-zp-tertiary")}>中文{translating && <Loader2 className="h-3 w-3 animate-spin" />}</button>
           </div>
           <IconTooltip label="关闭详情" side="bottom"><button type="button" aria-label="关闭详情" onClick={onClose} className="rounded-md p-1 text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"><X className="h-4 w-4" /></button></IconTooltip>
         </div>
