@@ -363,7 +363,7 @@ export function FolderSidebar(props: FolderSidebarProps) {
   const allDrop = useDropHighlight((ids) => onDropPapers(ids, null));
 
   return (
-    <aside className="flex w-[208px] shrink-0 flex-col rounded-xl border border-zp-border bg-[#f3f4f1] dark:bg-[#1d1d1c]">
+    <aside className="flex w-[208px] shrink-0 flex-col border-r border-zp-border theme-library-sidebar bg-[#f3f4f1] dark:bg-[#1d1d1c]">
       <div className="flex-1 overflow-y-auto px-2 pt-3">
         <div className="flex flex-col gap-0.5">
           <SidebarEntry

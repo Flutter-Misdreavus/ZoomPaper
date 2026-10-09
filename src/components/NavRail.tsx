@@ -33,7 +33,7 @@ export function NavRail({ active, onSelect }: Props) {
   return (
     <nav className={cn(
       "flex w-14 shrink-0 flex-col items-center border-r border-zp-border py-4",
-      active === "ask" ? "bg-accent" : "bg-background"
+      active === "ask" ? "theme-ask-nav bg-[#edf3eb] dark:bg-[#202b24]" : "bg-background"
     )}>
       {/* Logo：32×32 圆角矩形，深色填充 + 白色首字母 */}
       <div className="mb-6 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-zp-primary text-sm font-semibold text-white">

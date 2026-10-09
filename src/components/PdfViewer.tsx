@@ -95,7 +95,9 @@ export interface PdfViewerHandle {
 }
 
 interface Props {
+  onReachEnd?: () => void;
   pdfPath: string;
+  active?: boolean;
   /** 论文 id：高亮/笔记按论文持久化到 annotations.json */
   paperId: string;
   /** 初始跳入的目标页（0-based），文档加载后自动跳转 */
@@ -257,12 +259,13 @@ async function resolveDestination(
  * - 原生带 outline 的 PDF 显示目录侧栏，点击跳页。
  */
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfPath, paperId, initialPageIdx, onAskSelection },
+  { pdfPath, paperId, onReachEnd, initialPageIdx, onAskSelection, active = true },
   ref,
 ) {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [slots, setSlots] = useState<PageSlot[]>([]);
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(() => { const saved = Number(localStorage.getItem(`zoompaper:scale:${paperId}`) ?? 1); return Number.isFinite(saved) ? Math.max(0.5, Math.min(4, saved)) : 1; });
+  useEffect(() => { localStorage.setItem(`zoompaper:scale:${paperId}`, String(scale)); }, [scale, paperId]);
   const [fitScale, setFitScale] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
@@ -289,6 +292,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const [annotationError, setAnnotationError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastScroll = useRef({ top: 0, left: 0 });
+  useLayoutEffect(() => {
+    if (!active) { setSelToolbar(null); return; }
+    const frame = requestAnimationFrame(() => {
+      const element = scrollRef.current;
+      if (element && lastScroll.current.top > 0) { element.scrollTop = lastScroll.current.top; element.scrollLeft = lastScroll.current.left; }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const renderedRef = useRef<Set<number>>(new Set());
   // 每页的 TextLayer 实例（缩放重建时 cancel 旧实例）
@@ -555,7 +567,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const el = scrollRef.current;
     const update = () => {
       // 留出内边距与滚动条余量
-      setFitScale((el.clientWidth - 32) / slots[0].width);
+      if (el.clientWidth > 32) setFitScale((el.clientWidth - 32) / slots[0].width);
     };
     update();
     const ro = new ResizeObserver(update);
@@ -1105,11 +1117,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   useImperativeHandle(ref, () => ({ jumpToPage, jumpToSelection }));
 
   useEffect(() => {
+    if (doc && restoredPage.current && active && currentPage === doc.numPages) onReachEnd?.();
     setPageInput(String(currentPage));
     if (doc && restoredPage.current) {
       try { localStorage.setItem(`zoompaper:page:${paperId}`, String(currentPage - 1)); } catch { /* storage unavailable */ }
     }
-  }, [currentPage, doc, paperId]);
+  }, [currentPage, doc, paperId, active, onReachEnd]);
 
   // 文档就绪后跳到外部指定页（搜索/引用定位）
   useEffect(() => {
@@ -1120,7 +1133,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     jumpToPage(target);
     restoredPage.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc]);
+  }, [doc, initialPageIdx]);
 
   if (loading) {
     return (
@@ -1217,7 +1230,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         onPointerCancel={endDrag}
         onMouseUp={handleMouseUp}
         onDoubleClick={handleMouseUp}
-        onScroll={() => setSelToolbar(null)}
+        onScroll={() => { setSelToolbar(null); const element = scrollRef.current; if (active && element && element.clientHeight > 0) lastScroll.current = { top: element.scrollTop, left: element.scrollLeft }; }}
         className={`min-h-0 flex-1 overflow-auto pt-2 pr-4 pb-4 ${
           scale > 1 ? (dragging ? "cursor-grabbing" : "cursor-grab") : ""
         }`}

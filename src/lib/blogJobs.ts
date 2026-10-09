@@ -18,6 +18,9 @@ const IDLE: BlogJobSnapshot = Object.freeze({ status: "idle" });
 export class BlogJobStore {
   private readonly snapshots = new Map<string, BlogJobSnapshot>();
   private readonly promises = new Map<string, Promise<string>>();
+  private readonly globalListeners = new Set<Listener>();
+  getEntries() { return [...this.snapshots.entries()]; }
+  subscribeAll(listener: Listener) { this.globalListeners.add(listener); return () => { this.globalListeners.delete(listener); }; }
   private readonly listeners = new Map<string, Set<Listener>>();
 
   constructor(private readonly run: Runner) {}
@@ -76,6 +79,7 @@ export class BlogJobStore {
 
   private setSnapshot(paperId: string, snapshot: BlogJobSnapshot) {
     this.snapshots.set(paperId, snapshot);
+    for (const listener of this.globalListeners) listener();
     for (const listener of this.listeners.get(paperId) ?? []) listener();
   }
 }

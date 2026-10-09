@@ -1,0 +1,22 @@
+import { cleanup, render, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { DEFAULT_PREFERENCES } from '@/lib/preferences';
+import { CompanionBridge } from '@/components/CompanionWindow';
+const mocks = vi.hoisted(() => ({ handlers: new Map<string, (event: { payload: string }) => void>(), emit: vi.fn(), show: vi.fn(), unminimize: vi.fn(), focus: vi.fn(), unlisten: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ emitTo: mocks.emit, listen: vi.fn(async (name, handler) => { mocks.handlers.set(name, handler); return mocks.unlisten; }) }));
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ show: mocks.show, unminimize: mocks.unminimize, setFocus: mocks.focus }), LogicalSize: class {} }));
+afterEach(() => { cleanup(); mocks.handlers.clear(); vi.clearAllMocks(); });
+it('sends current state on companion readiness and opens a paper in the main window', async () => {
+  const open = vi.fn(); const dismiss = vi.fn();
+  const view = render(<CompanionBridge jobs={[]} notice={null} readingTitle="Paper A" onOpenPaper={open} onDismiss={dismiss} onImport={vi.fn()} onContinue={vi.fn()} />);
+  await waitFor(() => expect(mocks.handlers.has('companion:ready')).toBe(true));
+  view.rerender(<CompanionBridge jobs={[]} notice={null} readingTitle="Paper B" onOpenPaper={open} onDismiss={dismiss} onImport={vi.fn()} onContinue={vi.fn()} />);
+  mocks.handlers.get('companion:ready')!({ payload: '' });
+  expect(mocks.emit).toHaveBeenCalledWith('companion', 'companion:state', { preferences: DEFAULT_PREFERENCES, tasks: [], jobs: [], notice: null, readingTitle: 'Paper B' });
+  mocks.handlers.get('companion:open')!({ payload: 'paper-id' });
+  await waitFor(() => expect(mocks.focus).toHaveBeenCalled());
+  expect(open).toHaveBeenCalledWith('paper-id');
+  expect(mocks.show).toHaveBeenCalled();
+  mocks.handlers.get('companion:dismiss')!({ payload: '' });
+  expect(dismiss).toHaveBeenCalledOnce();
+});

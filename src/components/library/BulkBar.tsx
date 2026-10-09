@@ -5,7 +5,7 @@
  */
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { motion, useReducedMotion } from "motion/react";
-import { BookCheck, CircleDot, Download, FolderPlus, Trash2, X } from "lucide-react";
+import { BookOpen, BookCheck, CircleDot, Download, FolderPlus, Trash2, X } from "lucide-react";
 import type { ReadingStatus } from "@/lib/api";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
 
@@ -24,6 +24,7 @@ const STATUS_LABELS: Record<ReadingStatus, string> = {
 
 interface Props {
   count: number;
+  onOpen?: () => void;
   /** 一键标记已读 */
   onMarkRead: () => void;
   /** 标记状态菜单：未读 / 在读 / 已读 */
@@ -39,6 +40,7 @@ interface Props {
 
 export function BulkBar({
   count,
+  onOpen,
   onMarkRead,
   onSetStatus,
   onPickFolder,
@@ -62,7 +64,7 @@ export function BulkBar({
         transition: { duration: 0.15, ease: [0.23, 1, 0.32, 1] },
       }}
       transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-card px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-card/75"
+      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-white px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-white/75 dark:bg-zp-surface/80"
     >
       {/* 左区：计数 */}
       <span className="mr-1 shrink-0 text-sm font-medium text-zp-primary tabular-nums">
@@ -70,6 +72,7 @@ export function BulkBar({
       </span>
       <span className="h-4 w-px shrink-0 bg-zp-border" aria-hidden />
 
+      {onOpen && <IconTooltip label="在标签页打开所选论文"><button aria-label="在标签页打开所选论文" className={BAR_BTN} onClick={onOpen}><BookOpen size={16} /></button></IconTooltip>}
       {/* 中区：操作按钮组 */}
       <IconTooltip label="标记已读"><button type="button" className={BAR_BTN} onClick={onMarkRead} aria-label="标记已读">
         <BookCheck className="h-4 w-4" />

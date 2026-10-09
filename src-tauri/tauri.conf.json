@@ -17,15 +17,33 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600
+      },
+      {
+        "label": "companion",
+        "url": "index.html?companion",
+        "title": "阅读伙伴",
+        "width": 340,
+        "height": 110,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**/*"]
+        "scope": [
+          "**/*"
+        ]
       }
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
@@ -41,7 +59,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["zoompaper"]
+        "schemes": [
+          "zoompaper"
+        ]
       }
     }
   }

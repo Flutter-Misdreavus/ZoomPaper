@@ -13,7 +13,10 @@ use std::path::Path;
 use std::time::Duration;
 
 const BASE_URL: &str = "https://mineru.net/api/v4";
+#[cfg(not(test))]
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// MinerU 解析结果：markdown 全文 + 其余资源文件（相对路径 → 字节）。
 pub struct ExtractedOutput {
@@ -46,78 +49,127 @@ impl ParseProgress {
 pub struct MineruClient {
     http: Client,
     api_key: String,
+    base_url: String,
 }
 
 impl MineruClient {
     pub fn new(api_key: String) -> Self {
         Self {
-            http: Client::new(),
+            http: Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(180))
+                .build()
+                .expect("HTTP client configuration"),
             api_key,
+            base_url: BASE_URL.into(),
         }
     }
 
     /// 上传 PDF 并轮询直到解析完成，返回完整解析结果。
     /// `progress` 在各阶段被回调（上传/排队/解析页数/下载），用于前端进度条。
-    pub async fn extract_pdf(
+    pub async fn extract_pdf_resumable(
         &self,
         pdf_path: &Path,
         progress: &(dyn Fn(ParseProgress) + Send + Sync),
+        resume_batch: Option<&str>,
+        save_batch: &(dyn Fn(&str) -> Result<(), String> + Send + Sync),
     ) -> Result<ExtractedOutput> {
-        let bytes = tokio::fs::read(pdf_path).await.context("读取 PDF 失败")?;
-        let file_name = pdf_path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "paper.pdf".to_string());
+        let batch_id = if let Some(id) = resume_batch {
+            progress(ParseProgress::stage("pending"));
+            id.to_owned()
+        } else {
+            let bytes = tokio::fs::read(pdf_path).await.context("读取 PDF 失败")?;
+            let file_name = pdf_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "paper.pdf".to_string());
 
-        // 1. 申请预签名上传链接
-        let resp = self
-            .http
-            .post(format!("{BASE_URL}/file-urls/batch"))
-            .bearer_auth(&self.api_key)
-            .json(&json!({
-                "files": [{ "name": file_name }],
-                "model_version": "vlm"
-            }))
-            .send()
-            .await
-            .context("申请 MinerU 上传链接失败")?;
-        let status = resp.status();
-        let body: serde_json::Value = resp.json().await.context("解析 MinerU 响应失败")?;
-        if !status.is_success() {
-            anyhow::bail!("MinerU 申请上传链接返回错误 {status}: {body}");
-        }
-        let batch_id = body["data"]["batch_id"]
-            .as_str()
-            .context("MinerU 响应缺少 batch_id")?
-            .to_string();
-        let upload_url = body["data"]["file_urls"][0]
-            .as_str()
-            .context("MinerU 响应缺少 file_urls")?
-            .to_string();
-
-        // 2. PUT 上传文件到签名 URL
-        progress(ParseProgress::stage("uploading"));
-        let up = self
-            .http
-            .put(&upload_url)
-            .body(bytes)
-            .send()
-            .await
-            .context("上传 PDF 到 MinerU 失败")?;
-        if !up.status().is_success() {
-            anyhow::bail!("MinerU 上传返回错误 {}", up.status());
-        }
-
-        // 3. 轮询 batch 结果，直到 done
-        loop {
-            tokio::time::sleep(POLL_INTERVAL).await;
+            // 1. 申请预签名上传链接
             let resp = self
                 .http
-                .get(format!("{BASE_URL}/extract-results/batch/{batch_id}"))
+                .post(format!("{}/file-urls/batch", self.base_url))
                 .bearer_auth(&self.api_key)
+                .json(&json!({
+                    "files": [{ "name": file_name }],
+                    "model_version": "vlm"
+                }))
                 .send()
                 .await
-                .context("查询 MinerU 任务失败")?;
+                .context("申请 MinerU 上传链接失败")?;
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.context("解析 MinerU 响应失败")?;
+            if !status.is_success() {
+                anyhow::bail!("MinerU 申请上传链接返回错误 {status}: {body}");
+            }
+            let batch_id = body["data"]["batch_id"]
+                .as_str()
+                .context("MinerU 响应缺少 batch_id")?
+                .to_string();
+            let upload_url = body["data"]["file_urls"][0]
+                .as_str()
+                .context("MinerU 响应缺少 file_urls")?
+                .to_string();
+
+            // 2. PUT 上传文件到签名 URL
+            progress(ParseProgress::stage("uploading"));
+            let up = self
+                .http
+                .put(&upload_url)
+                .body(bytes)
+                .send()
+                .await
+                .context("上传 PDF 到 MinerU 失败")?;
+            if !up.status().is_success() {
+                anyhow::bail!("MinerU 上传返回错误 {}", up.status());
+            }
+
+            save_batch(&batch_id).map_err(anyhow::Error::msg)?;
+            batch_id
+        };
+        let started = std::time::Instant::now();
+        let mut consecutive_errors = 0;
+        // 3. 轮询 batch 结果，直到 done
+        loop {
+            anyhow::ensure!(
+                started.elapsed() < Duration::from_secs(1800),
+                "MinerU 解析等待超时，可重试以继续获取结果"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+            let response = self
+                .http
+                .get(format!(
+                    "{}/extract-results/batch/{batch_id}",
+                    self.base_url
+                ))
+                .bearer_auth(&self.api_key)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await;
+            let resp = match response {
+                Ok(resp)
+                    if resp.status().is_server_error()
+                        || resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    consecutive_errors += 1;
+                    anyhow::ensure!(consecutive_errors <= 3, "MinerU 服务暂时不可用，可稍后重试");
+                    progress(ParseProgress::stage("reconnecting"));
+                    tokio::time::sleep(Duration::from_secs(5 * consecutive_errors)).await;
+                    continue;
+                }
+                Ok(resp) => {
+                    consecutive_errors = 0;
+                    resp
+                }
+                Err(error) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors > 3 {
+                        return Err(error).context("查询 MinerU 任务失败");
+                    }
+                    progress(ParseProgress::stage("reconnecting"));
+                    tokio::time::sleep(Duration::from_secs(5 * consecutive_errors)).await;
+                    continue;
+                }
+            };
             let status = resp.status();
             let body: serde_json::Value = resp.json().await.context("解析 MinerU 响应失败")?;
             if !status.is_success() {
@@ -163,16 +215,28 @@ impl MineruClient {
     /// 嵌套在一个顶层目录下（如 `demo/full.md`），先定位 `full.md` 以确定
     /// 前缀，再统一去掉该前缀。
     async fn download_and_extract(&self, zip_url: &str) -> Result<ExtractedOutput> {
-        let bytes = self
+        let mut response = self
             .http
             .get(zip_url)
             .send()
             .await
             .context("下载 MinerU 结果失败")?
-            .bytes()
+            .error_for_status()
+            .context("MinerU 结果下载返回错误")?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.context("读取 MinerU 结果失败")? {
+            anyhow::ensure!(
+                bytes.len() + chunk.len() <= 200 * 1024 * 1024,
+                "MinerU 结果文件过大"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        tokio::task::spawn_blocking(move || Self::extract_archive(bytes))
             .await
-            .context("读取 MinerU 结果失败")?;
+            .context("解压任务失败")?
+    }
 
+    fn extract_archive(bytes: Vec<u8>) -> Result<ExtractedOutput> {
         let mut archive =
             zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("解压 MinerU 结果失败")?;
 
@@ -194,8 +258,11 @@ impl MineruClient {
         let mut markdown = String::new();
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
 
+        let mut total = 0_u64;
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).context("读取 zip 条目失败")?;
+            total = total.saturating_add(entry.size());
+            anyhow::ensure!(total <= 512 * 1024 * 1024, "MinerU 解压结果过大");
             if entry.is_dir() {
                 continue;
             }
@@ -228,5 +295,70 @@ impl MineruClient {
         }
 
         Ok(ExtractedOutput { markdown, files })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    #[tokio::test]
+    async fn resumes_saved_cloud_batch_without_uploading_pdf_again() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = requests.clone();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("full.md", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"# A Paper\nAbstract").unwrap();
+        let archive = zip.finish().unwrap().into_inner();
+        let zip_url = format!("{base}/result.zip");
+        let server = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                let n = stream.read(&mut buffer).unwrap();
+                captured.lock().unwrap().push(
+                    String::from_utf8_lossy(&buffer[..n])
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_string(),
+                );
+                let body = if index == 0 {
+                    serde_json::json!({"data":{"extract_result":[{"state":"done","full_zip_url":zip_url}]}}).to_string().into_bytes()
+                } else {
+                    archive.clone()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let mut client = MineruClient::new("test-key".into());
+        client.base_url = base;
+        let output = client
+            .extract_pdf_resumable(
+                Path::new("/nonexistent/never-upload.pdf"),
+                &|_| {},
+                Some("batch-123"),
+                &|_| panic!("Must not create another batch"),
+            )
+            .await
+            .unwrap();
+        assert!(output.markdown.starts_with("# A Paper"));
+        server.join().unwrap();
+        let requests = requests.lock().unwrap();
+        assert!(requests[0].contains("extract-results/batch/batch-123"));
+        assert!(requests.iter().all(|request| request.starts_with("GET ")));
     }
 }
