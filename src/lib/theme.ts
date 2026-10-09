@@ -1,7 +1,7 @@
 // 全局配色方案：预设清单、localStorage 持久化与 <html data-scheme> 应用
 // 配色变量块在 styles.css，按 [data-scheme="xxx"] 覆盖；custom 由 JS 内联 --primary 驱动
 
-export type ThemeScheme = "mono" | "red" | "green" | "blue" | "purple" | "dark" | "custom";
+export type ThemeScheme = "mono" | "red" | "green" | "blue" | "purple" | "yellow" | "dark" | "custom";
 
 export interface ThemePreset {
   key: Exclude<ThemeScheme, "custom">;
@@ -16,6 +16,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   { key: "green", label: "绿", swatch: "#27665b" },
   { key: "blue", label: "蓝", swatch: "#2563eb" },
   { key: "purple", label: "紫", swatch: "#6d28d9" },
+  { key: "yellow", label: "黄", swatch: "#eab308" },
   { key: "dark", label: "深色", swatch: "#262626" },
 ];
 
@@ -31,7 +32,7 @@ export interface ThemeState {
 const THEME_KEY = "zoompaper.theme";
 export const THEME_CHANGED_EVENT = "zoompaper:theme-changed";
 
-const SCHEMES: ThemeScheme[] = ["mono", "red", "green", "blue", "purple", "dark", "custom"];
+const SCHEMES: ThemeScheme[] = ["mono", "red", "green", "blue", "purple", "yellow", "dark", "custom"];
 
 function isScheme(v: unknown): v is ThemeScheme {
   return typeof v === "string" && (SCHEMES as string[]).includes(v);

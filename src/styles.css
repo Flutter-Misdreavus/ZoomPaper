@@ -234,6 +234,37 @@
     --popover-foreground: oklch(0.29 0.03 305);
     --zp-trans-zh: oklch(0.48 0.10 305);
 }
+/* 黄：主色用深琥珀（浅黄配白字对比度不足） */
+:root[data-scheme="yellow"] {
+    --background: oklch(0.978 0.005 85);
+    --foreground: oklch(0.29 0.03 85);
+    --muted: oklch(0.966 0.008 85);
+    --muted-foreground: oklch(0.50 0.025 85);
+    --secondary: oklch(0.966 0.008 85);
+    --secondary-foreground: oklch(0.30 0.03 85);
+    --primary: #a16207;
+    --primary-foreground: #ffffff;
+    --accent: oklch(0.945 0.025 85);
+    --accent-foreground: #713f12;
+    --border: oklch(0.910 0.012 85);
+    --input: oklch(0.928 0.010 85);
+    --ring: oklch(0.72 0.06 85);
+    --sidebar: oklch(0.952 0.010 85);
+    --sidebar-border: oklch(0.910 0.012 85);
+    --zp-primary: oklch(0.25 0.025 85);
+    --zp-secondary: oklch(0.44 0.028 85);
+    --zp-tertiary: oklch(0.71 0.022 85);
+    --zp-quaternary: oklch(0.56 0.028 85);
+    --zp-border: oklch(0.905 0.012 85);
+    --zp-surface: oklch(0.981 0.006 85);
+    --zp-surface-hover: oklch(0.966 0.009 85);
+    --zp-surface-active: oklch(0.950 0.012 85);
+    --card: oklch(0.995 0.004 85);
+    --card-foreground: oklch(0.29 0.03 85);
+    --popover: oklch(0.995 0.004 85);
+    --popover-foreground: oklch(0.29 0.03 85);
+    --zp-trans-zh: oklch(0.48 0.10 85);
+}
 /* 自定义：--primary 与 --primary-foreground 由 JS 内联注入，其余按 color-mix 派生 */
 :root[data-scheme="custom"] {
     --accent: color-mix(in oklch, var(--primary) 10%, #ffffff);
