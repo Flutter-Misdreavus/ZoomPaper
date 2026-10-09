@@ -1,6 +1,6 @@
 [package]
 name = "zoompaper"
-version = "0.4.0"
+version = "0.4.1"
 description = "ZoomPaper - 本地优先的论文阅读与知识管理平台"
 authors = ["ZoomPaper"]
 license = "MIT"
