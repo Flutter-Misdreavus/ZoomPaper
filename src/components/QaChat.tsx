@@ -16,6 +16,7 @@ import {
   markdownUrlTransform,
   normalizeImageUrls,
   normalizeLatex,
+  rehypeHtmlMath,
   resolveImgSrc,
 } from "@/lib/markdown";
 import { WebToggle } from "@/components/WebToggle";
@@ -85,7 +86,7 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPap
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeRaw, [rehypeKatex, katexOptions]]}
+        rehypePlugins={[rehypeHtmlMath, rehypeRaw, [rehypeKatex, katexOptions]]}
         // citation:/asset: 是内部协议，放行；其余走默认消毒
         urlTransform={markdownUrlTransform}
         components={{
