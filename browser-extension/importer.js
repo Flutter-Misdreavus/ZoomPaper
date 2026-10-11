@@ -82,7 +82,7 @@ export function createImporter(api, receiptFetch = fetch) {
   const acknowledge = async (job) => {
     if (!api.runtime.id) return; // Old extension hosts have no receipt capability.
     try {
-      const response = await receiptFetch(`http://127.0.0.1:37541/imports/${job.id}`, { signal: AbortSignal.timeout(2500), cache: 'no-store' });
+      const response = await receiptFetch(`http://127.0.0.1:37541/imports/${job.id}`, { signal: AbortSignal.timeout(2500), cache: 'no-store', headers: { 'X-ZoomPaper-Receipt': '1' } });
       if (response.ok) {
         const receipt = await response.json();
         if (receipt.state === 'accepted') {

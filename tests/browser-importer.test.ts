@@ -128,10 +128,15 @@ it('confirms app receipt and recovers from a suspended worker without downloadin
   items[1] = { id: 1, state: 'complete', mime: 'application/pdf', filename: '/tmp/paper.pdf', fileSize: 500 };
   await importer.changed(1);
   expect((await importer.load(id)).state).toBe('sent');
+  expect(receipt).toHaveBeenCalledWith(`http://127.0.0.1:37541/imports/${id}`, expect.objectContaining({
+    headers: { 'X-ZoomPaper-Receipt': '1' }, cache: 'no-store',
+  }));
   const resumed = createImporter(api, receipt);
   await resumed.timeout(`import:${id}`);
   expect((await resumed.load(id)).state).toBe('accepted');
   expect(api.downloads.download).toHaveBeenCalledOnce();
+  expect(api.tabs.create).not.toHaveBeenCalled();
+  expect(api.alarms.clear).toHaveBeenCalledWith(`import:${id}`);
 });
 
 it('does not claim import success if the app rejects the file', async () => {
