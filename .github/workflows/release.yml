@@ -158,26 +158,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ZoomPaper.app"
-          if [ ! -d "${APP}" ]; then
-            APP="$(find src-tauri/target -maxdepth 6 -type d -name 'ZoomPaper.app' -path '*release/bundle/macos/*' | head -n 1)"
-          fi
-          if [ -z "${APP}" ] || [ ! -d "${APP}" ]; then
-            echo "::error::未找到构建出的 ZoomPaper.app，无法校验签名"
-            exit 1
-          fi
-          echo "==> 校验对象：${APP}"
-
-          echo "==> 签名信息"
-          codesign -dv --verbose=4 "${APP}" 2>&1 | grep -E "Identifier|Format|flags|Authority|TeamIdentifier|Signature|Sealed Resources" || true
-
-          # 签名损坏/缺失时，用户下载后 macOS 会提示「已损坏，无法打开。您应该将它移到废纸篓」
-          if ! codesign --verify --deep --strict --verbose=2 "${APP}" 2>&1; then
-            echo "::error::应用签名无效（用户会看到「已损坏，无法打开」）。请检查 tauri.conf.json 的 bundle.macOS.signingIdentity 与 APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY 配置。"
-            exit 1
-          fi
-          echo "==> codesign 校验通过"
-
+          # 注意：Tauri 只请求 dmg 时会在打包完成后清理中间产物
+          # （日志里的 "Cleaning .../bundle/macos/ZoomPaper.app"），
+          # 所以这里以 dmg 为准校验——用户拿到的也正是 dmg 里的 app。
           DMG="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -n 1)"
           if [ -z "${DMG}" ]; then
             DMG="$(find src-tauri/target -maxdepth 6 -type f -name '*.dmg' -path '*release/bundle/dmg/*' | head -n 1)"
@@ -186,21 +169,26 @@ jobs:
             echo "::error::未找到构建出的 .dmg"
             exit 1
           fi
+          echo "==> 校验对象：${DMG}"
           hdiutil verify "${DMG}"
           echo "==> dmg 校验和正常：$(basename "${DMG}") （$(shasum -a 256 "${DMG}" | awk '{print $1}')）"
 
-          # 用户拿到的是 dmg 里的 app，这里直接挂载 dmg 校验其中真正的产物
+          # 挂载 dmg，校验其中真正会被安装的 app
           MOUNT="$(mktemp -d)"
           trap 'hdiutil detach "${MOUNT}" >/dev/null 2>&1 || true' EXIT
           hdiutil attach "${DMG}" -nobrowse -readonly -mountpoint "${MOUNT}" >/dev/null
-          INNER="${MOUNT}/ZoomPaper.app"
-          if [ ! -d "${INNER}" ]; then
+          APP="${MOUNT}/ZoomPaper.app"
+          if [ ! -d "${APP}" ]; then
             echo "::error::dmg 中未找到 ZoomPaper.app"
             exit 1
           fi
-          codesign -dv --verbose=4 "${INNER}" 2>&1 | grep -E "Identifier|flags|Authority|TeamIdentifier|Signature|Sealed Resources" || true
-          if ! codesign --verify --deep --strict --verbose=2 "${INNER}" 2>&1; then
-            echo "::error::dmg 内的 app 签名无效（用户会看到「已损坏，无法打开」）"
+
+          echo "==> dmg 内 app 的签名信息"
+          codesign -dv --verbose=4 "${APP}" 2>&1 | grep -E "Identifier|Format|flags|Authority|TeamIdentifier|Signature|Sealed Resources" || true
+
+          # 签名损坏/缺失时，用户下载后 macOS 会提示「已损坏，无法打开。您应该将它移到废纸篓」
+          if ! codesign --verify --deep --strict --verbose=2 "${APP}" 2>&1; then
+            echo "::error::dmg 内 app 签名无效（用户会看到「已损坏，无法打开」）。请检查 tauri.conf.json 的 bundle.macOS.signingIdentity 与 APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY 配置。"
             exit 1
           fi
           echo "==> dmg 内 app 签名校验通过"
