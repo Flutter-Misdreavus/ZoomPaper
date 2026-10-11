@@ -7,6 +7,19 @@
 # 产物：macOS Apple Silicon 安装包 ZoomPaper_<ver>_aarch64.dmg
 #       （上传为草稿 Release，审核后手动发布）
 #
+# macOS 签名/公证（决定用户下载后能否直接打开）：
+#   - 未配置任何 Apple secrets 时，回退为 ad-hoc 签名（APPLE_SIGNING_IDENTITY=-）。
+#     ad-hoc 签名能避免 macOS 报「App 已损坏，无法打开」（那是签名缺失/损坏时的提示），
+#     但用户首次打开仍需在「系统设置 → 隐私与安全性 → 仍要打开」放行一次。
+#   - 配齐以下 secrets 后自动升级为 Developer ID 签名 + 公证，用户可直接双击打开：
+#       APPLE_CERTIFICATE            Developer ID Application 证书（.p12 的 base64）
+#       APPLE_CERTIFICATE_PASSWORD   导出 .p12 时设置的密码
+#       APPLE_SIGNING_IDENTITY       如 "Developer ID Application: Your Name (TEAMID)"
+#       APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+#                                    公证账号（APPLE_PASSWORD 为 App 专用密码）
+#     也可改用 App Store Connect API Key：APPLE_API_ISSUER / APPLE_API_KEY / APPLE_API_KEY_PATH。
+#   - 构建后会执行签名校验，签名无效（用户会看到「已损坏」）时该 job 直接失败。
+#
 # 说明：只构建 aarch64-apple-darwin（Apple Silicon）。fastembed 依赖的 ort-sys
 #       没有 x86_64-apple-darwin 预编译二进制（ONNX Runtime 已不再提供 macOS
 #       Intel 产物），universal 构建会在 x86_64 阶段报
@@ -24,6 +37,10 @@ on:
       version:
         description: "发布版本号（如 0.2.0；tag 触发时自动取标签版本）"
         required: false
+      draft:
+        description: "输出为草稿 Release；要直接替换已发布版本的安装包请填 false"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -76,14 +93,99 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf.json
           grep -n '"version"' src-tauri/tauri.conf.json
 
+      - name: Configure macOS signing
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          # APPLE_SIGNING_IDENTITY 环境变量优先于 tauri.conf.json 的 signingIdentity
+          # （见 tauri-cli interface/rust.rs），因此这里按 secrets 情况决定签名模式。
+          if [ -n "${IDENTITY}" ]; then
+            echo "APPLE_SIGNING_IDENTITY=${IDENTITY}" >> "${GITHUB_ENV}"
+            echo "==> 使用 Developer ID 证书签名：${IDENTITY}"
+          elif [ -n "${CERTIFICATE}" ]; then
+            # 有证书但未单独提供身份：留空，交给 Tauri 使用证书自带身份
+            echo "APPLE_SIGNING_IDENTITY=" >> "${GITHUB_ENV}"
+            echo "==> 已导入证书，使用证书自带的签名身份"
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "${GITHUB_ENV}"
+            echo "==> 未配置 Developer ID 证书，回退为 ad-hoc 签名（不再出现「已损坏」，但首次打开需手动放行）"
+          fi
+
       - name: Build & publish .dmg (Apple Silicon)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 签名与公证凭据（未配置时为空，由上一步回退为 ad-hoc）
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: "ZoomPaper v${{ steps.version.outputs.version }}"
-          releaseDraft: true
-          # 如需推送 tag 后自动发布（无需手动确认），把 releaseDraft 改为 false
+          # 手动触发时可选择直接更新已发布版本（draft=false，同名安装包会被替换）；
+          # 推送 tag 时仍固定为草稿，沿用「人工审核后再发布」的流程。
+          releaseDraft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
+          # 如需推送 tag 后自动发布（无需手动确认），把上面的固定值改为 false
           prerelease: false
           args: --bundles dmg --target aarch64-apple-darwin
+
+      - name: Verify macOS signature & dmg
+        run: |
+          set -euo pipefail
+
+          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ZoomPaper.app"
+          if [ ! -d "${APP}" ]; then
+            APP="$(find src-tauri/target -maxdepth 6 -type d -name 'ZoomPaper.app' -path '*release/bundle/macos/*' | head -n 1)"
+          fi
+          if [ -z "${APP}" ] || [ ! -d "${APP}" ]; then
+            echo "::error::未找到构建出的 ZoomPaper.app，无法校验签名"
+            exit 1
+          fi
+          echo "==> 校验对象：${APP}"
+
+          echo "==> 签名信息"
+          codesign -dv --verbose=4 "${APP}" 2>&1 | grep -E "Identifier|Format|flags|Authority|TeamIdentifier|Signature|Sealed Resources" || true
+
+          # 签名损坏/缺失时，用户下载后 macOS 会提示「已损坏，无法打开。您应该将它移到废纸篓」
+          if ! codesign --verify --deep --strict --verbose=2 "${APP}" 2>&1; then
+            echo "::error::应用签名无效（用户会看到「已损坏，无法打开」）。请检查 tauri.conf.json 的 bundle.macOS.signingIdentity 与 APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY 配置。"
+            exit 1
+          fi
+          echo "==> codesign 校验通过"
+
+          DMG="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -n 1)"
+          if [ -z "${DMG}" ]; then
+            DMG="$(find src-tauri/target -maxdepth 6 -type f -name '*.dmg' -path '*release/bundle/dmg/*' | head -n 1)"
+          fi
+          if [ -z "${DMG}" ]; then
+            echo "::error::未找到构建出的 .dmg"
+            exit 1
+          fi
+          hdiutil verify "${DMG}"
+          echo "==> dmg 校验和正常：$(basename "${DMG}") （$(shasum -a 256 "${DMG}" | awk '{print $1}')）"
+
+          # 用户拿到的是 dmg 里的 app，这里直接挂载 dmg 校验其中真正的产物
+          MOUNT="$(mktemp -d)"
+          trap 'hdiutil detach "${MOUNT}" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "${DMG}" -nobrowse -readonly -mountpoint "${MOUNT}" >/dev/null
+          INNER="${MOUNT}/ZoomPaper.app"
+          if [ ! -d "${INNER}" ]; then
+            echo "::error::dmg 中未找到 ZoomPaper.app"
+            exit 1
+          fi
+          codesign -dv --verbose=4 "${INNER}" 2>&1 | grep -E "Identifier|flags|Authority|TeamIdentifier|Signature|Sealed Resources" || true
+          if ! codesign --verify --deep --strict --verbose=2 "${INNER}" 2>&1; then
+            echo "::error::dmg 内的 app 签名无效（用户会看到「已损坏，无法打开」）"
+            exit 1
+          fi
+          echo "==> dmg 内 app 签名校验通过"
+
+          echo "==> 公证状态"
+          if xcrun stapler validate "${APP}" >/dev/null 2>&1; then
+            echo "已公证并装订公证票据：用户可直接双击打开。"
+          else
+            echo "::warning::未公证（ad-hoc 或未配置公证凭据）：用户首次打开需到「系统设置 → 隐私与安全性 → 仍要打开」，或执行 xattr -dr com.apple.quarantine /Applications/ZoomPaper.app。"
+          fi

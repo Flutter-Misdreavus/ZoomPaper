@@ -77,6 +77,15 @@ MOUNT_POINT="${TMP_DIR}/mnt"
 mkdir -p "${MOUNT_POINT}"
 hdiutil attach "${DMG_PATH}" -nobrowse -mountpoint "${MOUNT_POINT}" >/dev/null
 
+if [ ! -w "/Applications" ]; then
+  echo "错误：当前用户没有写入 /Applications 的权限。请任选一种方式：" >&2
+  echo "  1. 打开 ${MOUNT_POINT}/${APP_NAME}.app，手动拖入「应用程序」文件夹（访达会提示输入密码）；" >&2
+  echo "  2. 以管理员身份运行本脚本：" >&2
+  echo "     curl -fsSL https://raw.githubusercontent.com/Flutter-Misdreavus/ZoomPaper/main/install.sh -o /tmp/zp-install.sh && sudo sh /tmp/zp-install.sh" >&2
+  hdiutil detach "${MOUNT_POINT}" >/dev/null 2>&1 || true
+  exit 1
+fi
+
 if [ -d "/Applications/${APP_NAME}.app" ]; then
   echo "==> 移除旧版本 ..."
   rm -rf "/Applications/${APP_NAME}.app"
@@ -84,14 +93,17 @@ fi
 cp -R "${MOUNT_POINT}/${APP_NAME}.app" /Applications/
 hdiutil detach "${MOUNT_POINT}" >/dev/null
 
+# 从 dmg 安装的 app 会被打上 com.apple.quarantine 隔离标记，未签名公证的应用带着
+# 该标记启动时 macOS 会提示「已损坏，无法打开」。这里直接移除，避免用户手动处理。
+xattr -dr com.apple.quarantine "/Applications/${APP_NAME}.app" 2>/dev/null || true
+
 cat <<EOF
 
-==> 安装完成！ZoomPaper ${TAG} 已安装到 /Applications。
+==> 安装完成！ZoomPaper ${TAG} 已安装到 /Applications（已自动移除隔离标记）。
 
-由于应用未经过 Apple 签名公证，首次打开方式：
-  1. 在「访达」中找到 ZoomPaper.app，右键点击 → 选择「打开」；
-  2. 如提示「无法验证开发者」，点击「仍要打开」即可。
-
-或使用终端命令移除隔离标记后直接打开：
-  xattr -dr com.apple.quarantine "/Applications/ZoomPaper.app"
+应用未经过 Apple 签名公证，首次打开：
+  1. 直接打开；若提示「无法验证开发者」→ 在「系统设置 → 隐私与安全性」中点击「仍要打开」；
+  2. 若提示「已损坏，无法打开。您应该将它移到废纸篓」，说明隔离标记仍在，执行：
+       xattr -dr com.apple.quarantine "/Applications/ZoomPaper.app"
+     然后重新打开即可（这不是安装包真的损坏）。
 EOF

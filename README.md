@@ -108,29 +108,33 @@ AI 工作全程**实时可见**：思考内容逐字流出、每个工具「调�
 
 | 平台                    | 安装包                                   |
 | ----------------------- | ---------------------------------------- |
-| macOS（Apple Silicon 与 Intel 通用） | `ZoomPaper_<ver>_universal.dmg` |
+| macOS（Apple Silicon / M 系列芯片） | `ZoomPaper_<ver>_aarch64.dmg` |
 
 **安装步骤**：
 
 1. 打开下载的 `.dmg` 文件；
 2. 把 **ZoomPaper** 拖入 **Applications** 文件夹；
-3. 首次打开：因应用未经过 Apple 签名公证，请在访达中**右键点击应用图标 →「打开」**，
-   如提示「无法验证开发者」，点击「仍要打开」；或执行：
+3. 首次打开：应用未经过 Apple 签名公证，macOS 会拦一次：
 
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
-   ```
+   - 提示「**无法验证开发者**」→ 在「系统设置 → 隐私与安全性」里点「仍要打开」，或右键应用图标 →「打开」；
+   - 提示「**「ZoomPaper」已损坏，无法打开。您应该将它移到废纸篓**」→ 这是 macOS 对被隔离（quarantine）应用的统一提示，**安装包本身没有损坏**，执行下面命令后即可正常打开：
+
+     ```sh
+     xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
+     ```
+
+     注意：「已损坏」这个提示不会出现「仍要打开」按钮，只能按上面的方式处理。
 
 ### 方式二：一行命令安装
 
-macOS（Apple Silicon / Intel）
+macOS（Apple Silicon）
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Flutter-Misdreavus/ZoomPaper/main/install.sh | sh
 ```
 
 脚本会自动识别机器架构，从 GitHub Releases 下载对应的 `.dmg` 并安装到
-`/Applications`；已是最新版本时会自动跳过。
+`/Applications`，同时自动移除隔离标记；已是最新版本时会自动跳过。
 
 ### 方式三：从源码构建（开发者）
 
@@ -159,6 +163,30 @@ npm run tauri build
 ```
 
 构建产物位于 `src-tauri/target/release/bundle/`，可直接分发或上传至 GitHub Releases。
+
+本地/CI 构建默认使用 **ad-hoc 签名**（`tauri.conf.json` 的 `bundle.macOS.signingIdentity: "-"`）。
+这是 Apple Silicon 的硬性要求：没有有效签名的 `.app` 一旦带上浏览器的隔离标记，
+macOS 会直接报「已损坏，无法打开」。ad-hoc 签名可以消除「已损坏」，但用户首次打开仍需
+手动放行一次。
+
+### 发布（签名与公证）
+
+推送 `v*` 标签或手动触发 `Release` workflow 会构建并上传草稿 Release。
+要在用户机器上做到**双击即可打开**（无任何警告），需在仓库 Secrets 中配置
+Apple Developer（付费账号，99 美元/年）的 Developer ID 证书与公证凭据：
+
+| Secret | 说明 |
+| ------ | ---- |
+| `APPLE_CERTIFICATE` | `Developer ID Application` 证书导出的 `.p12`，转成 base64（`openssl base64 -A -in cert.p12`） |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `APPLE_SIGNING_IDENTITY` | 如 `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_ID` | Apple 账号邮箱 |
+| `APPLE_PASSWORD` | Apple 账号的 App 专用密码 |
+| `APPLE_TEAM_ID` | Apple Team ID |
+
+也可改用 App Store Connect API Key（`APPLE_API_ISSUER` / `APPLE_API_KEY` / `APPLE_API_KEY_PATH`）。
+未配置这些 secrets 时，workflow 自动回退为 ad-hoc 签名；无论哪种模式，构建后都会执行
+`codesign --verify` 校验，签名无效时 job 直接失败，避免再次发布「已损坏」的安装包。
 
 ## 使用指南
 
