@@ -97,31 +97,53 @@ jobs:
         env:
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          NOTARY_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # 注意：未配置的 secret 会被 GitHub 注入成"空字符串"环境变量，而 Tauri 只要
+          # 检测到 APPLE_CERTIFICATE 存在（哪怕是空值）就会去导入证书并失败：
+          # security: SecKeychainItemImport: One or more parameters ... were not valid.
+          # 所以这里只在值非空时才写入环境变量。
+          export_env() {
+            if [ -n "$2" ]; then
+              echo "$1=$2" >> "${GITHUB_ENV}"
+            fi
+          }
+
           # APPLE_SIGNING_IDENTITY 环境变量优先于 tauri.conf.json 的 signingIdentity
           # （见 tauri-cli interface/rust.rs），因此这里按 secrets 情况决定签名模式。
           if [ -n "${IDENTITY}" ]; then
             echo "APPLE_SIGNING_IDENTITY=${IDENTITY}" >> "${GITHUB_ENV}"
-            echo "==> 使用 Developer ID 证书签名：${IDENTITY}"
+            export_env APPLE_CERTIFICATE "${CERTIFICATE}"
+            export_env APPLE_CERTIFICATE_PASSWORD "${CERTIFICATE_PASSWORD}"
+            echo "==> 签名模式：Developer ID（${IDENTITY}）"
           elif [ -n "${CERTIFICATE}" ]; then
-            # 有证书但未单独提供身份：留空，交给 Tauri 使用证书自带身份
-            echo "APPLE_SIGNING_IDENTITY=" >> "${GITHUB_ENV}"
-            echo "==> 已导入证书，使用证书自带的签名身份"
+            echo "::error::已配置 APPLE_CERTIFICATE，但缺少 APPLE_SIGNING_IDENTITY。请补上证书身份（如 \"Developer ID Application: Your Name (TEAMID)\"）。"
+            exit 1
           else
             echo "APPLE_SIGNING_IDENTITY=-" >> "${GITHUB_ENV}"
-            echo "==> 未配置 Developer ID 证书，回退为 ad-hoc 签名（不再出现「已损坏」，但首次打开需手动放行）"
+            echo "==> 签名模式：ad-hoc（未配置 Developer ID 证书，用户首次打开需手动放行一次）"
+          fi
+
+          # 公证凭据：缺任意一项时 Tauri 会自动跳过公证（只签名）
+          export_env APPLE_ID "${NOTARY_ID}"
+          export_env APPLE_PASSWORD "${NOTARY_PASSWORD}"
+          export_env APPLE_TEAM_ID "${TEAM_ID}"
+          if [ -n "${NOTARY_ID}" ] && [ -n "${NOTARY_PASSWORD}" ] && [ -n "${TEAM_ID}" ]; then
+            echo "==> 已启用公证（notarization）"
+          else
+            echo "==> 未启用公证（缺少 APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID）"
           fi
 
       - name: Build & publish .dmg (Apple Silicon)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 签名与公证凭据（未配置时为空，由上一步回退为 ad-hoc）
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # 签名/公证相关的 APPLE_* 变量由上面的 Configure macOS signing 步骤按需注入
+          # （不能在这里直接写 ${{ secrets.X }}：未配置的 secret 会变成空字符串，
+          #   Tauri 会把它当成"已提供证书"而导入失败）
         with:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: "ZoomPaper v${{ steps.version.outputs.version }}"
