@@ -1,11 +1,8 @@
-const BROWSER_SESSION_HOSTS = new Set(["openreview.net", "www.openreview.net"]);
+import { absoluteUrl } from './detector.js';
 
+// All public HTTPS sources now use Chrome, including unrecognized conference hosts.
 export function requiresBrowserSessionDownload(rawUrl) {
-  try {
-    return BROWSER_SESSION_HOSTS.has(new URL(rawUrl).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
+  return Boolean(absoluteUrl(rawUrl, rawUrl));
 }
 
 export function browserDownloadFilename(title, requestId) {

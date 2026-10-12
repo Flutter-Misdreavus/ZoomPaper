@@ -87,7 +87,7 @@ export function TopBar({
   }, []);
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-zp-border bg-card px-3">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-zp-border bg-white px-3 dark:bg-zp-surface">
       <div className="flex min-w-0 items-baseline gap-2.5">
         <h1 className="truncate text-[17px] leading-[1.3] font-medium text-zp-primary">
           {title}
@@ -150,8 +150,8 @@ export function TopBar({
           </SelectContent>
         </Select>
         <div className="flex items-center rounded-md border border-zp-border bg-zp-surface p-0.5">
-          <IconTooltip label="列表视图"><button type="button" aria-label="列表视图" onClick={() => onLayoutChange("list")} className={`flex h-6 w-7 items-center justify-center rounded ${layout === "list" ? "bg-card text-zp-primary shadow-sm" : "text-zp-quaternary"}`}><List className="h-3.5 w-3.5" /></button></IconTooltip>
-          <IconTooltip label="卡片视图"><button type="button" aria-label="卡片视图" onClick={() => onLayoutChange("grid")} className={`flex h-6 w-7 items-center justify-center rounded ${layout === "grid" ? "bg-card text-zp-primary shadow-sm" : "text-zp-quaternary"}`}><LayoutGrid className="h-3.5 w-3.5" /></button></IconTooltip>
+          <IconTooltip label="列表视图"><button type="button" aria-label="列表视图" onClick={() => onLayoutChange("list")} className={`flex h-6 w-7 items-center justify-center rounded ${layout === "list" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-active" : "text-zp-quaternary"}`}><List className="h-3.5 w-3.5" /></button></IconTooltip>
+          <IconTooltip label="卡片视图"><button type="button" aria-label="卡片视图" onClick={() => onLayoutChange("grid")} className={`flex h-6 w-7 items-center justify-center rounded ${layout === "grid" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-active" : "text-zp-quaternary"}`}><LayoutGrid className="h-3.5 w-3.5" /></button></IconTooltip>
         </div>
         {!trashMode && <IconTooltip label={selectionMode ? "退出多选（Esc）" : "多选论文（也可长按论文）"}>
           <button type="button" aria-label={selectionMode ? "退出多选" : "多选论文"} aria-pressed={selectionMode} onClick={onToggleSelectionMode} className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${selectionMode ? "bg-zp-primary text-white" : "text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"}`}><ListChecks className="h-4 w-4" /></button>

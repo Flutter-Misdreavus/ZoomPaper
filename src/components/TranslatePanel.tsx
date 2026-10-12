@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
@@ -7,8 +7,6 @@ import { SelectionToolbar, HIGHLIGHT_COLORS } from "@/components/SelectionToolba
 import {
   getPaperMd,
   getTranslation,
-  saveTranslation,
-  translateChunk,
   type TranslationChunk,
 } from "@/lib/api";
 import { loadTextHighlights, saveTextHighlights } from "@/lib/annotations";
@@ -17,8 +15,6 @@ import { useTextSelection, type PendingSelection } from "@/lib/useTextSelection"
 import { copyTextToClipboard } from "@/lib/utils";
 import {
   buildZhDoc,
-  chunkMarkdown,
-  fillMissingChunks,
   pairChunks,
   pairChunksDetailed,
   splitReferences,
@@ -32,7 +28,6 @@ import {
 import {
   ChevronDown,
   ChevronRight,
-  FileText,
   Languages,
   List,
   ListTree,
@@ -42,6 +37,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+
+import { translationJobs } from "@/lib/translationJobs";
 
 type Mode = "en" | "zh" | "bi";
 
@@ -84,15 +81,20 @@ function labelFor(docKey: string): string {
  * （纯英 trans:en、纯中 trans:zh、对照逐段 trans:bi:<i> 等），持久化到 translation_annotations.json。
  */
 export function TranslatePanel({ paperId, onAskSelection }: Props) {
-  const [mode, setMode] = useState<Mode>("en");
+  const [mode, setMode] = useState<Mode>(() => { const saved = localStorage.getItem(`zoompaper.translationMode.${paperId}`); return saved === "zh" || saved === "bi" ? saved : "en"; });
+  useEffect(() => { localStorage.setItem(`zoompaper.translationMode.${paperId}`, mode); }, [mode, paperId]);
   const [enMd, setEnMd] = useState<string | null>(null);
   const [chunks, setChunks] = useState<TranslationChunk[] | null>(null);
   const [loadingEn, setLoadingEn] = useState(false);
-  const [translating, setTranslating] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  /** 自动补齐缺失译文：进行中标志 + 结果统计 */
-  const [fillingMissing, setFillingMissing] = useState(false);
-  const [fillStats, setFillStats] = useState<{ filled: number; failed: number } | null>(null);
+  const job = useSyncExternalStore(
+    (listener) => translationJobs.subscribe(paperId, listener),
+    () => translationJobs.getSnapshot(paperId),
+    () => translationJobs.getSnapshot(paperId),
+  );
+  const translating = job.status === "running" && job.stage === "translate";
+  const fillingMissing = job.status === "running" && job.stage === "repair";
+  const progress = job.status === "running" ? job.progress ?? null : null;
+  const fillStats = job.status === "completed" ? job.stats ?? null : null;
   const [error, setError] = useState<string | null>(null);
 
   // ---- 划选高亮 / 笔记（与 PDF 阅读一致） ----
@@ -118,32 +120,27 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   const rafRef = useRef<number | null>(null);
 
   // 英文原文切成「正文 + 参考文献」：参考文献不翻译、不进 LLM，译文末尾附英文原版
-  const { body, references } = useMemo(() => splitReferences(enMd ?? ""), [enMd]);
+  const { references } = useMemo(() => splitReferences(enMd ?? ""), [enMd]);
 
   // 加载英文原文 + 翻译缓存；已有缓存时自动检查缺失段落并补齐（每次加载至多一次）
   useEffect(() => {
     let cancelled = false;
     setLoadingEn(true);
+    setEnMd(null);
+    setChunks(translationJobs.getSnapshot(paperId).chunks ?? null);
     setError(null);
     Promise.all([getPaperMd(paperId), getTranslation(paperId)])
       .then(([md, t]) => {
         if (cancelled) return;
         setEnMd(md);
-        setChunks(t);
-        if (t && t.length > 0) {
-          const { entries } = pairChunksDetailed(t);
+        const current = translationJobs.getSnapshot(paperId);
+        const effective = current.chunks ?? t;
+        setChunks(effective);
+        if (effective && effective.length > 0) {
+          const { entries } = pairChunksDetailed(effective);
           if (entries.some((e) => e.kind === "missing")) {
-            // 发现未被翻译的段落 → 自动重新要求模型翻译（不阻塞展示，补齐完成后再刷新）
-            setFillingMissing(true);
-            fillMissingChunks(t, translateChunk)
-              .then(async (r) => {
-                if (cancelled) return;
-                setFillStats({ filled: r.filled, failed: r.failed });
-                await saveTranslation(paperId, r.chunks);
-                if (!cancelled) setChunks(r.chunks);
-              })
-              .catch((e) => !cancelled && setError(String(e)))
-              .finally(() => !cancelled && setFillingMissing(false));
+            // Shared task owns both repair and persistence after this page unmounts.
+            void translationJobs.start(paperId, md, effective, true).catch(() => {});
           }
         }
       })
@@ -153,6 +150,11 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
       cancelled = true;
     };
   }, [paperId]);
+
+  useEffect(() => {
+    if (job.chunks) setChunks(job.chunks);
+    if (job.status === "failed") setError(job.error ?? "翻译失败");
+  }, [job]);
 
   // 加载 / 保存译文标注（translation_annotations.json）
   useEffect(() => {
@@ -220,34 +222,12 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
     };
   }, [sel]);
 
-  async function handleTranslate() {
+  function handleTranslate() {
     if (!enMd || translating || fillingMissing) return;
-    setTranslating(true);
-    setFillStats(null);
     setError(null);
-    try {
-      // 只翻译正文，参考文献不进 LLM（省 token）
-      const parts = chunkMarkdown(body);
-      const zh: string[] = [];
-      for (let i = 0; i < parts.length; i++) {
-        zh.push(await translateChunk(parts[i]));
-        setProgress({ done: i + 1, total: parts.length });
-      }
-      const result: TranslationChunk[] = parts.map((en, i) => ({ en, zh: zh[i] }));
-      // 翻译完成后自动检查缺失段落：如有缺失，逐个重新要求模型翻译并回填
-      setProgress(null);
-      setFillingMissing(true);
-      const filled = await fillMissingChunks(result, translateChunk);
-      setFillStats({ filled: filled.filled, failed: filled.failed });
-      await saveTranslation(paperId, filled.chunks);
-      setChunks(filled.chunks);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setTranslating(false);
-      setFillingMissing(false);
-      setProgress(null);
-    }
+    // A failed job resumes its completed chunks; an explicit retranslation starts afresh.
+    const cached = job.status === "failed" ? job.chunks ?? chunks : null;
+    void translationJobs.start(paperId, enMd, cached).catch(() => {});
   }
 
   // 当前模式对应的文档（纯英/纯中）；对照模式在渲染分支单独逐段渲染。
@@ -669,12 +649,8 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
               </div>
             )}
           </div>
-        ) : needsTranslate ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
-            <FileText className="h-10 w-10" />
-            <p className="text-sm">还没有翻译，点击「翻译论文」自动生成中文译文</p>
-          </div>
-        ) : doc ? (
+        ) : needsTranslate ? null
+        : doc ? (
           <div ref={(el) => registerContainer(el, `trans:${mode}`)}>
             <MarkdownView markdown={doc} />
           </div>

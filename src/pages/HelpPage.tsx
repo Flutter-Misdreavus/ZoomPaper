@@ -32,7 +32,7 @@ const guideSections: GuideSection[] = [
     id: "library", title: "论文库", icon: Library,
     items: [
       { id: "import", title: "导入论文", icon: Upload, summary: "从本机加入一个或多个 PDF。", steps: ["点击论文库右上角的上传图标。", "选择一个或多个 PDF。", "导入后等待解析完成。"] },
-      { id: "open", title: "打开论文", icon: BookOpen, summary: "进入论文阅读工作区。", steps: ["双击论文行或卡片。", "也可以右键论文，选择打开。"] },
+      { id: "open", title: "打开论文", icon: BookOpen, summary: "进入论文阅读工作区。", steps: ["双击论文行或卡片。", "也可以右键论文，选择打开。", "顶部标签切换论文，固定论文库标签返回列表。", "切换其他板块后，原来的论文保持打开。"] },
       { id: "star", title: "收藏", icon: Star, summary: "把常用论文集中到左侧收藏。", steps: ["选中一篇论文。", "点击右侧信息栏中的星标图标。", "再次点击可取消收藏。"] },
       { id: "folder", title: "添加到文件夹", icon: FolderPlus, summary: "一篇论文可以属于多个文件夹。", steps: ["右键论文，或长按论文进入多选。", "点击文件夹图标。", "勾选目标文件夹。", "点击“完成”应用更改。"] },
       { id: "status", title: "阅读状态", icon: CircleDot, summary: "标记未读、在读或已读。", steps: ["右键论文，或在多选工具栏点击状态图标。", "选择未读、在读或已读。", "可用论文库顶部筛选器查看对应状态。"] },
@@ -48,6 +48,8 @@ const guideSections: GuideSection[] = [
   {
     id: "reader", title: "论文阅读", icon: BookOpen,
     items: [
+      { id: "workspace", title: "多篇论文标签", icon: BookOpen, summary: "保留论文工作区并快速切换。", steps: ["打开论文后点击顶部标签切换。", "多选工具栏的打开图标可同时添加多篇论文。", "拖动标签排序，点击 × 或中键关闭。", "标签较多时点击右上角列表搜索论文；× 一键关闭全部，提示中可撤销。", "重启恢复标签；Ctrl/Cmd+Shift+T 恢复刚关闭的一组标签。"] },
+      { id: "companion", title: "阅读伙伴", icon: Bot, summary: "查看任务并快速导入或继续阅读。", steps: ["鼠标移到猫头鹰上，点击导入论文或继续阅读。", "按住角色移动鼠标可拖动；原地点击展开按钮。", "阅读、全文翻译和博客生成都会显示气泡；默认两行，点击展开。", "角色右上角 × 隐藏，在设置中重新打开阅读伙伴开关。"] },
       { id: "pdf", title: "PDF 阅读", icon: FileText, summary: "阅读原始 PDF 并记录进度。", steps: ["从论文库打开论文。", "使用滚轮阅读，阅读时长和最后位置会自动记录。"] },
       { id: "toc", title: "目录与跳页", icon: TableOfContents, summary: "按章节或页码定位内容。", steps: ["点击阅读器中的目录图标。", "选择章节，或输入页码跳转。"] },
       { id: "zoom", title: "缩放页面", icon: ZoomIn, summary: "调整 PDF 显示大小。", steps: ["点击阅读器的缩放按钮。", "选择放大、缩小或适合页面。"] },
@@ -91,8 +93,10 @@ const guideSections: GuideSection[] = [
   {
     id: "system", title: "设置与扩展", icon: Settings2,
     items: [
+      { id: "preferences", title: "阅读偏好", icon: Settings2, summary: "选择标题语言和阅读器行为。", steps: ["设置 → 常规：选择标题与摘要语言，可分别配置论文库、标签和概览。", "缺少中文时选择全部翻译或保留英文。", "设置 → 论文阅读：调整自动阅读状态和默认 AI 助手。", "设置 → 阅读伙伴：调整伙伴及气泡显示。"] },
+      { id: "storage", title: "备份与迁移", icon: Download, summary: "备份论文库或更换存储位置。", steps: ["等待后台任务完成，打开设置 → 数据与存储。", "导出完整备份，不包含 API 密钥。", "选择备份恢复，完全退出并重新打开应用后生效。", "迁移会复制文件并保留旧目录；维护可重建索引或清理缓存。"] },
       { id: "model", title: "配置 AI", icon: KeyRound, summary: "连接翻译、问答和生成功能所需的模型。", steps: ["打开设置。", "选择服务商并填写 API 地址、密钥和模型。", "保存后使用测试功能检查连接。"] },
-      { id: "parser", title: "配置解析", icon: FileText, summary: "连接 MinerU 解析 PDF 正文。", steps: ["打开设置中的解析配置。", "填写 MinerU 信息并保存。", "回到论文库解析论文。"] },
+      { id: "parser", title: "配置解析", icon: FileText, summary: "连接 MinerU 解析 PDF 正文。", steps: ["打开设置 → 导入与解析 → PDF 解析。", "填写 MinerU 信息并保存。", "回到论文库解析论文。"] },
       { id: "browser", title: "浏览器扩展", icon: MonitorDown, summary: "从论文网页直接加入 ZoomPaper。", steps: ["在 Chrome 或 Edge 的扩展管理页加载解压后的扩展。", "打开受支持的论文页面。", "右键页面或点击扩展按钮，选择加入 ZoomPaper。"] },
       { id: "reparse", title: "重新解析", icon: RefreshCw, summary: "在元数据或正文不完整时重新处理论文。", steps: ["在论文库右键论文。", "点击解析或重新解析。", "等待状态变为已解析。"] },
       { id: "help-ai", title: "询问软件用法", icon: HelpCircle, summary: "让 AI 根据完整功能手册回答操作问题。", steps: ["打开帮助页面。", "在“问 AI”输入功能或操作问题。", "发送后按回答中的步骤操作。"] },
@@ -131,12 +135,12 @@ export function HelpPage() {
     <section className="mx-auto flex h-full w-full max-w-6xl flex-col overflow-y-auto px-8 py-7">
       <header><h1 className="text-xl font-semibold text-zp-primary">帮助</h1></header>
 
-      <div className="mt-5 grid min-h-[520px] grid-cols-[168px_260px_minmax(0,1fr)] overflow-hidden rounded-xl border border-zp-border bg-card">
+      <div className="mt-5 grid min-h-[520px] grid-cols-[168px_260px_minmax(0,1fr)] overflow-hidden rounded-xl border border-zp-border bg-white dark:bg-zp-surface">
         <nav className="border-r border-zp-border bg-zp-surface/70 p-2.5" aria-label="帮助分类">
           {guideSections.map((item) => {
             const Icon = item.icon;
             const active = item.id === section.id;
-            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-card font-medium text-zp-primary shadow-sm" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
+            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-white font-medium text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
           })}
         </nav>
 
@@ -146,7 +150,7 @@ export function HelpPage() {
             {section.items.map((item) => {
               const Icon = item.icon;
               const active = item.id === selected.id;
-              return <button key={item.id} type="button" onClick={() => setFeatureId(item.id)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors", active ? "bg-zp-surface-hover font-medium text-zp-primary" : "text-zp-secondary hover:bg-zp-surface-hover/70 hover:text-zp-primary")}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zp-border bg-card"><Icon className="h-4 w-4" /></span>{item.title}</button>;
+              return <button key={item.id} type="button" onClick={() => setFeatureId(item.id)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors", active ? "bg-zp-surface-hover font-medium text-zp-primary" : "text-zp-secondary hover:bg-zp-surface-hover/70 hover:text-zp-primary")}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-zp-border bg-white dark:bg-zp-surface"><Icon className="h-4 w-4" /></span>{item.title}</button>;
             })}
           </div>
         </div>
@@ -161,7 +165,7 @@ export function HelpPage() {
         </article>
       </div>
 
-      <div className="mt-5 rounded-xl border border-zp-border bg-card p-4">
+      <div className="mt-5 rounded-xl border border-zp-border bg-white p-4 dark:bg-zp-surface">
         <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-zp-tertiary" /><h2 className="text-sm font-medium">问 AI</h2></div>
         {answer && <div className="prose prose-sm mt-4 max-w-none text-zp-secondary dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>}
         {error && <p className="mt-3 text-sm text-red-600">{error}</p>}

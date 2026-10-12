@@ -258,6 +258,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
         conn.pragma_update(None, "user_version", 17)?;
     }
+    // v18: background job queue + content fingerprint / parse revision.
+    // 列的存在性必须逐条判断：DDL 与 user_version 不在同一事务里，上一次
+    // 升级可能已提交列却未写入版本号，此时直接 ALTER 会以
+    // `duplicate column name` 让应用再也起不来。
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 18 {
+        conn.execute_batch(crate::jobs::SCHEMA)?;
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(papers)")?
+            .query_map([], |row| row.get(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !columns.iter().any(|column| column == "content_hash") {
+            conn.execute_batch("ALTER TABLE papers ADD COLUMN content_hash TEXT;")?;
+        }
+        if !columns.iter().any(|column| column == "parse_revision") {
+            conn.execute_batch("ALTER TABLE papers ADD COLUMN parse_revision INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS paper_hash ON papers(content_hash);")?;
+        conn.pragma_update(None, "user_version", 18)?;
+    }
     Ok(())
 }
 
@@ -291,7 +311,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
 
         // 论文数据无损
@@ -456,7 +476,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
 
         let items: Vec<(String, Option<i64>)> = conn
@@ -486,6 +506,22 @@ mod tests {
         assert_eq!(daily_items, 0);
     }
 
+    /// v18 的 DDL 与 user_version 不同步：列已提交但版本仍是 17 时，
+    /// 重启必须能继续迁移，否则应用直接起不来。
+    #[test]
+    fn partial_v18_migration_still_starts() {
+        crate::db::register_sqlite_vec();
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // 模拟「列已 commit、版本号尚未写入」的中断状态
+        conn.pragma_update(None, "user_version", 17).unwrap();
+        migrate(&conn).expect("部分应用的 v18 必须可以继续迁移");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 18);
+    }
+
     /// 迁移幂等：重复执行不报错。
     #[test]
     fn migrate_is_idempotent() {
@@ -495,7 +531,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
     }
 
     #[test]
@@ -526,7 +562,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            17
+            18
         );
     }
 

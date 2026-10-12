@@ -23,6 +23,7 @@ import {
   emptyTrash,
   exportNotes,
   importPdf,
+  getSettings,
   listFolders,
   listPapers,
   listReadingPlans,
@@ -31,10 +32,12 @@ import {
   removePaperFromPlan,
   removePapersFromFolder,
   renamePaper,
+  refreshPaperPublication,
   restorePaper,
   setPaperStarred,
   setPaperStatus,
   updateFolder,
+  type BackgroundJob,
   type Folder,
   type Paper,
   type ParseProgress,
@@ -42,7 +45,7 @@ import {
   type ReadingStatus,
 } from "@/lib/api";
 import type { LibraryView } from "@/lib/folders";
-import { parseProgressPercent } from "@/lib/utils";
+
 import { usePaperSelection } from "@/hooks/usePaperSelection";
 import { useDragPaperSelection } from "@/hooks/useDragPaperSelection";
 import { FolderSidebar } from "@/components/library/FolderSidebar";
@@ -61,10 +64,13 @@ type Renaming = { kind: "folder"; id: string } | { kind: "paper"; id: string };
 
 interface Props {
   onOpenPaper: (id: string) => void;
+  onOpenBackground?: (id: string) => void;
+  onOpenPapers?: (ids: string[]) => void;
   refreshSignal?: number;
+  jobs?: BackgroundJob[];
 }
 
-export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
+export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [] }: Props) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [plans, setPlans] = useState<ReadingPlan[]>([]);
@@ -112,10 +118,12 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
   const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [parsingId, setParsingId] = useState<string | null>(null);
+  const parseJobs = jobs.filter((job) => job.kind === "parse" && ["queued", "running"].includes(job.status));
+  const parseJobByPaper = new Map(parseJobs.map((job) => [job.paper_id, job]));
   const [parseProgress, setParseProgress] = useState<Record<string, ParseProgress>>({});
   const updateParseProgress = (id: string, progress: ParseProgress) => {
     setParseProgress((prev) => ({ ...prev, [id]: progress }));
-    setNotice(`解析中 · ${Math.round(parseProgressPercent(progress))}%`);
+
   };
   const handleMetadataTranslated = useCallback((updated: Paper) => {
     setPapers((current) => current.map((paper) => paper.id === updated.id ? updated : paper));
@@ -173,7 +181,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
     const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (words.length) {
       list = list.filter((p) => {
-        const haystack = `${p.title} ${p.venue ?? ""} ${p.authors ?? ""} ${p.abstract ?? ""}`.toLocaleLowerCase();
+        const haystack = `${p.title} ${p.venue ?? ""} ${p.authors ?? ""} ${p.abstract ?? ""} ${p.title_zh ?? ""} ${p.abstract_zh ?? ""}`.toLocaleLowerCase();
         return words.every((word) => haystack.includes(word));
       });
     }
@@ -198,6 +206,14 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
     [papers, selected]
   );
   const focusedPaper = papers.find((paper) => paper.id === focusedPaperId) ?? null;
+  useEffect(() => {
+    if (!focusedPaperId) return;
+    let cancelled = false;
+    refreshPaperPublication(focusedPaperId).then((updated) => {
+      if (!cancelled) setPapers((current) => current.map((paper) => paper.id === updated.id ? { ...paper, venue: updated.venue, authors: updated.authors } : paper));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [focusedPaperId]);
 
   useEffect(() => {
     if (focusedPaperId && !visiblePapers.some((paper) => paper.id === focusedPaperId)) {
@@ -340,6 +356,12 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
 
   // ---------- 导入 / 解析 / 删除 ----------
 
+  useEffect(() => {
+    const importPaper = () => { void handleImport(); };
+    window.addEventListener("zoompaper:import", importPaper);
+    return () => window.removeEventListener("zoompaper:import", importPaper);
+  }, []);
+
   async function handleImport() {
     const files = await open({
       multiple: true,
@@ -359,9 +381,9 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
           const paper = await importPdf(file);
           if (currentFolderId) await addPapersToFolder([paper.id], currentFolderId);
           setParsingId(paper.id);
-          setNotice(`正在解析并建立索引 ${index + 1} / ${paths.length}`);
+          setNotice(null);
           try {
-            await parsePdf(paper.id, (progress) => updateParseProgress(paper.id, progress));
+            if ((await getSettings()).workflow?.autoParse !== false) await parsePdf(paper.id, (progress) => updateParseProgress(paper.id, progress));
           } catch (e) {
             failures.push(`${paper.title}：已导入，解析失败（${e}）`);
           } finally { clearParseProgress(paper.id); }
@@ -370,7 +392,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
         }
       }
       await refresh();
-      setNotice(`已处理 ${paths.length} 个文件${failures.length ? `，${failures.length} 项需要处理` : ""}`);
+      setNotice(null);
       if (failures.length) setError(failures.join("\n"));
     } catch (e) {
       setError(`导入失败：${e}`);
@@ -603,7 +625,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
   // ---------- 渲染 ----------
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <FolderSidebar
         folders={folders}
         papers={papers}
@@ -628,7 +650,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
         onDropPapers={(ids, fid) => void handleDropPapers(ids, fid)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zp-border bg-card">
+      <div className="flex min-w-0 flex-1 flex-col bg-zp-surface">
         <TopBar
           title={title}
           count={visiblePapers.length}
@@ -654,7 +676,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
           <button
             type="button"
             onClick={() => onOpenPaper(continuePaper.id)}
-            className="pressable mx-4 mt-3 flex items-center justify-between rounded-xl border border-zp-border bg-card px-4 py-2.5 text-left shadow-sm transition-colors hover:bg-zp-surface-hover"
+            className="pressable mx-4 mt-3 flex items-center justify-between rounded-xl border border-zp-border bg-card px-4 py-2.5 text-left shadow-sm transition-colors hover:bg-zp-surface-hover dark:bg-zp-surface"
           >
             <span className="min-w-0">
               <span className="block text-[11px] font-medium tracking-wide text-zp-quaternary">继续上次阅读</span>
@@ -669,6 +691,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
           {selectedSize > 0 && (
             <BulkBar
               count={selectedSize}
+              onOpen={onOpenPapers && view.type !== "trash" ? () => { onOpenPapers([...selected]); exitSelection(); } : undefined}
               onMarkRead={() => void handleBulkSetStatus("read")}
               onSetStatus={(s) => void handleBulkSetStatus(s)}
               onPickFolder={handleBulkPickFolder}
@@ -680,7 +703,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
         </AnimatePresence>
 
         <div
-          className={`min-h-0 flex-1 overflow-auto ${layout === "grid" ? "px-4 py-4" : "bg-card"}`}
+          className={`min-h-0 flex-1 overflow-auto ${layout === "grid" ? "px-4 py-4" : "bg-card dark:bg-zp-surface"}`}
           onClick={(event) => {
             const target = event.target as HTMLElement;
             if (target.closest("[data-paper-item], button, a, input, textarea, select, [role='menuitem']")) return;
@@ -699,8 +722,8 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
             </div>
           )}
           {notice && !error && (
-            <div className="m-3 rounded-md border border-zp-border bg-card px-4 py-3 text-sm text-zp-secondary">
-              {notice}
+            <div className="m-3 rounded-md border border-zp-border bg-card px-4 py-3 text-sm text-zp-secondary dark:bg-zp-surface">
+              <span>{notice}</span><button type="button" aria-label="关闭提示" className="float-right ml-3" onClick={() => setNotice(null)}>×</button>
             </div>
           )}
 
@@ -760,7 +783,7 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
                   selectionMode={selectionMode}
                   onLongPress={enterSelection}
                   isRenaming={renaming?.kind === "paper" && renaming.id === paper.id}
-                  parsing={parsingId === paper.id}
+                  parsing={parsingId === paper.id || parseJobByPaper.has(paper.id)}
                   progress={parseProgress[paper.id] ?? null}
                   currentFolderId={currentFolderId}
                   onToggle={toggle}

@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef } from "react";
 import { AlertTriangle, CheckCircle2, Download, Loader2, X } from "lucide-react";
 
@@ -7,10 +8,11 @@ interface Props {
   phase: BrowserImportPhase;
   title: string;
   message: string;
+  sourceUrl?: string;
   onClose: () => void;
 }
 
-export function BrowserImportNotice({ phase, title, message, onClose }: Props) {
+export function BrowserImportNotice({ phase, title, message, sourceUrl, onClose }: Props) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const busy = phase === "downloading" || phase === "parsing";
@@ -44,8 +46,9 @@ export function BrowserImportNotice({ phase, title, message, onClose }: Props) {
           </div>
           <p className="mt-1 truncate text-sm text-foreground" title={title}>{title}</p>
           {message && <p className="mt-1 text-xs leading-5 text-muted-foreground">{message}</p>}
+          {phase === "error" && sourceUrl && <button type="button" onClick={() => void openUrl(sourceUrl)} className="mt-2 rounded-lg border px-2 py-1 text-xs hover:bg-muted">打开原网页</button>}
         </div>
-        {!busy && (
+        {(
           <button type="button" onClick={onClose} className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="关闭提示">
             <X className="size-4" />
           </button>

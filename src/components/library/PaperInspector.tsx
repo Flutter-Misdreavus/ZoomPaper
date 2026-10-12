@@ -1,7 +1,10 @@
+import { usePreferences, paperTitle } from "@/lib/preferences";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, FolderInput, GripVertical, Loader2, Sparkles, Star, X } from "lucide-react";
-import { translatePaperMetadata, type Folder, type Paper } from "@/lib/api";
+import { BookOpen, FolderInput, GripVertical, Sparkles, Star, X } from "lucide-react";
+import { enqueueMetadataTranslations, type Folder, type Paper } from "@/lib/api";
 import { cn, displayPaperTitle, formatDuration, formatTime } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
 
 const WIDTH_KEY = "zoompaper.paperInspectorWidth";
@@ -23,11 +26,14 @@ function clampWidth(value: number) {
   return Math.min(maximum, Math.max(260, value));
 }
 
-export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, onPickFolder, onParse, onTranslated }: Props) {
+export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, onPickFolder, onParse }: Props) {
   const [width, setWidth] = useState(() => clampWidth(Number(localStorage.getItem(WIDTH_KEY)) || 320));
   const resizeRef = useRef<{ x: number; width: number } | null>(null);
-  const [language, setLanguage] = useState<"original" | "zh">(() => localStorage.getItem(LANGUAGE_KEY) === "zh" ? "zh" : "original");
+  const prefs=usePreferences();
+  useEffect(()=>setLanguage((prefs.detailLanguage==="inherit"?prefs.titleLanguage:prefs.detailLanguage)==="original"?"original":"zh"),[prefs.detailLanguage,prefs.titleLanguage]);
+  const [language, setLanguage] = useState<"original" | "zh">(() => (prefs.detailLanguage === "inherit" ? prefs.titleLanguage : prefs.detailLanguage) === "original" ? "original" : "zh");
   const [previewPaper, setPreviewPaper] = useState(paper);
+  const [confirmTranslation,setConfirmTranslation]=useState(false);
   const [translating, setTranslating] = useState(false);
   const [translationError, setTranslationError] = useState<string | null>(null);
 
@@ -61,34 +67,13 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
     localStorage.setItem(WIDTH_KEY, String(Math.round(width)));
   }, [width]);
 
-  useEffect(() => {
-    if (language !== "zh" || paper.parse_status !== "ready") return;
-    if (paper.title_zh && (!paper.abstract || paper.abstract_zh)) return;
-    let cancelled = false;
-    setTranslating(true);
-    setTranslationError(null);
-    void translatePaperMetadata(paper.id)
-      .then((updated) => {
-        if (cancelled) return;
-        setPreviewPaper(updated);
-        onTranslated(updated);
-      })
-      .catch((error) => {
-        if (!cancelled) setTranslationError(String(error));
-      })
-      .finally(() => {
-        if (!cancelled) setTranslating(false);
-      });
-    return () => { cancelled = true; };
-  }, [language, onTranslated, paper.abstract, paper.abstract_zh, paper.id, paper.parse_status, paper.title_zh]);
 
   const names = previewPaper.folder_ids.map((id) => folders.find((folder) => folder.id === id)?.name).filter(Boolean);
-  const translated = language === "zh";
-  const shownTitle = translated && previewPaper.title_zh ? previewPaper.title_zh : previewPaper.title;
-  const shownAbstract = translated && previewPaper.abstract_zh ? previewPaper.abstract_zh : previewPaper.abstract;
+  const shownTitle = language === "original" ? previewPaper.title : paperTitle(previewPaper,"detail",prefs);
+  const shownAbstract = language === "original" || prefs.abstractLanguage === "original" ? previewPaper.abstract : prefs.abstractLanguage === "both" && previewPaper.abstract_zh ? `${previewPaper.abstract_zh}\n\n${previewPaper.abstract ?? ""}` : previewPaper.abstract_zh || previewPaper.abstract;
 
   return (
-    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l border-zp-border bg-zp-surface">
+    <aside style={{ width }} className="relative flex shrink-0 flex-col border-l border-zp-border bg-[#fbfbfa] dark:bg-[#191919]">
       <button
         type="button"
         aria-label="调整论文预览宽度"
@@ -102,7 +87,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         }}
         className="group absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize outline-none"
       >
-        <span className="absolute left-1/2 top-1/2 flex h-9 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-zp-border bg-card text-zp-quaternary opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+        <span className="absolute left-1/2 top-1/2 flex h-9 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-zp-border bg-white text-zp-quaternary opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 dark:bg-zp-surface">
           <GripVertical className="h-3 w-3" />
         </span>
       </button>
@@ -111,8 +96,8 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         <span className="shrink-0 text-xs font-medium text-zp-quaternary">论文信息</span>
         <div className="flex items-center gap-1.5">
           <div className="flex rounded-md bg-zp-surface p-0.5 text-[11px]">
-            <button type="button" onClick={() => { setLanguage("original"); localStorage.setItem(LANGUAGE_KEY, "original"); }} className={cn("rounded px-2 py-1", language === "original" ? "bg-card text-zp-primary shadow-sm" : "text-zp-tertiary")}>原文</button>
-            <button type="button" onClick={() => { setLanguage("zh"); localStorage.setItem(LANGUAGE_KEY, "zh"); }} title={translationError ?? undefined} className={cn("flex items-center gap-1 rounded px-2 py-1", language === "zh" ? "bg-card text-zp-primary shadow-sm" : "text-zp-tertiary")}>中文{translating && <Loader2 className="h-3 w-3 animate-spin" />}</button>
+            <button type="button" onClick={() => { setLanguage("original"); localStorage.setItem(LANGUAGE_KEY, "original"); }} className={cn("rounded px-2 py-1", language === "original" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-tertiary")}>原文</button>
+            <button type="button" onClick={() => { setLanguage("zh"); if(!paper.title_zh?.trim()||(!!paper.abstract?.trim()&&!paper.abstract_zh?.trim()))setConfirmTranslation(true); localStorage.setItem(LANGUAGE_KEY, "zh"); }} title={translationError ?? undefined} className={cn("flex items-center gap-1 rounded px-2 py-1", language === "zh" ? "bg-white text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-tertiary")}>中文</button>
           </div>
           <IconTooltip label="关闭详情" side="bottom"><button type="button" aria-label="关闭详情" onClick={onClose} className="rounded-md p-1 text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"><X className="h-4 w-4" /></button></IconTooltip>
         </div>
@@ -138,6 +123,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
 
         {shownAbstract && <div className="mt-6"><h3 className="mb-2 text-xs font-medium text-zp-primary">摘要</h3><p className="text-xs leading-5 text-zp-secondary">{shownAbstract}</p></div>}
       </div>
+    <Dialog open={confirmTranslation} onOpenChange={setConfirmTranslation}><DialogContent><DialogHeader><DialogTitle>补全中文标题与摘要？</DialogTitle></DialogHeader><p className="py-3 text-sm">仅翻译这篇论文缺少的标题与摘要。</p><DialogFooter><Button variant="outline" onClick={()=>setConfirmTranslation(false)}>保留英文</Button><Button disabled={translating} onClick={async()=>{setTranslating(true);try{await enqueueMetadataTranslations([paper.id]);setConfirmTranslation(false);setTranslationError(null);}catch(e){setTranslationError(String(e));}finally{setTranslating(false);}}}>全部翻译</Button></DialogFooter>{translationError&&<p role="alert" className="text-sm text-red-600">{translationError}</p>}</DialogContent></Dialog>
     </aside>
   );
 }
