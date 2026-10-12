@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
-use tauri::{Manager, State};
+use tauri::Manager;
 pub static MAINTENANCE: AtomicBool = AtomicBool::new(false);
 struct Guard;
 impl Drop for Guard {

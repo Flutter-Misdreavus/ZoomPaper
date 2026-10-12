@@ -2,11 +2,21 @@
 use crate::db::Db;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use tauri::{AppHandle, Manager, State};
+
+/// 取消 index 任务后，等待不可中断的阻塞推理收尾的上限。
+/// 超过该时间就放弃等待，宁可留下一个可能重叠的后台推理，
+/// 也不能让任务行永远停在 running/canceling 而堵死 guard()。
+const INDEX_DRAIN_CEILING: Duration = Duration::from_secs(30);
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS background_jobs (
@@ -209,6 +219,27 @@ pub fn start(app: AppHandle) {
     }
 }
 
+/// 取消后等待「不可中断的阻塞推理」收尾，最多等 `ceiling`。
+///
+/// 返回 `true` 表示 future 已在期限内跑完（可以安全丢弃结果）；
+/// 返回 `false` 表示已超时放弃等待——此时调用方必须 detach 而不是继续
+/// `await`，否则任务会永远停在 `running`/`canceling`，进而让 `guard()`
+/// 永久拒绝备份/恢复/迁移。
+async fn drain_or_detach<F, S>(future: Pin<&mut F>, shutdown: S, ceiling: Duration) -> bool
+where
+    F: Future,
+    S: Future,
+{
+    tokio::pin!(shutdown);
+    let sleep = tokio::time::sleep(ceiling);
+    tokio::pin!(sleep);
+    tokio::select! {
+        _ = future => true,
+        _ = &mut shutdown => false,
+        _ = &mut sleep => false,
+    }
+}
+
 async fn run(app: &AppHandle, job: &Job) {
     let db = app.state::<Db>();
     let canceled = Arc::new(AtomicBool::new(false));
@@ -258,13 +289,19 @@ async fn run(app: &AppHandle, job: &Job) {
          r=&mut work=>break r,
          _=&mut timeout=>{
           canceled.store(true,Ordering::Relaxed);
-          if job.kind=="index"{let _=(&mut work).await;}
+          // 阻塞推理无法强制中断：给它一个有限的收尾窗口，超时则放弃等待、
+          // 直接进入失败终态，避免任务与 guard() 被永久卡住。
+          if job.kind=="index"{
+           drain_or_detach(work.as_mut(), tokio::time::sleep(INDEX_DRAIN_CEILING), INDEX_DRAIN_CEILING).await;
+          }
           break Err("任务等待超时，可重试".into());
          },
          _=tokio::time::sleep(std::time::Duration::from_millis(350))=>{
           if !active(&db,&job.id){
            canceled.store(true,Ordering::Relaxed);
-           if job.kind=="index"{let _=(&mut work).await;}
+           if job.kind=="index"{
+            drain_or_detach(work.as_mut(), tokio::time::sleep(INDEX_DRAIN_CEILING), INDEX_DRAIN_CEILING).await;
+           }
            let _=db.conn().execute("UPDATE background_jobs SET status='canceled' WHERE id=?1",[&job.id]);
            return;
           }
@@ -358,6 +395,63 @@ mod tests {
         retry(&db, &id).unwrap();
         assert_eq!(snapshot(&db).unwrap()[0].status, "queued");
     }
+    /// index 的阻塞推理远超上限时，drain 必须超时返回，而不是无限等待——
+    /// 否则任务会永远停在 running/canceling，guard() 会一直拒绝数据操作。
+    #[tokio::test]
+    async fn drain_returns_after_ceiling_when_work_never_finishes() {
+        let ceiling = Duration::from_millis(40);
+        let started = std::time::Instant::now();
+        let pending = std::future::pending::<()>();
+        tokio::pin!(pending);
+        let completed = drain_or_detach(
+            pending.as_mut(),
+            tokio::time::sleep(Duration::from_secs(30)),
+            ceiling,
+        )
+        .await;
+        assert!(!completed, "pending work should not report completion");
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "drain took {elapsed:?}");
+    }
+
+    /// 收尾迅速完成时应返回 true（正常丢弃结果，不触发超时）。
+    #[tokio::test]
+    async fn drain_reports_completion_when_work_finishes_quickly() {
+        let work = async {};
+        tokio::pin!(work);
+        let completed = drain_or_detach(
+            work.as_mut(),
+            tokio::time::sleep(Duration::from_secs(30)),
+            Duration::from_secs(30),
+        )
+        .await;
+        assert!(completed);
+    }
+
+    /// 运行中的全文翻译被取消后，前端收尾必须还是终态，
+    /// 否则任务永远停在 canceling，备份/恢复会被一直拒绝。
+    #[test]
+    fn canceling_frontend_translation_reaches_terminal_state() {
+        let db = database();
+        let id = enqueue(&db, "a", "full_translation").unwrap();
+        // 模拟前端已 claim，然后用户点了「取消」
+        db.conn()
+            .execute(
+                "UPDATE background_jobs SET status='running' WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        cancel(&db, &id).unwrap();
+        assert_eq!(snapshot(&db).unwrap()[0].status, "canceling");
+        finish_status(&db, &id, None);
+        let job = snapshot(&db).unwrap().into_iter().find(|j| j.id == id).unwrap();
+        assert_eq!(job.status, "canceled");
+        assert!(
+            !matches!(job.status.as_str(), "running" | "canceling"),
+            "收尾后不能仍是活动状态"
+        );
+    }
+
     #[test]
     fn cloud_batch_survives_restart() {
         let db = database();
@@ -430,12 +524,21 @@ pub fn claim_frontend_translation(db: State<'_, Db>, job_id: String) -> Result<b
     let changed=conn.execute("UPDATE background_jobs SET status='running',stage='translate',updated_at=?2 WHERE id=?1 AND kind='full_translation' AND status='queued'",params![job_id,chrono::Utc::now().timestamp()]).map_err(|e|e.to_string())?;
     Ok(changed == 1)
 }
+fn finish_status(db: &Db, job_id: &str, error: Option<String>) {
+    // 用户可能在翻译进行中取消：此时行是 canceling，若只接受 running，
+    // 收尾会变成 no-op，任务会永远停在 canceling 并让备份/恢复被一直拒绝。
+    let state = if error.is_some() { "failed" } else { "done" };
+    let _ = db.conn().execute(
+        "UPDATE background_jobs SET status=CASE WHEN status='canceling' THEN 'canceled' ELSE ?2 END,error=?3,updated_at=?4 WHERE id=?1 AND kind='full_translation' AND status IN ('running','canceling')",
+        params![job_id, state, error, chrono::Utc::now().timestamp()],
+    );
+}
 #[tauri::command]
 pub fn finish_frontend_translation(
     db: State<'_, Db>,
     job_id: String,
     error: Option<String>,
 ) -> Result<(), String> {
-    db.conn().execute("UPDATE background_jobs SET status=?2,error=?3,updated_at=?4 WHERE id=?1 AND kind='full_translation' AND status='running'",params![job_id,if error.is_some(){"failed"}else{"done"},error,chrono::Utc::now().timestamp()]).map_err(|e|e.to_string())?;
+    finish_status(&db, &job_id, error);
     Ok(())
 }

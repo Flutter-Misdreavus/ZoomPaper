@@ -13,6 +13,35 @@ use std::path::Path;
 use std::time::Duration;
 
 const BASE_URL: &str = "https://mineru.net/api/v4";
+/// 单个解压条目的上限（与 jobs 中 100 MB 的 PDF 上限保持一致）。
+const MAX_EXTRACTED_FILE_BYTES: u64 = 100 * 1024 * 1024;
+/// 校验并规范化 zip 条目名，拒绝绝对路径、`..` 与空文件名。
+///
+/// MinerU 返回的压缩包属于远端不可信数据：不加校验时
+/// `Path::join("../../..")` 可以逃出论文目录，绝对路径条目更会直接
+/// 覆盖任意文件（`Path::join("/etc/x")` 会丢弃前缀）。
+fn normalize_entry_name(enclosed: &Path, prefix: &str) -> Result<String> {
+    let relative = enclosed.strip_prefix(prefix).unwrap_or(enclosed);
+    anyhow::ensure!(
+        relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_))),
+        "MinerU 结果包含非法路径：{}",
+        enclosed.display()
+    );
+    let name = relative.to_string_lossy().into_owned();
+    anyhow::ensure!(!name.is_empty(), "MinerU 结果包含空文件名");
+    Ok(name)
+}
+/// 按条目自报大小预检，并在读取时再次封顶，防止声明与实际不符的压缩炸弹。
+fn read_entry(entry: &mut impl Read, declared: u64, limit: u64) -> Result<Vec<u8>> {
+    anyhow::ensure!(declared <= limit, "MinerU 结果单个文件过大");
+    let mut buf = Vec::new();
+    let mut reader = entry.take(limit);
+    reader.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 #[cfg(not(test))]
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(test)]
@@ -267,12 +296,13 @@ impl MineruClient {
                 continue;
             }
             let raw_name = entry.name().to_string();
-
+            let declared = entry.size();
+            // `enclosed_name` 拒绝绝对路径、盘符与逃出压缩包根目录的 `..`。
+            let enclosed = entry
+                .enclosed_name()
+                .with_context(|| format!("MinerU 结果包含非法路径：{raw_name}"))?;
             // 去掉顶层目录前缀（若存在）
-            let name = raw_name
-                .strip_prefix(&prefix)
-                .unwrap_or(&raw_name)
-                .to_string();
+            let name = normalize_entry_name(&enclosed, &prefix)?;
 
             // 跳过重复的原始 PDF（MinerU 命名为 `origin.pdf` 或 `{hash}_origin.pdf`）
             if name.ends_with("origin.pdf") {
@@ -280,12 +310,12 @@ impl MineruClient {
             }
 
             if name == "full.md" {
-                entry
-                    .read_to_string(&mut markdown)
+                let bytes = read_entry(&mut entry, declared, MAX_EXTRACTED_FILE_BYTES)
                     .context("读取 full.md 失败")?;
+                markdown = String::from_utf8(bytes).context("full.md 不是合法 UTF-8")?;
             } else {
-                let mut buf = Vec::new();
-                entry.read_to_end(&mut buf).context("读取 zip 文件失败")?;
+                let buf = read_entry(&mut entry, declared, MAX_EXTRACTED_FILE_BYTES)
+                    .context("读取 zip 文件失败")?;
                 files.push((name, buf));
             }
         }
@@ -303,6 +333,103 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+
+    /// 用 Python 的 zipfile 构造压缩包：Rust 的 `ZipWriter` 会规范化条目名，
+    /// 只有它才能产出 `../../` 这类真实的恶意条目。
+    fn build_zip(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        use std::process::{Command, Stdio};
+        let list: Vec<(String, Vec<u8>)> = entries
+            .iter()
+            .map(|(name, bytes)| (name.to_string(), bytes.clone()))
+            .collect();
+        let script = "import sys,zipfile,json\n\
+                      d=json.loads(sys.stdin.read())\n\
+                      z=zipfile.ZipFile(sys.stdout.buffer,'w',zipfile.ZIP_DEFLATED)\n\
+                      for n,b in d:\n\
+                      \x20   z.writestr(n,bytes(b))\n\
+                      z.close()\n";
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("需要 python3 构造测试用 zip");
+        let payload = serde_json::to_vec(&list).unwrap();
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(&payload)
+            .unwrap(); // 句柄在此 drop，子进程读到 EOF 才会开始写 zip
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "python3 构造 zip 失败");
+        output.stdout
+    }
+    /// 恶意 zip：绝对路径与 `..` 逃逸条目都必须被拒绝，正常条目不受影响。
+    #[tokio::test]
+    async fn rejects_zip_entries_that_escape_the_paper_directory() {
+        use std::io::Write;
+        let honest = [
+            ("demo/full.md", b"# A Paper".to_vec()),
+            ("demo/images/a.png", b"img".to_vec()),
+        ];
+        let malicious = [
+            ("demo/full.md", b"# A Paper".to_vec()),
+            ("demo/../../escaped.txt", b"pwned".to_vec()),
+            ("/tmp/zoompaper-abs-probe.txt", b"pwned".to_vec()),
+        ];
+        let root = std::env::temp_dir().join(format!("zp-zip-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (label, entries) in [("honest", &honest[..]), ("malicious", &malicious[..])] {
+            let name = format!("{label}.zip");
+            let archive = build_zip(entries);
+            std::fs::write(root.join(&name), &archive).unwrap();
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut sink = [0u8; 1024];
+                let _ = stream.read(&mut sink);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    archive.len()
+                );
+                let _ = stream.write_all(&archive);
+            });
+
+            let client = MineruClient::new("test-key".into());
+            let outcome = client
+                .download_and_extract(&format!("http://{addr}/{name}"))
+                .await;
+            server.join().unwrap();
+
+            let paper_dir = root.join("papers").join("id");
+            std::fs::create_dir_all(&paper_dir).unwrap();
+            if let Ok(output) = &outcome {
+                crate::fs::write_extracted_files(&paper_dir, &output.files).unwrap();
+            }
+
+            let escaped = root.join("escaped.txt");
+            let absolute = std::path::Path::new("/tmp/zoompaper-abs-probe.txt");
+            let escaped_written = escaped.exists() || absolute.exists();
+            let _ = std::fs::remove_file(absolute);
+            println!("{label}: outcome={:?} escaped_written={escaped_written}", outcome.is_ok());
+            assert!(!escaped_written, "{label} zip escaped the paper directory");
+
+            if label == "honest" {
+                let output = outcome.expect("合法的 MinerU 结果应能解析");
+                assert!(output.markdown.starts_with("# A Paper"));
+                assert_eq!(output.files, vec![("images/a.png".to_string(), b"img".to_vec())]);
+            } else {
+                assert!(outcome.is_err(), "包含逃逸路径的 zip 必须被拒绝");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn resumes_saved_cloud_batch_without_uploading_pdf_again() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
