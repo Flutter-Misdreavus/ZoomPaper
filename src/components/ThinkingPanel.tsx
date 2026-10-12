@@ -48,7 +48,7 @@ export function ThinkingPanel({ text, streaming }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="pressable inline-flex items-center gap-1 rounded-full bg-muted/60 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
       >
-        <Brain className={`h-3 w-3 ${streaming ? "animate-pulse text-zp-ai" : ""}`} />
+        <Brain className={`h-3 w-3 ${streaming ? "text-zp-ai" : ""}`} />
         {streaming ? (
           <span className="text-zp-ai">
             AI 思考中…{" "}
@@ -65,15 +65,8 @@ export function ThinkingPanel({ text, streaming }: Props) {
       </button>
       {open && (
         <div className="mt-1.5 w-full overflow-hidden rounded-lg border bg-card">
-          <div className="flex items-center gap-1 border-b px-2.5 py-1 text-[10px] text-muted-foreground/80">
-            <Brain className="h-3 w-3" />
+          <div className="border-b px-2.5 py-1 text-[10px] text-muted-foreground/80">
             思考
-            {streaming && (
-              <span className="ml-auto text-zp-ai">
-                生成中…{" "}
-                <span className="tabular-nums">{fmtDur(Math.floor(elapsedMs / 1000))}</span>
-              </span>
-            )}
           </div>
           <div
             ref={ref}

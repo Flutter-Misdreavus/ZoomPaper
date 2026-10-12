@@ -13,8 +13,7 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-import type { PaperFilter } from "./FilterBar";
-
+export type PaperFilter = "all" | "unread" | "reading" | "read" | "starred";
 export type SortBy = "created" | "title" | "read";
 export type LibraryLayout = "list" | "grid";
 
@@ -99,7 +98,7 @@ export function TopBar({
 
       <div className="flex shrink-0 items-center gap-2">
         {trashMode && (
-          <button type="button" onClick={onEmptyTrash} disabled={!onEmptyTrash} className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-red-600 transition-colors hover:bg-red-500/10 disabled:opacity-40">
+          <button type="button" onClick={onEmptyTrash} disabled={!onEmptyTrash} className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-40">
             <Trash2 className="h-3.5 w-3.5" />
             清空回收站
           </button>

@@ -117,7 +117,7 @@ export function Reader({ paperId, initialPageIdx, jumpNonce, active, onPaperLoad
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-bold tracking-tight">
+          <h1 className="truncate text-xl font-semibold tracking-tight">
             {paper ? displayPaperTitle(paper.title) : "加载中…"}
           </h1>
           {paper?.authors && (

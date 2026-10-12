@@ -29,7 +29,7 @@ export function WebToggle({ on, onChange, configured, disabled }: Props) {
       </button>
       {on && !configured && (
         <span
-          className="text-[11px] text-amber-600/90"
+          className="text-[11px] text-muted-foreground"
           title="请在设置页选择搜索 Provider（自动/DeepSeek/Anthropic）并确保对应 API Key 已填写"
         >
           未配置

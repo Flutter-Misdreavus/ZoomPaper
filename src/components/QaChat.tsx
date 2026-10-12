@@ -441,7 +441,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
                 <div className="max-w-[90%] break-words rounded-2xl rounded-br-md bg-accent px-4 py-3 text-sm leading-6 whitespace-pre-wrap text-foreground">
-                  {m.selections?.map((sel, index) => <button key={index} type="button" title="重新引用" onClick={() => onRequoteSelection?.(sel)} className="mb-2 block w-full truncate rounded border-l-2 border-foreground/25 px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground">{sel.text}</button>)}
+                  {m.selections?.map((sel, index) => <button key={index} type="button" title="重新引用" onClick={() => onRequoteSelection?.(sel)} className="mb-2 block w-full truncate rounded border-l-2 border-border px-2 py-1 text-left text-xs text-muted-foreground hover:text-foreground">{sel.text}</button>)}
                   {m.content}
                 </div>
               </div>
@@ -561,11 +561,11 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             {selections.map((sel, i) => (
               <div
                 key={`${sel.pageIdx}:${sel.text.slice(0, 24)}`}
-                className="animate-in fade-in -mx-1 flex items-start gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-accent/50"
+                className="-mx-1 flex items-start gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-accent/50"
                 onMouseEnter={(e) => openHover(i, e.currentTarget)}
                 onMouseLeave={scheduleHoverClose}
               >
-                <div className="min-w-0 flex-1 border-l-2 border-foreground/10 pl-2">
+                <div className="min-w-0 flex-1 border-l-2 border-border pl-2">
                   <p className="line-clamp-2 text-[13px] leading-snug text-foreground/85">
                     {sel.text}
                   </p>
@@ -587,7 +587,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       {hoverIdx != null && hoverPos && selections && selections[hoverIdx] && (
         <div
           ref={popoverRef}
-          className="fixed z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg border bg-popover p-3 shadow-md ring-1 ring-foreground/10"
+          className="fixed z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg bg-popover p-3 ring-1 ring-foreground/10"
           style={{
             left: hoverFinal?.left ?? 8,
             top: hoverFinal?.top ?? hoverPos.itemTop,

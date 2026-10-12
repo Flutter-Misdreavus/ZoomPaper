@@ -151,7 +151,7 @@ export function PaperTable(props: PaperTableProps) {
                     onCancel={props.onCancelRename}
                   />
                 ) : (
-                  <span className={cn("truncate", paper.reading_status === "unread" ? "font-semibold text-zp-primary" : paper.reading_status === "read" ? "font-normal text-zp-tertiary" : "font-medium text-zp-primary")}>{displayPaperTitle(paper.title)}</span>
+                  <span className={cn("truncate font-medium", paper.reading_status === "read" ? "text-zp-tertiary" : "text-zp-primary")}>{displayPaperTitle(paper.title)}</span>
                 )}
                 <IconTooltip label={paper.starred ? "取消收藏" : "收藏论文"}>
                   <button
@@ -195,7 +195,6 @@ export function PaperTable(props: PaperTableProps) {
                           P={MenuPrimitive as unknown as PlanMenuPrimitives}
                           activePlans={activePlans}
                           containingPlan={containingPlan}
-                          currentDue={containingPlan?.items.find((item) => item.paper_id === paper.id)?.due_date ?? null}
                           targetPlanId={effectivePlan?.id ?? null}
                           onSelectTarget={(planId) => setTargetPlans((current) => ({ ...current, [paper.id]: planId }))}
                           onQuickDate={(due) => props.onPlanQuickAdd(paper, effectivePlan?.id ?? null, due)}
@@ -219,7 +218,6 @@ export function PaperTable(props: PaperTableProps) {
                         P={ContextMenuPrimitive as unknown as PlanMenuPrimitives}
                         activePlans={activePlans}
                         containingPlan={containingPlan}
-                        currentDue={containingPlan?.items.find((item) => item.paper_id === paper.id)?.due_date ?? null}
                         targetPlanId={effectivePlan?.id ?? null}
                         onSelectTarget={(planId) => setTargetPlans((current) => ({ ...current, [paper.id]: planId }))}
                         onQuickDate={(due) => props.onPlanQuickAdd(paper, effectivePlan?.id ?? null, due)}

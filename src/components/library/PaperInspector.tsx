@@ -107,8 +107,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         </span>
       </button>
 
-      <div className="flex h-12 items-center justify-between gap-2 px-4">
-        <span className="shrink-0 text-xs font-medium text-zp-quaternary">论文信息</span>
+      <div className="flex h-12 items-center justify-end gap-2 px-4">
         <div className="flex items-center gap-1.5">
           <div className="flex rounded-md bg-zp-surface p-0.5 text-[11px]">
             <button type="button" onClick={() => { setLanguage("original"); localStorage.setItem(LANGUAGE_KEY, "original"); }} className={cn("rounded px-2 py-1", language === "original" ? "bg-card text-zp-primary shadow-sm" : "text-zp-tertiary")}>原文</button>

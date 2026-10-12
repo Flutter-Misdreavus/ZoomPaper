@@ -30,7 +30,7 @@ export function ReaderTabBar({ tabs, activeTabId, onActivate, onClose, onActivat
             className={cn(
               "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md select-none",
               homeActive
-                ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                ? "bg-background text-foreground ring-1 ring-border"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )}
           >
@@ -52,7 +52,7 @@ export function ReaderTabBar({ tabs, activeTabId, onActivate, onClose, onActivat
               className={cn(
                 "group flex h-8 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-sm select-none",
                 active
-                  ? "bg-background font-medium text-foreground shadow-sm ring-1 ring-border"
+                  ? "bg-background font-medium text-foreground ring-1 ring-border"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
             >

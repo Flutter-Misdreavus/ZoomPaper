@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, Check, Loader2, Plus, Save, Edit2, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, Loader2, Plus, Save, Edit2, Trash2 } from "lucide-react";
 import {
   getSettings,
   reindexAllPapers,
@@ -230,7 +230,7 @@ export function SettingsPage() {
     <div className="min-h-0 w-full flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-2xl space-y-4 pb-4">
       <div>
-        <h1 className="text-2xl font-bold">设置</h1>
+        <h1 className="text-xl font-semibold">设置</h1>
       </div>
 
       {error && (
@@ -355,11 +355,10 @@ export function SettingsPage() {
             添加 Provider
           </Button>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-1">
           {current.providers.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <p>尚未配置任何 Provider</p>
-              <p className="text-sm mt-1">点击"添加 Provider"开始配置</p>
             </div>
           ) : (
             current.providers.map((provider) => (
@@ -515,7 +514,7 @@ export function SettingsPage() {
           保存设置
         </Button>
         {saved && (
-          <span className="flex items-center gap-1 text-sm text-green-600">
+          <span className="flex items-center gap-1 text-sm text-primary">
             <Check className="h-4 w-4" />
             已保存
           </span>
@@ -563,7 +562,7 @@ function ProviderCard({
   onDelete: () => void;
 }) {
   return (
-    <div className={`rounded-lg border p-4 ${isActive ? 'border-primary bg-primary/5' : ''}`}>
+    <div className={`rounded-md p-3 ${isActive ? 'bg-accent' : ''}`}>
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-2">
@@ -686,7 +685,7 @@ function AddProviderDialog({
                   if (template.base_url) setCustomBaseUrl(template.base_url);
                   if (template.default_model) setCustomModel(template.default_model);
                 }}
-                className="flex flex-col items-start gap-2 rounded-lg border p-4 text-left hover:bg-accent transition-colors"
+                className="flex flex-col items-start gap-2 rounded-md border p-4 text-left hover:bg-accent transition-colors"
               >
                 <div className="font-medium">{template.name}</div>
                 <div className="text-sm text-muted-foreground">{template.description}</div>
@@ -697,7 +696,8 @@ function AddProviderDialog({
           <div className="space-y-4">
             <div className="flex items-center gap-2">
               <Button size="sm" variant="ghost" onClick={() => onSelectTemplate(null)}>
-                ← 返回
+                <ArrowLeft className="mr-1 h-4 w-4" />
+                返回
               </Button>
               <span className="font-medium">{selectedTemplate.name}</span>
             </div>

@@ -32,7 +32,6 @@ import {
 import {
   ChevronDown,
   ChevronRight,
-  FileText,
   Languages,
   List,
   ListTree,
@@ -670,10 +669,9 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
             )}
           </div>
         ) : needsTranslate ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
-            <FileText className="h-10 w-10" />
-            <p className="text-sm">还没有翻译，点击「翻译论文」自动生成中文译文</p>
-          </div>
+          <p className="px-1 py-8 text-sm text-muted-foreground">
+            还没有翻译，点击「翻译论文」自动生成中文译文。
+          </p>
         ) : doc ? (
           <div ref={(el) => registerContainer(el, `trans:${mode}`)}>
             <MarkdownView markdown={doc} />
@@ -683,7 +681,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
 
       {/* 目录侧栏（MacDown 风格：按 h1–h6 层级嵌套） */}
       {showToc && (
-        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background/95 backdrop-blur">
+        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-sm font-semibold">目录</span>
             <Button

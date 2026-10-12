@@ -73,12 +73,13 @@ function heatLevel(seconds: number): number {
   return 4;
 }
 
+/** 热力图色阶：主题主色不透明度阶梯，0 值格用中性表面色 */
 const HEAT_CLASSES = [
-  "bg-[#ebedf0] dark:bg-[#2d333b]",
-  "bg-[#9be9a8] dark:bg-[#0e4429]",
-  "bg-[#40c463] dark:bg-[#006d32]",
-  "bg-[#30a14e] dark:bg-[#26a641]",
-  "bg-[#216e39] dark:bg-[#39d353]",
+  "bg-zp-surface-hover",
+  "bg-primary/15",
+  "bg-primary/35",
+  "bg-primary/60",
+  "bg-primary/85",
 ];
 
 function readingTitleClass(status: string): string {
@@ -153,7 +154,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto pb-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">时间线</h1>
+        <h1 className="text-xl font-semibold tracking-tight">时间线</h1>
       </div>
 
       {error && (
@@ -172,7 +173,7 @@ export function TimelinePage({ onOpenPaper }: Props) {
       {/* 热力图 + 当日明细 */}
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold">阅读热力图</h2>
-        <div className="overflow-x-auto rounded-md border border-zp-border bg-card p-4">
+        <div className="overflow-x-auto">
           <div className="w-max min-w-full">
             <div className="mb-1 ml-7 flex gap-[3px]">
               {weeks.map((col, wi) => {
@@ -432,25 +433,17 @@ function PlanCard({
               {!plan.active && <Badge variant="secondary">已停用</Badge>}
               {plan.active &&
                 (done ? (
-                  <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">
-                    今日已达标
-                  </Badge>
+                  <Badge>今日已达标</Badge>
                 ) : (
                   <Badge variant="destructive">今日未达标</Badge>
                 ))}
             </div>
             <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zp-surface">
               <div
-                className={cn(
-                  "h-full rounded-full transition-all",
-                  done ? "bg-emerald-500" : "bg-zp-primary",
-                )}
+                className="h-full rounded-full bg-zp-primary transition-all"
                 style={{ width: `${Math.min(100, (todayFinished / target) * 100)}%` }}
               />
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              今日进度 {todayFinished} / {target} 篇
-            </p>
           </div>
           <Button variant="ghost" size="sm" onClick={toggleActive} className="pressable shrink-0">
             {plan.active ? "停用" : "启用"}
@@ -498,17 +491,17 @@ function PlanCard({
       <CardContent className="flex flex-col gap-2 p-4">
         <div className="flex items-center gap-2">
           <span className="font-medium">
-            读完 {total} 篇论文（已完成 {doneCount} / {total}）
+            已完成 {doneCount} / {total} 篇
           </span>
           {allDone ? (
-            <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">已完成</Badge>
+            <Badge>已完成</Badge>
           ) : hasOverdue ? (
             <Badge variant="destructive">
               <CalendarClock className="mr-1 h-3 w-3" />
               有逾期
             </Badge>
           ) : nearestDue != null && nearestDue - now <= 3 * 86400 ? (
-            <Badge className="bg-amber-500 text-white hover:bg-amber-500">
+            <Badge variant="secondary">
               <CalendarClock className="mr-1 h-3 w-3" />
               还剩 {Math.max(1, Math.ceil((nearestDue - now) / 86400))} 天
             </Badge>
@@ -534,10 +527,7 @@ function PlanCard({
         </div>
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-zp-surface">
           <div
-            className={cn(
-              "h-full rounded-full transition-all",
-              allDone ? "bg-emerald-500" : "bg-zp-primary",
-            )}
+            className="h-full rounded-full bg-zp-primary transition-all"
             style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }}
           />
         </div>
@@ -556,7 +546,7 @@ function PlanCard({
                   <BookCheck
                     className={cn(
                       "h-4 w-4 shrink-0",
-                      read ? "text-emerald-500" : "text-zp-quaternary",
+                      read ? "text-zp-primary" : "text-zp-quaternary",
                     )}
                     strokeWidth={1.8}
                   />
@@ -573,10 +563,8 @@ function PlanCard({
                       className={cn(
                         "shrink-0 text-xs",
                         due.tone === "red"
-                          ? "text-red-600"
-                          : due.tone === "amber"
-                            ? "text-amber-600"
-                            : "text-muted-foreground",
+                          ? "text-destructive"
+                          : "text-muted-foreground",
                       )}
                     >
                       {due.text}
@@ -697,7 +685,7 @@ function PlanForm({
         {type === "papers" && (
           <div className="flex flex-col gap-1.5">
             <Label>选择论文（已选 {selected.size} 篇）</Label>
-            <div className="max-h-48 overflow-y-auto rounded-md border border-zp-border">
+            <div className="max-h-48 divide-y divide-zp-border overflow-y-auto">
               {candidates.length === 0 ? (
                 <p className="px-3 py-4 text-sm text-muted-foreground">
                   没有可指派的论文（均已读完）

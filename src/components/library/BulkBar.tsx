@@ -1,7 +1,7 @@
 /**
  * 批量操作栏（BulkBar）：选中 ≥1 篇论文时浮现。
- * 浅色磨砂浮动工具条：材质最轻 → 次级按钮（灰阶）→ 仅「标记已读」一个深色主按钮，
- * 删除为红字浅红底。入场 200ms ease-out（opacity + scale），退出由外层 AnimatePresence 控制。
+ * 实色浮动工具条：次级按钮（灰阶）→ 仅「标记已读」一个深色主按钮，
+ * 删除为红字浅红底。入场动画由 .zp-bulk-bar CSS 类提供（200ms ease-out，有 reduced-motion 降级），退出由外层 AnimatePresence 控制。
  */
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { motion, useReducedMotion } from "motion/react";
@@ -50,19 +50,12 @@ export function BulkBar({
 
   return (
     <motion.div
-      initial={{
-        opacity: 0,
-        y: reduceMotion ? 0 : -6,
-        scale: reduceMotion ? 1 : 0.98,
-      }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{
         opacity: 0,
         y: reduceMotion ? 0 : -4,
         transition: { duration: 0.15, ease: [0.23, 1, 0.32, 1] },
       }}
-      transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-card px-3 py-1.5 shadow-md shadow-black/5 backdrop-blur-xl supports-[backdrop-filter]:bg-card/75"
+      className="zp-bulk-bar mx-4 mt-3 flex shrink-0 items-center gap-1 rounded-xl border border-zp-border bg-card px-3 py-1.5"
     >
       {/* 左区：计数 */}
       <span className="mr-1 shrink-0 text-sm font-medium text-zp-primary tabular-nums">
@@ -122,7 +115,7 @@ export function BulkBar({
       <IconTooltip label="删除所选论文">
       <button
         type="button"
-        className="pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+        className="pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10"
         onClick={onDelete}
         aria-label="删除所选论文"
       >

@@ -7,7 +7,6 @@ import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { useMemo, useRef, useState } from "react";
 import { CalendarClock, Check, MoreHorizontal, Star } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
 import { cn, displayPaperTitle, parseProgressPercent } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { PAPER_DRAG_MIME } from "@/lib/folders";
@@ -28,7 +27,7 @@ const PARSE_STYLE: Record<string, { label: string; className: string }> = {
   ready: { label: "已解析", className: "text-zp-quaternary" },
   parsing: { label: "解析中…", className: "text-zp-secondary" },
   unparsed: { label: "未解析", className: "text-zp-quaternary" },
-  failed: { label: "解析失败", className: "text-red-600 dark:text-red-400" },
+  failed: { label: "解析失败", className: "text-destructive" },
 };
 
 function readingStatusOf(s: string): ReadingStatus {
@@ -115,7 +114,6 @@ export function PaperCard(props: PaperCardProps) {
   if (!progress) percentRef.current = 0;
   else percentRef.current = Math.max(percentRef.current, parseProgressPercent(progress));
   const status = readingStatusOf(paper.reading_status);
-  const reduceMotion = useReducedMotion();
   const longPress = useLongPressSelection((paperId) => {
     onLongPress(paperId);
     onSelectionDragStart(paperId, selected);
@@ -159,7 +157,6 @@ export function PaperCard(props: PaperCardProps) {
       P={P}
       activePlans={activePapersPlans}
       containingPlan={containingPlan}
-      currentDue={currentDue}
       targetPlanId={effectiveTarget?.id ?? null}
       onSelectTarget={setTargetPlanId}
       onQuickDate={(due) => onPlanQuickAdd(paper, effectiveTarget?.id ?? null, due)}
@@ -186,11 +183,7 @@ export function PaperCard(props: PaperCardProps) {
     <ContextMenuPrimitive.Root>
       <ContextMenuPrimitive.Trigger
         render={
-          <motion.div
-            initial={{ opacity: 0, ...(reduceMotion ? {} : { transform: "translateY(8px)" }) }}
-            animate={{ opacity: 1, ...(reduceMotion ? {} : { transform: "translateY(0)" }) }}
-            transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
-          >
+          <div>
             <div
               draggable
               {...longPress.bind(paper.id)}
@@ -220,8 +213,8 @@ export function PaperCard(props: PaperCardProps) {
               className={cn(
                 "group relative flex cursor-default flex-col gap-1 rounded-[10px] border bg-card p-4 outline-none transition-all select-none",
                 selected
-                  ? "border-zp-primary shadow-[0_0_0_1px] shadow-zp-primary"
-                  : "border-zp-border hover:border-[#d4d4d4] hover:shadow-[0_2px_8px_rgba(0,0,0,0.04)] focus-visible:ring-2 focus-visible:ring-ring"
+                  ? "border-zp-primary"
+                  : "border-zp-border hover:border-zp-tertiary focus-visible:ring-2 focus-visible:ring-ring"
               )}
             >
               {/* header：复选框 + 状态圆点 + 标题 + 星标/更多 */}
@@ -261,7 +254,7 @@ export function PaperCard(props: PaperCardProps) {
                       onCancel={onCancelRename}
                     />
                   ) : (
-                    <h3 className={cn("line-clamp-2 text-[15px] leading-[1.4]", status === "unread" ? "font-semibold text-zp-primary" : status === "read" ? "font-normal text-zp-tertiary" : "font-medium text-zp-primary")}>
+                    <h3 className={cn("line-clamp-2 text-[15px] leading-[1.4] font-medium", status === "read" ? "text-zp-tertiary" : "text-zp-primary")}>
                       {displayPaperTitle(paper.title)}
                     </h3>
                   )}
@@ -353,7 +346,7 @@ export function PaperCard(props: PaperCardProps) {
                     className={cn(
                       "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-[1.3] font-medium",
                       duePill.tone === "red"
-                        ? "bg-red-500/10 text-red-600"
+                        ? "bg-destructive/10 text-destructive"
                         : duePill.tone === "amber"
                           ? "bg-amber-500/10 text-amber-600"
                           : "bg-zp-surface-hover text-zp-tertiary"
@@ -408,7 +401,7 @@ export function PaperCard(props: PaperCardProps) {
                 )}
               </div>
             </div>
-          </motion.div>
+          </div>
         }
       />
       <ContextMenuPrimitive.Portal>

@@ -16,7 +16,7 @@ export function BrowserImportNotice({ phase, title, message, onClose }: Props) {
   const busy = phase === "downloading" || phase === "parsing";
   const Icon = busy ? Loader2 : phase === "done" ? CheckCircle2 : AlertTriangle;
   const iconClass = phase === "done"
-    ? "text-emerald-600"
+    ? "text-primary"
     : phase === "error" || phase === "warning"
       ? "text-amber-600"
       : "text-primary";
@@ -31,7 +31,7 @@ export function BrowserImportNotice({ phase, title, message, onClose }: Props) {
     <aside
       role={phase === "error" ? "alert" : "status"}
       aria-live="polite"
-      className="fixed right-5 top-5 z-[100] w-[min(390px,calc(100vw-40px))] rounded-2xl border border-border/80 bg-background/95 p-4 shadow-xl shadow-black/10 backdrop-blur"
+      className="fixed right-5 top-5 z-[100] w-[min(390px,calc(100vw-40px))] rounded-xl border bg-background p-4 shadow-md"
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 rounded-xl bg-muted p-2">

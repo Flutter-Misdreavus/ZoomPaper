@@ -117,7 +117,7 @@ function ToolCard({ step }: { step: LiveToolStep }) {
           </span>
         ) : (
           <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-            <CheckCircle2 className="h-3 w-3 text-green-600/80" />
+            <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
             {step.elapsed_ms != null && step.elapsed_ms > 0 ? fmtMs(step.elapsed_ms) : "完成"}
           </span>
         )}
@@ -141,9 +141,6 @@ function ToolCard({ step }: { step: LiveToolStep }) {
             <div className="mt-1 break-words text-muted-foreground">
               <span className="text-muted-foreground/70">结果：</span>
               {step.summary}
-              {step.elapsed_ms != null && step.elapsed_ms > 0 && !step.error && (
-                <span className="ml-1 text-muted-foreground/70">（{fmtMs(step.elapsed_ms)}）</span>
-              )}
             </div>
           )}
           {step.error && (

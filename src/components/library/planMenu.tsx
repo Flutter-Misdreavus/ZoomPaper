@@ -12,7 +12,7 @@ import {
   ChevronRight,
   ListPlus,
 } from "lucide-react";
-import { cn, formatTime } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { ReadingPlan } from "@/lib/api";
 import { MENU_ITEM_CLASS } from "./paperMenu";
 
@@ -104,8 +104,6 @@ interface PlanSubmenuProps {
   activePlans: ReadingPlan[];
   /** 论文当前所在的计划（null = 未加入任何计划） */
   containingPlan: ReadingPlan | null;
-  /** 当前条目的截止日期（仅已加入时有值） */
-  currentDue: number | null;
   /** 当前生效的目标计划 id */
   targetPlanId: string | null;
   onSelectTarget: (planId: string) => void;
@@ -120,7 +118,6 @@ export function PlanSubmenu({
   P,
   activePlans,
   containingPlan,
-  currentDue,
   targetPlanId,
   onSelectTarget,
   onQuickDate,
@@ -140,18 +137,6 @@ export function PlanSubmenu({
       <P.Portal>
         <P.Positioner sideOffset={2} className="isolate z-50">
           <P.Popup className={POPUP_CLASS}>
-            {containingPlan && (
-              <>
-                <div className="px-2.5 py-1.5 text-xs text-muted-foreground">
-                  已加入计划
-                  {currentDue != null
-                    ? ` · 截止 ${formatTime(currentDue)}`
-                    : " · 无日期"}
-                </div>
-                <div className="my-1 h-px bg-border" />
-              </>
-            )}
-
             {showPlanPicker && (
               <>
                 <div className="px-2.5 py-1 text-xs text-muted-foreground">

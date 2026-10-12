@@ -36,6 +36,7 @@ import {
   CheckCircle2,
   Circle,
   ClipboardList,
+  FileText,
   GraduationCap,
   GripVertical,
   Loader2,
@@ -44,6 +45,7 @@ import {
   Plus,
   RotateCcw,
   Sparkles,
+  Target,
   Trash2,
   TriangleAlert,
   X,
@@ -72,9 +74,9 @@ function draftId(): string {
 function statusIcon(status: ConceptStatus) {
   switch (status) {
     case "passed":
-      return <CheckCircle2 className="h-3 w-3 text-emerald-500" />;
+      return <CheckCircle2 className="h-3 w-3 text-muted-foreground" />;
     case "weak":
-      return <TriangleAlert className="h-3 w-3 text-amber-500" />;
+      return <TriangleAlert className="h-3 w-3 text-destructive" />;
     case "quiz":
     case "teaching":
       return <GraduationCap className="h-3 w-3 text-primary" />;
@@ -634,12 +636,13 @@ export function FeynmanChat({ paperId }: Props) {
 
       {/* 旧版会话提示 */}
       {legacy && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          ⚠️ 该会话来自旧版本（单会话模式），仅可查看。点击「重新开始」使用新的概念会话机制。
+        <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <TriangleAlert className="h-3 w-3 shrink-0" />
+          该会话来自旧版本（单会话模式），仅可查看。点击「重新开始」使用新的概念会话机制。
           <Button
             size="sm"
             variant="outline"
-            className="pressable ml-2 h-6 gap-1 px-2 text-xs"
+            className="pressable ml-auto h-6 gap-1 px-2 text-xs"
             onClick={handleRestart}
           >
             <RotateCcw className="h-3 w-3" />
@@ -652,11 +655,15 @@ export function FeynmanChat({ paperId }: Props) {
       {fs && !isPlanning && !legacy && activeCs && (
         <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs">
           {fs.status === "done" && fs.concepts.every((c) => c.status === "passed") ? (
-            <span>🎉 全部概念已讲完！可以点击右上角「复盘」检查整体讲解质量。</span>
+            <span className="inline-flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
+              全部概念已讲完！可以点击右上角「复盘」检查整体讲解质量。
+            </span>
           ) : currentPassed ? (
             <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <span>
-                ✅ 「{fs.plan[activeIdx!]?.name}」已通过测验
+              <span className="inline-flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
+                「{fs.plan[activeIdx!]?.name}」已通过测验
                 {isMainLine ? " —— 进入下一概念，或继续补充讲解。" : "（回看中，可继续补充讲解）。"}
               </span>
               {isMainLine && (
@@ -678,8 +685,9 @@ export function FeynmanChat({ paperId }: Props) {
             </div>
           ) : currentWeak ? (
             <div>
-              <span>
-                ⚠️ 「{fs.plan[activeIdx!]?.name}」还需补讲：请针对缺口再讲一遍，然后重新「测验我」。
+              <span className="inline-flex items-center gap-1">
+                <TriangleAlert className="h-3 w-3 text-destructive" />
+                「{fs.plan[activeIdx!]?.name}」还需补讲：请针对缺口再讲一遍，然后重新「测验我」。
               </span>
               {activeCs.weak_points.length > 0 && (
                 <div className="mt-1 line-clamp-2 text-muted-foreground">
@@ -688,12 +696,14 @@ export function FeynmanChat({ paperId }: Props) {
               )}
             </div>
           ) : isQuiz ? (
-            <span>
-              📝 学生已出题，请作答后点「交卷」；也可以继续补充讲解。
+            <span className="inline-flex items-center gap-1">
+              <FileText className="h-3 w-3 text-muted-foreground" />
+              学生已出题，请作答后点「交卷」；也可以继续补充讲解。
             </span>
           ) : (
-            <span>
-              🎯 概念 {activeIdx! + 1}/{fs.plan.length}：「{fs.plan[activeIdx!]?.name}」 ——
+            <span className="inline-flex items-center gap-1">
+              <Target className="h-3 w-3 text-muted-foreground" />
+              概念 {activeIdx! + 1}/{fs.plan.length}：「{fs.plan[activeIdx!]?.name}」 ——
               学生已经提问，请围绕它讲解；讲完可以点「测验我」检验。
             </span>
           )}

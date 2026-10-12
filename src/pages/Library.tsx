@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Loader2 } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 import {
   addPaperToPlan,
   addPapersToFolder,
@@ -46,8 +46,7 @@ import { parseProgressPercent } from "@/lib/utils";
 import { usePaperSelection } from "@/hooks/usePaperSelection";
 import { useDragPaperSelection } from "@/hooks/useDragPaperSelection";
 import { FolderSidebar } from "@/components/library/FolderSidebar";
-import { TopBar, type LibraryLayout, type SortBy } from "@/components/library/TopBar";
-import type { PaperFilter } from "@/components/library/FilterBar";
+import { TopBar, type LibraryLayout, type PaperFilter, type SortBy } from "@/components/library/TopBar";
 import { BulkBar } from "@/components/library/BulkBar";
 import { PaperCard } from "@/components/library/PaperCard";
 import { PaperGrid } from "@/components/library/PaperGrid";
@@ -654,13 +653,10 @@ export function Library({ onOpenPaper, refreshSignal = 0 }: Props) {
           <button
             type="button"
             onClick={() => onOpenPaper(continuePaper.id)}
-            className="pressable mx-4 mt-3 flex items-center justify-between rounded-xl border border-zp-border bg-card px-4 py-2.5 text-left shadow-sm transition-colors hover:bg-zp-surface-hover"
+            className="pressable mx-4 mt-3 flex items-center justify-between rounded-xl border border-zp-border bg-zp-surface px-4 py-2.5 text-left transition-colors hover:bg-zp-surface-hover"
           >
-            <span className="min-w-0">
-              <span className="block text-[11px] font-medium tracking-wide text-zp-quaternary">继续上次阅读</span>
-              <span className="block truncate text-sm font-medium text-zp-primary">{continuePaper.title}</span>
-            </span>
-            <span className="ml-4 shrink-0 text-xs text-zp-tertiary">继续阅读 →</span>
+            <span className="min-w-0 truncate text-sm font-medium text-zp-primary">{continuePaper.title}</span>
+            <span className="ml-4 flex shrink-0 items-center gap-1 text-xs text-zp-tertiary">继续阅读 <ArrowRight className="h-3.5 w-3.5" /></span>
           </button>
         )}
 

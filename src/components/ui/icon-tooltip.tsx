@@ -20,7 +20,7 @@ export function IconTooltip({ label, children, side = "top", className = "" }: I
       </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner side={side} sideOffset={7} className="isolate z-[100]">
-          <TooltipPrimitive.Popup role="tooltip" className="max-w-56 rounded-md bg-zp-primary px-2.5 py-1.5 text-xs leading-4 whitespace-normal text-white shadow-md outline-none dark:bg-zp-surface-active dark:text-zp-primary">
+          <TooltipPrimitive.Popup role="tooltip" className="max-w-56 rounded-md bg-zp-primary px-2.5 py-1.5 text-xs leading-4 whitespace-normal text-background outline-none dark:bg-zp-surface-active dark:text-zp-primary">
             {label}
           </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>

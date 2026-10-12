@@ -430,17 +430,6 @@
     animation-name: zp-bulk-fade;
   }
 }
-/* 减少透明：磨砂降级为实色 */
-@media (prefers-reduced-transparency: reduce) {
-  .zp-bulk-bar {
-    background: white;
-    backdrop-filter: none;
-  }
-  [data-scheme="dark"] .zp-bulk-bar {
-    background: #171717;
-  }
-}
-
 @layer base {
   /* 按压反馈：pointer-down 即时响应，100–160ms */
   .pressable {
@@ -625,7 +614,7 @@
   }
 }
 .zp-heading-flash {
-  animation: zp-heading-flash 1.2s ease-out;
+  animation: zp-heading-flash 0.8s ease-out;
   border-radius: 6px;
 }
 
@@ -658,8 +647,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outli
 .chat-assistant .prose > :first-child { margin-top: 0; }
 .chat-assistant .prose > :last-child { margin-bottom: 0; }
 .chat-assistant .prose p { margin-block: 0.75em; }
-.chat-composer { flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); border-radius: 22px; padding: 12px; background: var(--card); box-shadow: 0 4px 18px rgb(0 0 0 / 6%); transition: border-color 150ms, box-shadow 150ms; }
-.chat-composer:focus-within { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); box-shadow: 0 6px 24px rgb(0 0 0 / 8%); }
+.chat-composer { flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent); border-radius: 22px; padding: 12px; background: var(--card); transition: border-color 150ms; }
+.chat-composer:focus-within { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); }
 .chat-composer textarea { display: block; box-sizing: border-box; width: 100%; min-height: 48px; max-height: 180px; resize: none; border: 0; outline: none; background: transparent; padding: 2px 3px 8px; font: inherit; font-size: 14px; line-height: 23px; field-sizing: fixed; overflow-wrap: anywhere; }
 .chat-composer textarea::placeholder { color: var(--muted-foreground); }
 .chat-composer-actions { display: flex; align-items: flex-end; gap: 8px; }
