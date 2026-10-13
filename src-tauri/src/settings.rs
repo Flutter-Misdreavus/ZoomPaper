@@ -77,10 +77,32 @@ fn default_enabled() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorkflowSettings {
+    pub auto_parse: bool,
+    pub parse_concurrency: u32,
+    pub auto_doi: bool,
+    pub auto_metadata_translation: bool,
+    pub auto_full_translation: bool,
+}
+impl Default for WorkflowSettings {
+    fn default() -> Self {
+        Self {
+            auto_parse: true,
+            parse_concurrency: 2,
+            auto_doi: true,
+            auto_metadata_translation: true,
+            auto_full_translation: false,
+        }
+    }
+}
+
 /// 完整应用设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub workflow: WorkflowSettings,
     /// Provider 配置列表（新版）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<ProviderConfig>,
@@ -114,6 +136,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            workflow: WorkflowSettings::default(),
             providers: vec![],
             active_provider_id: String::new(),
             api_keys: None,
@@ -187,9 +210,12 @@ impl Settings {
     pub fn migrate_from_legacy(&mut self) -> bool {
         // 新配置已经生效时，只清理不再使用的旧字段。
         if !self.providers.is_empty() {
-            let had_legacy = self.api_keys.is_some() || self.llm_provider.is_some() || self.llm_model.is_some();
+            let had_legacy =
+                self.api_keys.is_some() || self.llm_provider.is_some() || self.llm_model.is_some();
             if self.mineru_api_key.is_empty() {
-                if let Some(keys) = &self.api_keys { self.mineru_api_key = keys.mineru.clone(); }
+                if let Some(keys) = &self.api_keys {
+                    self.mineru_api_key = keys.mineru.clone();
+                }
             }
             self.api_keys = None;
             self.llm_provider = None;
@@ -472,8 +498,18 @@ mod tests {
     }
 
     #[test]
-    fn active_provider_fails_if_missing() {
+    fn active_provider_fails_if_disabled() {
         let mut s = Settings::default();
+        s.providers.push(ProviderConfig {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.test.com".to_string()),
+            default_model: "test-model".to_string(),
+            models: vec![],
+            enabled: false,
+        });
         s.active_provider_id = "test".to_string();
 
         assert!(s.active_provider().is_err());

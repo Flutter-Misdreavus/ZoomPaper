@@ -1,5 +1,7 @@
-import { detectPaper } from "./detector.js";
-import { browserDownloadFilename, requiresBrowserSessionDownload } from "./download.js";
+import { scrapePaperPage } from "./scrape.js";
+import { detectPaper, detectPdfCandidates } from "./detector.js";
+import { createImporter } from "./importer.js";
+const importer = createImporter(chrome);
 
 const MENU_ID = "add-to-zoompaper";
 
@@ -22,122 +24,8 @@ function notify(message) {
   });
 }
 
-function scrapePaperPage() {
-  const meta = (name) => document.querySelector(`meta[name="${name}"]`)?.content || null;
-  const metaValues = (selectors) => selectors.flatMap((selector) =>
-    [...document.querySelectorAll(selector)].map((element) => element.content || element.href || element.src).filter(Boolean)
-  );
-  const jsonLdPdfUrls = [...document.querySelectorAll('script[type="application/ld+json"]')].flatMap((script) => {
-    try {
-      const root = JSON.parse(script.textContent || "null");
-      const pending = Array.isArray(root) ? [...root] : [root];
-      const urls = [];
-      while (pending.length) {
-        const value = pending.pop();
-        if (!value || typeof value !== "object") continue;
-        if (Array.isArray(value)) {
-          pending.push(...value);
-          continue;
-        }
-        if (typeof value.contentUrl === "string" && (/pdf/i.test(value.fileFormat || "") || /\.pdf(?:$|\?)/i.test(value.contentUrl))) {
-          urls.push(value.contentUrl);
-        }
-        pending.push(...Object.values(value).filter((item) => item && typeof item === "object"));
-      }
-      return urls;
-    } catch {
-      return [];
-    }
-  });
-  return {
-    pageUrl: location.href,
-    title: meta("citation_title") || meta("dc.title") || document.querySelector("h1")?.textContent || document.title,
-    citationPdfUrl: meta("citation_pdf_url"),
-    venue: meta("citation_conference_title") || meta("citation_journal_title") || meta("citation_inbook_title"),
-    publicationDate: meta("citation_publication_date") || meta("citation_date"),
-    metaPdfUrls: [
-      ...metaValues([
-        'meta[name="eprints.document_url"]',
-        'meta[name="pdf_url"]',
-        'meta[name="fulltext_pdf"]',
-        'meta[property="og:pdf"]',
-        'link[type="application/pdf"]',
-        'link[rel="alternate"][href$=".pdf"]',
-        'embed[type="application/pdf"]',
-        'iframe[src$=".pdf"]',
-      ]),
-      ...jsonLdPdfUrls,
-    ],
-    links: [...document.querySelectorAll("a[href]")].slice(0, 500).map((anchor) => ({
-      href: anchor.href,
-      text: anchor.textContent || "",
-      title: anchor.title || "",
-      context: anchor.parentElement?.textContent || "",
-      rel: anchor.rel || "",
-      type: anchor.type || "",
-    })),
-  };
-}
-
-function waitForDownload(downloadId) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => finish(new Error("下载超时，请完成网页验证后重试")), 120_000);
-    const listener = (delta) => {
-      if (delta.id !== downloadId || !delta.state) return;
-      if (delta.state.current === "complete") finish();
-      if (delta.state.current === "interrupted") {
-        finish(new Error(delta.error?.current || "浏览器下载被中断"));
-      }
-    };
-    const finish = (error) => {
-      clearTimeout(timeout);
-      chrome.downloads.onChanged.removeListener(listener);
-      if (error) {
-        reject(error);
-        return;
-      }
-      chrome.downloads.search({ id: downloadId }, ([item]) => {
-        if (chrome.runtime.lastError || !item?.filename) {
-          reject(new Error(chrome.runtime.lastError?.message || "找不到已下载的 PDF"));
-        } else {
-          resolve(item.filename);
-        }
-      });
-    };
-    chrome.downloads.onChanged.addListener(listener);
-    chrome.downloads.search({ id: downloadId }, ([item]) => {
-      if (item?.state === "complete") finish();
-      else if (item?.state === "interrupted") finish(new Error(item.error || "浏览器下载被中断"));
-    });
-  });
-}
-
-async function downloadWithBrowserSession(paper, requestId) {
-  const downloadId = await chrome.downloads.download({
-    url: paper.pdfUrl,
-    filename: browserDownloadFilename(paper.title, requestId),
-    conflictAction: "uniquify",
-    saveAs: false,
-  });
-  return waitForDownload(downloadId);
-}
-
 async function openInZoomPaper(paper, tabId) {
-  const requestId = crypto.randomUUID();
-  const deepLink = new URL("zoompaper://import");
-  if (requiresBrowserSessionDownload(paper.pdfUrl)) {
-    const localPath = await downloadWithBrowserSession(paper, requestId);
-    deepLink.searchParams.set("file", localPath);
-  } else {
-    deepLink.searchParams.set("pdf", paper.pdfUrl);
-  }
-  deepLink.searchParams.set("title", paper.title);
-  if (paper.sourceUrl) deepLink.searchParams.set("source", paper.sourceUrl);
-  if (paper.githubUrl) deepLink.searchParams.set("github", paper.githubUrl);
-  if (paper.venue) deepLink.searchParams.set("venue", paper.venue);
-  if (paper.iconUrl) deepLink.searchParams.set("icon", paper.iconUrl);
-  deepLink.searchParams.set("request", requestId);
-  await chrome.tabs.update(tabId, { url: deepLink.href });
+  await importer.start(paper, paper.candidates || [], tabId);
 }
 
 async function detectFromTab(tab, linkUrl) {
@@ -148,16 +36,19 @@ async function detectFromTab(tab, linkUrl) {
       return false;
     }
   });
-  if (directUrl) {
+  if (directUrl && /\.pdf$/i.test(new URL(tab.url).pathname)) {
     const paper = detectPaper({ pageUrl: tab.url, linkUrl: directUrl, title: tab.title });
-    return paper ? { ...paper, iconUrl: tab.favIconUrl || null } : null;
+    return { ...(paper || { title: tab.title || "论文", sourceUrl: tab.url }), candidates: detectPdfCandidates({ pageUrl: tab.url, linkUrl: directUrl }), iconUrl: tab.favIconUrl || null };
   }
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: scrapePaperPage,
-  });
+  let result;
+  try {
+    [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: scrapePaperPage });
+  } catch {
+    // Chrome's PDF viewer and restricted pages may reject script injection.
+    result = { pageUrl: tab.url, title: tab.title };
+  }
   const paper = detectPaper({ ...result, linkUrl });
-  return paper ? { ...paper, iconUrl: tab.favIconUrl || null } : null;
+  return { ...(paper || { title: result.title || "论文", sourceUrl: result.pageUrl }), candidates: detectPdfCandidates({ ...result, linkUrl }), doi: result.doi || null, iconUrl: result.iconUrl || tab.favIconUrl || null };
 }
 
 chrome.runtime.onInstalled.addListener(setupMenu);
@@ -189,4 +80,17 @@ chrome.action.onClicked.addListener(async (tab) => {
   } catch (error) {
     notify(`无法加入 ZoomPaper：${error instanceof Error ? error.message : String(error)}`);
   }
+});
+
+// Registered at worker startup so downloads survive service-worker suspension.
+chrome.downloads.onChanged.addListener((delta) => { importer.changed(delta.id).catch((error) => notify(String(error))); });
+chrome.alarms.onAlarm.addListener((alarm) => { importer.timeout(alarm.name).catch((error) => notify(String(error))); });
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (!sender.url?.startsWith(chrome.runtime.getURL('recovery.html'))) return;
+  const action = message.type === 'import-load' ? importer.load(message.id)
+    : message.type === 'import-retry' ? importer.retry(message.id, message.url)
+    : message.type === 'import-resend' ? importer.resend(message.id) : null;
+  if (!action) return;
+  action.then((job) => reply({ job })).catch((error) => reply({ error: String(error.message || error) }));
+  return true;
 });

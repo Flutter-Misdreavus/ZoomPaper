@@ -125,7 +125,7 @@ export function SelectionToolbar({
           <Languages className="h-3.5 w-3.5" />
           速译
         </Button>
-        <Separator orientation="vertical" className="mx-1 h-4" />
+        <Separator orientation="vertical" className="mx-1 h-4 data-vertical:self-center" />
         {HIGHLIGHT_COLORS.map((c) => (
           <button
             key={c.name}
@@ -136,7 +136,7 @@ export function SelectionToolbar({
             onClick={() => onHighlight(c.color)}
           />
         ))}
-        <Separator orientation="vertical" className="mx-0.5 h-4" />
+        <Separator orientation="vertical" className="mx-0.5 h-4 data-vertical:self-center" />
         {onAsk && (
           <Button
             variant="ghost"

@@ -1,5 +1,5 @@
 // 全局配色方案：预设清单、localStorage 持久化与 <html data-scheme> 应用
-// 配色变量块在 styles.css，按 [data-scheme="xxx"] 覆盖；custom 由 JS 内联 --primary 驱动
+// 配色变量块在 styles.css；默认 green 保留上游现有配色。
 
 export type ThemeScheme = "mono" | "red" | "green" | "blue" | "purple" | "yellow" | "dark" | "custom";
 
@@ -29,7 +29,7 @@ export interface ThemeState {
   customColor: string;
 }
 
-const THEME_KEY = "zoompaper.theme";
+export const THEME_KEY = "zoompaper.theme";
 export const THEME_CHANGED_EVENT = "zoompaper:theme-changed";
 
 const SCHEMES: ThemeScheme[] = ["mono", "red", "green", "blue", "purple", "yellow", "dark", "custom"];
@@ -37,6 +37,8 @@ const SCHEMES: ThemeScheme[] = ["mono", "red", "green", "blue", "purple", "yello
 function isScheme(v: unknown): v is ThemeScheme {
   return typeof v === "string" && (SCHEMES as string[]).includes(v);
 }
+
+function validColor(value: unknown): value is string { return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value); }
 
 export function getTheme(): ThemeState {
   try {
@@ -46,7 +48,7 @@ export function getTheme(): ThemeState {
         const parsed = JSON.parse(raw) as { scheme?: unknown; customColor?: unknown };
         return {
           scheme: isScheme(parsed.scheme) ? parsed.scheme : DEFAULT_SCHEME,
-          customColor: typeof parsed.customColor === "string" ? parsed.customColor : DEFAULT_CUSTOM_COLOR,
+          customColor: validColor(parsed.customColor) ? parsed.customColor : DEFAULT_CUSTOM_COLOR,
         };
       }
       // 兼容裸字符串写法（如 "green"）
@@ -74,6 +76,7 @@ function luminance(hex: string): number {
 export function applyTheme(state: ThemeState): void {
   const root = document.documentElement;
   root.dataset.scheme = state.scheme;
+  root.classList.toggle("dark", state.scheme === "dark");
   if (state.scheme === "custom") {
     root.style.setProperty("--primary", state.customColor);
     root.style.setProperty(
@@ -89,7 +92,7 @@ export function applyTheme(state: ThemeState): void {
 export function setTheme(scheme: ThemeScheme, customColor?: string): ThemeState {
   const next: ThemeState = {
     scheme,
-    customColor: customColor ?? getTheme().customColor,
+    customColor: validColor(customColor) ? customColor : getTheme().customColor,
   };
   try {
     localStorage.setItem(THEME_KEY, JSON.stringify(next));
@@ -97,13 +100,12 @@ export function setTheme(scheme: ThemeScheme, customColor?: string): ThemeState 
     // 忽略持久化失败
   }
   applyTheme(next);
-  // 方案切换后重放 JSON 高级主题（dark 段门控依赖当前方案）
   applyCustomTheme(getCustomTheme(), scheme);
   window.dispatchEvent(new Event(THEME_CHANGED_EVENT));
   return next;
 }
 
-// ---------- JSON 高级主题（nuclear 式） ----------
+// JSON 高级主题
 
 export interface CustomTheme {
   name: string;

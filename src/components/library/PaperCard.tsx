@@ -3,11 +3,12 @@
  * 结构：状态圆点 + 标题(2行截断) + 期刊/会议 + 解析状态 + 星标 + 更多。
  * 长按进入多选模式后显示复选框；双击打开论文。
  */
+import { usePreferences, paperTitle } from "@/lib/preferences";
 import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu";
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { useMemo, useRef, useState } from "react";
 import { CalendarClock, Check, MoreHorizontal, Star } from "lucide-react";
-import { cn, displayPaperTitle, parseProgressPercent } from "@/lib/utils";
+import { cn, parseProgressPercent } from "@/lib/utils";
 import { folderColor } from "@/lib/folderColors";
 import { PAPER_DRAG_MIME } from "@/lib/folders";
 import type { Folder, Paper, ParseProgress, ReadingPlan, ReadingStatus } from "@/lib/api";
@@ -76,6 +77,7 @@ export interface PaperCardProps {
 }
 
 export function PaperCard(props: PaperCardProps) {
+  const prefs=usePreferences();
   const {
     paper,
     folders,
@@ -211,7 +213,8 @@ export function PaperCard(props: PaperCardProps) {
                 }
               }}
               className={cn(
-                "group relative flex cursor-default flex-col gap-1 rounded-[10px] border bg-card p-4 outline-none transition-all select-none",
+                "group relative flex cursor-default flex-col gap-1 rounded-[10px] border bg-white p-4 outline-none transition-all select-none",
+                "dark:bg-zp-surface",
                 selected
                   ? "border-zp-primary"
                   : "border-zp-border hover:border-zp-tertiary focus-visible:ring-2 focus-visible:ring-ring"
@@ -236,7 +239,7 @@ export function PaperCard(props: PaperCardProps) {
                     "mt-0.5 flex h-[18px] w-[18px] touch-none shrink-0 items-center justify-center rounded-[5px] border transition-all",
                     selected
                       ? "border-zp-primary bg-zp-primary text-white opacity-100"
-                      : "border-zp-border bg-card opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                      : "border-zp-border bg-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100 dark:bg-zp-surface",
                     "opacity-100"
                   )}
                 >
@@ -254,8 +257,8 @@ export function PaperCard(props: PaperCardProps) {
                       onCancel={onCancelRename}
                     />
                   ) : (
-                    <h3 className={cn("line-clamp-2 text-[15px] leading-[1.4] font-medium", status === "read" ? "text-zp-tertiary" : "text-zp-primary")}>
-                      {displayPaperTitle(paper.title)}
+                    <h3 className={cn("line-clamp-2 text-[15px] leading-[1.4]", status === "unread" ? "font-semibold text-zp-primary" : status === "read" ? "font-normal text-zp-tertiary" : "font-medium text-zp-primary")}>
+                      {paperTitle(paper,"library",prefs)}
                     </h3>
                   )}
                 </div>

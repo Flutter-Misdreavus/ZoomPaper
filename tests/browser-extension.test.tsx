@@ -7,9 +7,14 @@ import { detectPaper } from "../browser-extension/detector.js";
 import { browserDownloadFilename, requiresBrowserSessionDownload } from "../browser-extension/download.js";
 
 describe("browser extension paper detection", () => {
-  it("uses the authenticated browser download for OpenReview only", () => {
+  it("uses browser downloads for all public HTTPS paper hosts", () => {
     expect(requiresBrowserSessionDownload("https://openreview.net/pdf?id=7X91AAKL5B")).toBe(true);
-    expect(requiresBrowserSessionDownload("https://arxiv.org/pdf/2601.12345")).toBe(false);
+    expect(requiresBrowserSessionDownload(
+      "https://proceedings.iclr.cc/paper_files/paper/2026/file/paper-Paper-Conference.pdf",
+    )).toBe(true);
+    expect(requiresBrowserSessionDownload("https://arxiv.org/pdf/2601.12345")).toBe(true);
+    expect(requiresBrowserSessionDownload("https://newconf.org/fulltext?id=1")).toBe(true);
+    expect(requiresBrowserSessionDownload("http://localhost/paper.pdf")).toBe(false);
     expect(browserDownloadFilename("A / Paper: title?", "request-123")).toBe(
       "ZoomPaper Imports/A Paper title-request-123.pdf",
     );
@@ -31,6 +36,29 @@ describe("browser extension paper detection", () => {
       pdfUrl: "https://aclanthology.org/2026.acl-long.8.pdf",
       title: "A Paper",
       sourceUrl: "https://aclanthology.org/2026.acl-long.8/",
+    });
+  });
+
+  it("keeps a GitHub repository link from the paper page", () => {
+    expect(detectPaper({
+      pageUrl: "https://aclanthology.org/2026.acl-long.8/",
+      title: "A Paper",
+      citationPdfUrl: "/2026.acl-long.8.pdf",
+      links: [{ href: "https://github.com/example/paper-code/tree/main", text: "Code" }],
+    })).toMatchObject({
+      githubUrl: "https://github.com/example/paper-code/tree/main",
+    });
+  });
+
+  it("keeps the publication venue and year", () => {
+    expect(detectPaper({
+      pageUrl: "https://aclanthology.org/2026.acl-long.8/",
+      title: "A Paper",
+      citationPdfUrl: "/2026.acl-long.8.pdf",
+      venue: "Annual Meeting of the Association for Computational Linguistics",
+      publicationDate: "2026/07/02",
+    })).toMatchObject({
+      venue: "Annual Meeting of the Association for Computational Linguistics 2026",
     });
   });
 

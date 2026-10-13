@@ -20,6 +20,7 @@
             }
           }
           document.documentElement.dataset.scheme = scheme;
+          document.documentElement.classList.toggle("dark", scheme === "dark");
           if (scheme === "custom") {
             document.documentElement.style.setProperty("--primary", color);
             // 与 src/lib/theme.ts 的 luminance 逻辑保持一致：浅色主色用深色文字

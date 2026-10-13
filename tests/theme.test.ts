@@ -2,16 +2,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_CUSTOM_COLOR,
   DEFAULT_SCHEME,
-  applyCustomTheme,
   applyTheme,
-  getCustomTheme,
+  applyCustomTheme, getCustomTheme, setCustomTheme,
   getTheme,
-  setCustomTheme,
   setTheme,
 } from "@/lib/theme";
 
 beforeEach(() => {
   localStorage.clear();
+  document.documentElement.classList.remove("dark");
   document.documentElement.removeAttribute("data-scheme");
   document.documentElement.style.removeProperty("--primary");
   document.documentElement.style.removeProperty("--primary-foreground");
@@ -67,6 +66,16 @@ describe("theme", () => {
   });
 });
 
+
+it('restores the dark class and clears it when returning to the existing default', () => {
+ setTheme('dark'); expect(document.documentElement.classList.contains('dark')).toBe(true);
+ setTheme('green'); expect(document.documentElement.classList.contains('dark')).toBe(false);
+});
+it('rejects invalid custom colors from persisted data and updates', () => {
+ localStorage.setItem('zoompaper.theme',JSON.stringify({scheme:'custom',customColor:'red;bad'}));
+ expect(getTheme().customColor).toBe(DEFAULT_CUSTOM_COLOR); setTheme('custom','broken');
+ expect(document.documentElement.style.getPropertyValue('--primary')).toBe(DEFAULT_CUSTOM_COLOR);
+});
 describe("custom JSON theme", () => {
   const theme = {
     name: "测试主题",

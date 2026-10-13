@@ -10,7 +10,7 @@ export function TrashList({ papers, onRestore, onDelete }: {
   onDelete: (paper: Paper) => void;
 }) {
   return (
-    <div className="min-w-[620px] bg-card text-[13px]">
+    <div className="min-w-[620px] bg-white text-[13px] dark:bg-zp-surface">
       <div className="grid h-9 grid-cols-[minmax(320px,1fr)_180px_84px] items-center border-b border-zp-border px-4 text-xs text-zp-quaternary">
         <span>标题</span><span>删除时间</span><span />
       </div>
