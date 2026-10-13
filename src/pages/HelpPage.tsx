@@ -140,7 +140,7 @@ export function HelpPage() {
           {guideSections.map((item) => {
             const Icon = item.icon;
             const active = item.id === section.id;
-            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-white font-medium text-zp-primary shadow-sm dark:bg-zp-surface-hover" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
+            return <button key={item.id} type="button" onClick={() => selectSection(item)} className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors", active ? "bg-card font-medium text-zp-primary" : "text-zp-secondary hover:bg-zp-surface-hover hover:text-zp-primary")}><Icon className="h-4 w-4 shrink-0" />{item.title}</button>;
           })}
         </nav>
 
@@ -168,7 +168,7 @@ export function HelpPage() {
       <div className="mt-5 rounded-xl border border-zp-border bg-white p-4 dark:bg-zp-surface">
         <div className="flex items-center gap-2"><Bot className="h-4 w-4 text-zp-tertiary" /><h2 className="text-sm font-medium">问 AI</h2></div>
         {answer && <div className="prose prose-sm mt-4 max-w-none text-zp-secondary dark:prose-invert"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>}
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
         <div className="mt-4 flex items-center rounded-xl border border-zp-border bg-zp-surface px-3 py-2">
           <input value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void ask(); }} aria-label="询问软件功能" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />
           <button type="button" onClick={() => void ask()} disabled={!question.trim() || loading} aria-label="发送" className="flex h-8 w-8 items-center justify-center rounded-full bg-zp-primary text-white disabled:opacity-40">{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}</button>

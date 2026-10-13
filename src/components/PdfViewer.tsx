@@ -1336,7 +1336,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
       {/* 目录侧栏（仅原生 outline） */}
       {showToc && outline && outline.length > 0 && (
-        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background/95 backdrop-blur">
+        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-sm font-semibold">目录</span>
             <Button
@@ -1359,7 +1359,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
       {/* 注释列表面板 */}
       {showAnnotations && (
-        <div className="absolute inset-y-0 right-0 z-20 flex w-72 flex-col border-l bg-background/95 backdrop-blur">
+        <div className="absolute inset-y-0 right-0 z-20 flex w-72 flex-col border-l bg-background">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-sm font-semibold">
               注释（{annotations.length}）
@@ -1376,7 +1376,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
             {sortedAnnotations.length === 0 && (
               <p className="px-1 text-xs text-muted-foreground">
-                暂无高亮/笔记。划选文字后点「高亮」即可添加。
+                暂无标注。划选文字后点「高亮」或「笔记」即可添加。
               </p>
             )}
             {sortedAnnotations.map((hl) => (
@@ -1427,7 +1427,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
                   {hl.text}
                 </p>
                 {hl.note && (
-                  <p className="mt-1 line-clamp-2 border-l-2 border-primary/40 pl-2 text-xs text-muted-foreground italic">
+                  <p className="mt-1 line-clamp-2 border-l-2 border-border pl-2 text-xs text-muted-foreground italic">
                     {hl.note.text}
                   </p>
                 )}

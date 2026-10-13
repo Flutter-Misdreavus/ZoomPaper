@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { motion } from "motion/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -54,10 +53,10 @@ export function SearchPage({ onOpenPaper }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">搜索论文</h1>
+        <h1 className="text-xl font-semibold">搜索论文</h1>
       </div>
 
-      <div className="flex gap-2" role="group" aria-label="检索方式">{[["keyword", "关键词"], ["semantic", "语义"]].map(([value, label]) => <button key={value} disabled={searching} aria-pressed={method === value} onClick={() => { setMethod(value); setHits(null); }} className={`rounded-lg px-3 py-1.5 text-sm ${method === value ? "bg-accent text-primary" : "text-muted-foreground"}`}>{label}</button>)}</div>
+      <div className="flex gap-2" role="group" aria-label="检索方式">{[["keyword", "关键词"], ["semantic", "语义"]].map(([value, label]) => <button key={value} disabled={searching} aria-pressed={method === value} onClick={() => { setMethod(value); setHits(null); }} className={`rounded-lg px-3 py-1.5 text-sm ${method === value ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}>{label}</button>)}</div>
       <div className="flex flex-wrap gap-2">
         <Input
           aria-label="搜索论文内容"
@@ -116,33 +115,27 @@ export function SearchPage({ onOpenPaper }: Props) {
       {hits && hits.length > 0 && <p className="text-xs text-muted-foreground">「{submittedQuery}」· 找到 {hits.length} 个相关段落</p>}
       {hits && hits.length > 0 && (
         <div className="flex flex-col gap-3">
-          {hits.map((hit, i) => (
-            <motion.div
+          {hits.map((hit) => (
+            <Card
               key={`${hit.paper_id}:${hit.chunk_id}`}
-              initial={{ opacity: 0, transform: "translateY(8px)" }}
-              animate={{ opacity: 1, transform: "translateY(0)" }}
-              transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1], delay: Math.min(i * 0.05, 0.3) }}
+              className="pressable cursor-pointer transition-colors hover:border-primary/40"
+              role="button" tabIndex={0} aria-label={`打开 ${hit.paper_title} 的搜索结果`}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenPaper(hit.paper_id, hit.page_idx ?? undefined); } }}
+              onClick={() => onOpenPaper(hit.paper_id, hit.page_idx ?? undefined)}
             >
-              <Card
-                className="pressable cursor-pointer transition-colors hover:border-primary/40"
-                role="button" tabIndex={0} aria-label={`打开 ${hit.paper_title} 的搜索结果`}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenPaper(hit.paper_id, hit.page_idx ?? undefined); } }}
-                onClick={() => onOpenPaper(hit.paper_id, hit.page_idx ?? undefined)}
-              >
-                <CardContent className="flex flex-col gap-2 p-4">
-                  <div className="flex min-w-0 flex-col items-start gap-1">
-                    <Badge variant="secondary" className="block max-w-full truncate" title={hit.paper_title}>
-                      {hit.paper_title}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {hit.section}
-                      {hit.page_idx != null && ` · 第 ${hit.page_idx + 1} 页`}
-                    </span>
-                  </div>
-                  <p className="line-clamp-3 text-sm text-muted-foreground">{hit.content}</p>
-                </CardContent>
-              </Card>
-            </motion.div>
+              <CardContent className="flex flex-col gap-2 p-4">
+                <div className="flex min-w-0 flex-col items-start gap-1">
+                  <Badge variant="secondary" className="block max-w-full truncate" title={hit.paper_title}>
+                    {hit.paper_title}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {hit.section}
+                    {hit.page_idx != null && ` · 第 ${hit.page_idx + 1} 页`}
+                  </span>
+                </div>
+                <p className="line-clamp-3 text-sm text-muted-foreground">{hit.content}</p>
+              </CardContent>
+            </Card>
           ))}
         </div>
       )}

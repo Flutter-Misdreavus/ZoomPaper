@@ -139,7 +139,7 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
           <ArrowLeft className="h-4 w-4" />
         </Button></IconTooltip>
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-bold tracking-tight">
+          <h1 className="truncate text-xl font-semibold tracking-tight">
             {paper ? paperTitle(paper,"tab",prefs) : "加载中…"}
           </h1>
           {paper?.authors && (

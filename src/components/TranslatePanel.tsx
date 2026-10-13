@@ -649,8 +649,11 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
               </div>
             )}
           </div>
-        ) : needsTranslate ? null
-        : doc ? (
+        ) : needsTranslate ? (
+          <p className="px-1 py-8 text-sm text-muted-foreground">
+            还没有翻译，点击「翻译论文」自动生成中文译文。
+          </p>
+        ) : doc ? (
           <div ref={(el) => registerContainer(el, `trans:${mode}`)}>
             <MarkdownView markdown={doc} />
           </div>
@@ -659,7 +662,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
 
       {/* 目录侧栏（MacDown 风格：按 h1–h6 层级嵌套） */}
       {showToc && (
-        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background/95 backdrop-blur">
+        <div className="absolute inset-y-0 left-0 z-20 flex w-60 flex-col border-r bg-background">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-sm font-semibold">目录</span>
             <Button

@@ -8,6 +8,7 @@ import {
   markdownUrlTransform,
   normalizeImageUrls,
   normalizeLatex,
+  rehypeHtmlMath,
   resolveImgSrc,
 } from "@/lib/markdown";
 
@@ -24,7 +25,7 @@ export function MarkdownView({ markdown, className, baseDir }: Props) {
     <article className={`prose prose-neutral reading-prose max-w-none dark:prose-invert ${className ?? ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeRaw, [rehypeKatex, katexOptions]]}
+        rehypePlugins={[rehypeHtmlMath, rehypeRaw, [rehypeKatex, katexOptions]]}
         urlTransform={markdownUrlTransform}
         components={{
           img: ({ src, alt }) => <img src={resolveImgSrc(src, baseDir)} alt={alt} />,

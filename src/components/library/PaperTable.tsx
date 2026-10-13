@@ -197,7 +197,6 @@ export function PaperTable(props: PaperTableProps) {
                           P={MenuPrimitive as unknown as PlanMenuPrimitives}
                           activePlans={activePlans}
                           containingPlan={containingPlan}
-                          currentDue={containingPlan?.items.find((item) => item.paper_id === paper.id)?.due_date ?? null}
                           targetPlanId={effectivePlan?.id ?? null}
                           onSelectTarget={(planId) => setTargetPlans((current) => ({ ...current, [paper.id]: planId }))}
                           onQuickDate={(due) => props.onPlanQuickAdd(paper, effectivePlan?.id ?? null, due)}
@@ -221,7 +220,6 @@ export function PaperTable(props: PaperTableProps) {
                         P={ContextMenuPrimitive as unknown as PlanMenuPrimitives}
                         activePlans={activePlans}
                         containingPlan={containingPlan}
-                        currentDue={containingPlan?.items.find((item) => item.paper_id === paper.id)?.due_date ?? null}
                         targetPlanId={effectivePlan?.id ?? null}
                         onSelectTarget={(planId) => setTargetPlans((current) => ({ ...current, [paper.id]: planId }))}
                         onQuickDate={(due) => props.onPlanQuickAdd(paper, effectivePlan?.id ?? null, due)}

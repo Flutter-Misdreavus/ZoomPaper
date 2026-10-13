@@ -17,7 +17,7 @@ export function HighlightNotePopover({ x, y, initial, onSave, onCancel, onDelete
   const [draft, setDraft] = useState(initial);
   return (
     <div
-      className="fixed z-50 w-72 rounded-lg border bg-popover p-3 shadow-lg"
+      className="fixed z-50 w-72 rounded-lg border bg-popover p-3 shadow-md"
       style={{
         left: Math.max(8, Math.min(x, window.innerWidth - 304)),
         top: Math.max(8, y),

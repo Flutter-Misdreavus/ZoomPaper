@@ -42,6 +42,23 @@ describe("normalizeLatex", () => {
     const md = "```\n$a + b$\n```";
     expect(normalizeLatex(md)).toBe(md);
   });
+
+  it("原始 HTML 块（MinerU 表格）整体保持不变，不插入空行/换行", () => {
+    // 空行会终止 CommonMark 的 HTML 块，把表格后半截甩成普通文本
+    const md = `<table><tr><td>Ours</td><td> $$\\frac{a}{b}$$ </td></tr><tr><td>Base</td><td> \\frac{c}{d} \\sum_i x_i </td></tr></table>`;
+    expect(normalizeLatex(md)).toBe(md);
+  });
+
+  it("GFM 表格行内的 $$...$$ 保持行内公式，不重排为 display 块", () => {
+    const md = `| Method | Formula |\n| --- | --- |\n| Ours | $$\\frac{a}{b}$$ |`;
+    expect(normalizeLatex(md)).toBe(md);
+  });
+
+  it("HTML 块结束后的正文仍正常归一化", () => {
+    const out = normalizeLatex(`<table><tr><td> $$x$$ </td></tr></table>\n\n\\[E=mc^2\\]`);
+    expect(out).toContain("<table><tr><td> $$x$$ </td></tr></table>");
+    expect(out).toContain("$$\nE=mc^2\n$$");
+  });
 });
 
 describe("linkifyCitations", () => {

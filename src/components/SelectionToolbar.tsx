@@ -103,7 +103,7 @@ export function SelectionToolbar({
     <div
       ref={panel}
       data-selection-toolbar
-      className="fixed z-50 max-w-[calc(100vw-16px)] rounded-xl border bg-popover p-2 shadow-xl select-none"
+      className="fixed z-50 max-w-[calc(100vw-16px)] rounded-xl border bg-popover p-2 shadow-md select-none"
       style={position}
       onMouseDown={(e) => e.preventDefault()}
       onMouseUp={(e) => e.stopPropagation()}
