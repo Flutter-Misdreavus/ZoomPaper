@@ -278,7 +278,7 @@ pub fn build_grade_all_messages(
 }
 
 /// 从 LLM 回复中解析 JSON 数组（容忍 Markdown 围栏与前后杂文），失败返回 None。
-/// 与费曼的 extract_json_array 同策略：直接解析 → 剥 ``` 围栏 → 取首个 `[` 到末个 `]`。
+/// 策略：直接解析 → 剥 ``` 围栏 → 取首个 `[` 到末个 `]`。
 fn extract_json_array<T: serde::de::DeserializeOwned>(raw: &str) -> Option<Vec<T>> {
     if let Ok(items) = serde_json::from_str::<Vec<T>>(raw.trim()) {
         return Some(items);

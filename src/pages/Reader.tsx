@@ -7,7 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogPanel } from "@/components/BlogPanel";
 import { TranslatePanel } from "@/components/TranslatePanel";
-import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
 import {
@@ -123,7 +122,11 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
       .catch(() => {});
   };
 
-  const [readerMode, setReaderMode] = useState(() => localStorage.getItem(`zoompaper.readerMode.${paperId}`) ?? "pdf");
+  // 老用户本地可能存了已下线 tab 的值，非法时回退为 pdf
+  const [readerMode, setReaderMode] = useState(() => {
+    const saved = localStorage.getItem(`zoompaper.readerMode.${paperId}`);
+    return saved === "blog" || saved === "translate" ? saved : "pdf";
+  });
   const ready = paper?.parse_status === "ready";
 
   return (
@@ -208,13 +211,6 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
               >
                 AI 翻译
               </TabsTrigger>
-              <TabsTrigger
-                value="feynman"
-                disabled={!ready}
-                title={ready ? undefined : "解析完成后可用"}
-              >
-                费曼学习法
-              </TabsTrigger>
             </TabsList>
             <TabsContent value="pdf" keepMounted className="flex min-h-0 flex-col">
               {visited && <PdfViewer
@@ -251,9 +247,6 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
                   }
                 />
               )}
-            </TabsContent>
-            <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
-              {ready && <FeynmanChat paperId={paperId} />}
             </TabsContent>
           </Tabs>
 

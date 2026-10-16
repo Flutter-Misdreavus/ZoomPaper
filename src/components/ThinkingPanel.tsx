@@ -14,7 +14,7 @@ interface Props {
  * - 生成中：胶囊与展开头部共用**同一个计时器**（每秒跳动，DSH `TurnStatus` 同款），
  *   显示「AI 思考中… Ns」，让用户清晰看到 AI 正在思考。
  * - 完成后：仅显示「已深度思考」（**不再显示时间**）；思考内容不持久化，
- *   仅本次会话内可展开回顾；总耗时由回答下方的 TimingLine 记录。
+ *   仅本次会话内可展开回顾。
  */
 export function ThinkingPanel({ text, streaming }: Props) {
   const [open, setOpen] = useState(false); // 默认收纳

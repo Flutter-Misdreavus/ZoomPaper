@@ -123,7 +123,7 @@ pub trait LlmChat {
 
     /// 流式版：`on_event` 收到思考/正文增量，返回完整 [`ChatResponse`]。
     /// 默认实现 = 非流式调用后整体发一次 Thinking（若有 reasoning）与 Content
-    /// （供测试假实现、失败回退、以及费曼等非流式场景复用）。
+    /// （供测试假实现、失败回退、以及非流式场景复用）。
     async fn stream_chat_with_tools(
         &self,
         messages: &[AgentMsg],

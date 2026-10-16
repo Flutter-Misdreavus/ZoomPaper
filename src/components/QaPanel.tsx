@@ -67,7 +67,7 @@ const MAX_SELECTIONS = 5;
  * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
  * 头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
  * 用 localStorage 记住每篇论文上次打开的会话，重新进入自动恢复。
- * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答。
+ * 注：此处仅保留普通问答与论文测验。
  */
 export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   { paperId, onJumpPage, onJumpToSelection, onBusyChange, defaultOpen = true },
