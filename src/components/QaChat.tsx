@@ -13,6 +13,7 @@ import { ThinkingPanel } from "@/components/ThinkingPanel";
 import { ToolTrace, type LiveToolStep } from "@/components/ToolTrace";
 import {
   katexOptions,
+  linkifyCitations,
   markdownUrlTransform,
   normalizeImageUrls,
   normalizeLatex,
@@ -67,11 +68,6 @@ interface Props {
   onSendingChange?: (sending: boolean) => void;
 }
 
-// 把正文里的 [n] 改写成 markdown 链接，交给自定义 a 渲染成 CitationBadge
-function linkifyCitations(md: string): string {
-  return md.replace(/\[(\d+)\]/g, "[$1](citation:$1)");
-}
-
 interface AssistantBodyProps {
   content: string;
   citations: Citation[] | null | undefined;
@@ -108,7 +104,8 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPap
           },
         }}
       >
-        {normalizeLatex(normalizeImageUrls(linkifyCitations(content)))}
+        {/* 先补齐公式定界符，再转换引用，避免把公式下标误写成 citation 链接。 */}
+        {linkifyCitations(normalizeLatex(normalizeImageUrls(content)))}
       </ReactMarkdown>
     </article>
   );
