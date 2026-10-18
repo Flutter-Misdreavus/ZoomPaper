@@ -278,6 +278,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS paper_hash ON papers(content_hash);")?;
         conn.pragma_update(None, "user_version", 18)?;
     }
+    // v19：按论文加载会话摘要，避免全表扫描与临时排序。
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 19 {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_conversations_paper_updated ON conversations(paper_id, type, updated_at DESC);")?;
+        conn.pragma_update(None, "user_version", 19)?;
+    }
     Ok(())
 }
 
@@ -285,6 +291,20 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::OptionalExtension;
+
+    #[test]
+    fn conversation_summary_index_upgrades_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_conversations_paper_updated; PRAGMA user_version = 18;").unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let plan: String = conn.query_row(
+            "EXPLAIN QUERY PLAN SELECT id,title,created_at,updated_at FROM conversations WHERE paper_id='paper' AND type='qa' ORDER BY updated_at DESC",
+            [], |row| row.get(3),
+        ).unwrap();
+        assert!(plan.contains("idx_conversations_paper_updated"));
+    }
 
     /// 存量库（v4）升级到最新版：papers 数据原样保留，新增 folders / paper_folders / feynman_state。
     #[test]
@@ -311,7 +331,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
 
         // 论文数据无损
@@ -476,7 +496,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
 
         let items: Vec<(String, Option<i64>)> = conn
@@ -519,7 +539,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     /// 迁移幂等：重复执行不报错。
@@ -531,7 +551,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
     }
 
     #[test]
@@ -562,7 +582,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            18
+            19
         );
     }
 

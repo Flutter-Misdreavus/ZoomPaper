@@ -195,7 +195,14 @@ export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
 export const listPapers = () => invoke<Paper[]>("list_papers");
-export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
+const paperRequests = new Map<string, Promise<Paper>>();
+export const getPaper = (paperId: string): Promise<Paper> => {
+  const existing = paperRequests.get(paperId);
+  if (existing) return existing;
+  const request = invoke<Paper>("get_paper", { paperId }).finally(() => { if (paperRequests.get(paperId) === request) paperRequests.delete(paperId); });
+  paperRequests.set(paperId, request);
+  return request;
+};
 export const refreshPaperPublication = (paperId: string) => invoke<Paper>("refresh_paper_publication", { paperId });
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
@@ -482,6 +489,8 @@ export const askQuestionReply = (
 export const cancelGeneration = (cancelToken: string) =>
   invoke<void>("cancel_generation", { cancelToken });
 
+export type ConversationSummary = Omit<Conversation, "messages">;
+export const listConversationSummaries = (paperId: string) => invoke<ConversationSummary[]>("list_conversation_summaries", { paperId });
 export const listConversations = () =>
   invoke<Conversation[]>("list_conversations");
 
@@ -558,6 +567,7 @@ export const saveAnnotations = (paperId: string, data: string, kind?: string) =>
 export const translateSelection = (text: string, context = "") =>
   invoke<string>("translate_selection", { text, context });
 
+export const touchPaper = (paperId: string) => invoke<void>("touch_paper", { paperId });
 export const openPaperForReading = (paperId: string) => invoke<Paper>("open_paper", { paperId });
 
 export const setReadingStatus = (paperIds: string[], status: string) => invoke<void>("set_reading_status", { paperIds, status });

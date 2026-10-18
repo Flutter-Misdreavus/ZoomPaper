@@ -1,3 +1,5 @@
+import { beginReaderSwitch } from "@/lib/readerPerformance";
+import { retainRecentPapers } from "@/lib/pdfResources";
 import { getPreferences, usePreferences, paperTitle } from "@/lib/preferences";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { BookOpen, ChevronDown, Library as LibraryIcon, Search, X } from 'lucide-react';
@@ -7,10 +9,11 @@ import { getPaper, listPapers, type BackgroundJob } from '@/lib/api';
 import { migrateReaderWorkspace, closeWorkspacePaper, layoutWorkspaceTabs, openWorkspacePaper, restoreWorkspace, type WorkspaceState } from '@/lib/workspace';
 import { IconTooltip } from './ui/icon-tooltip';
 const MemoLibrary = memo(Library);
-const ReaderPane = memo(function ReaderPane({id,active,page,refreshSignal,onBack,onBusy,onTitle}: {id:string;active:boolean;page?:number;refreshSignal:number;onBack:()=>void;onBusy:(id:string,running:boolean)=>void;onTitle:(id:string,title:string)=>void}) {
+const ReaderPane = memo(function ReaderPane({id,active,retainPdf,page,refreshSignal,onBack,onBusy,onTitle,onPdfUse}: {id:string;active:boolean;retainPdf:boolean;page?:number;refreshSignal:number;onBack:()=>void;onBusy:(id:string,running:boolean)=>void;onTitle:(id:string,title:string)=>void;onPdfUse:(id:string)=>void}) {
   const busy=useCallback((running:boolean)=>onBusy(id,running),[id,onBusy]);
+  const pdfUse=useCallback(()=>onPdfUse(id),[id,onPdfUse]);
   const title=useCallback((value:string)=>onTitle(id,value),[id,onTitle]);
-  return <div className="min-h-0 flex-1 flex-col p-6" style={{display:active?'flex':'none'}}><Reader paperId={id} active={active} initialPageIdx={page} refreshSignal={refreshSignal} onBack={onBack} onBusyChange={busy} onTitleChange={title}/></div>;
+  return <div className="min-h-0 flex-1 flex-col p-6" style={{display:active?'flex':'none'}}><Reader paperId={id} active={active} retainPdf={retainPdf} onPdfActive={pdfUse} initialPageIdx={page} refreshSignal={refreshSignal} onBack={onBack} onBusyChange={busy} onTitleChange={title}/></div>;
 });
 const KEY = 'zoompaper.workspace';
 export interface WorkspaceHandle { open: (id: string, page?: number, background?: boolean) => void; resume: () => void; }
@@ -21,6 +24,7 @@ export const PaperWorkspace = forwardRef<WorkspaceHandle, { active: boolean; job
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [pages, setPages] = useState<Record<string, number | undefined>>({});
   const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [recentPdf, setRecentPdf] = useState<string[]>([]);
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set());
   const [undo, setUndo] = useState<{ state: WorkspaceState; visited: Set<string>; count: number } | null>(null);
   const [listOpen, setListOpen] = useState(false);
@@ -69,6 +73,7 @@ export const PaperWorkspace = forwardRef<WorkspaceHandle, { active: boolean; job
     return () => document.removeEventListener('pointerdown', outside);
   }, [listOpen]);
   const open = useCallback((id: string, page?: number, background = false) => {
+    if (!background) beginReaderSwitch(id);
     setPages(prev => ({ ...prev, [id]: page }));
     setState(current => openWorkspacePaper(current, id, background));
     void getPaper(id).then(paper => {setPapersById(prev=>({...prev,[id]:paper}));setTitles(prev => ({ ...prev, [id]: paper.title }));}).catch(() => {});
@@ -110,6 +115,7 @@ export const PaperWorkspace = forwardRef<WorkspaceHandle, { active: boolean; job
       if (event.key === 'Tab') {
         event.preventDefault(); const ids = ['library', ...latest.current.tabs];
         const next = ids[(ids.indexOf(latest.current.active) + (event.shiftKey ? ids.length - 1 : 1)) % ids.length];
+        beginReaderSwitch(next);
         setState(current => ({ ...current, active: next, lastRead: next === 'library' ? current.lastRead : next }));
       }
     };
@@ -122,10 +128,11 @@ export const PaperWorkspace = forwardRef<WorkspaceHandle, { active: boolean; job
   ])];
   const shownTitle = (id:string) => papersById[id] ? paperTitle(papersById[id],"tab",prefs) : titles[id] ?? "论文";
   const layout = layoutWorkspaceTabs(state.tabs, state.active, width);
-  const select = useCallback((id: string) => { setState(current => ({ ...current, active: id, lastRead: id === 'library' ? current.lastRead : id })); setListOpen(false); },[]);
+  const select = useCallback((id: string) => { beginReaderSwitch(id); setState(current => ({ ...current, active: id, lastRead: id === 'library' ? current.lastRead : id })); setListOpen(false); },[]);
   const back = useCallback(()=>select('library'),[select]);
   const updateBusy = useCallback((id:string,running:boolean)=>setBusy(current=>{if(current.has(id)===running)return current;const next=new Set(current);if(running)next.add(id);else next.delete(id);return next;}),[]);
   const updateTitle = useCallback((id:string,title:string)=>setTitles(current=>current[id]===title?current:{...current,[id]:title}),[]);
+  const updatePdfUse = useCallback((id:string)=>setRecentPdf(current=>current[0]===id?current:retainRecentPapers(current,id)),[]);
   const openForeground = useCallback((id:string)=>open(id),[open]);
   const openBackground = useCallback((id:string)=>open(id,undefined,true),[open]);
   const openMany = useCallback((ids:string[])=>ids.forEach(id=>open(id,undefined,true)),[open]);
@@ -157,7 +164,7 @@ export const PaperWorkspace = forwardRef<WorkspaceHandle, { active: boolean; job
       </div>}
     </div>
     <div className="min-h-0 flex-1" style={{ display: state.active === 'library' ? 'flex' : 'none' }}><MemoLibrary refreshSignal={refreshSignal} jobs={jobs} onOpenPaper={openForeground} onOpenBackground={openBackground} onOpenPapers={openMany} /></div>
-    {readers.map(id => <ReaderPane key={id} id={id} active={active && state.active === id} page={pages[id]} refreshSignal={refreshSignal} onBack={back} onBusy={updateBusy} onTitle={updateTitle}/>)}
+    {readers.map(id => <ReaderPane key={id} id={id} active={active && state.active === id} retainPdf={state.tabs.includes(id) && recentPdf.includes(id)} page={pages[id]} refreshSignal={refreshSignal} onBack={back} onBusy={updateBusy} onTitle={updateTitle} onPdfUse={updatePdfUse}/>)}
     {undo && <div role="status" className="absolute bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-4 whitespace-nowrap rounded-xl border border-zp-border bg-card px-4 py-3 text-sm shadow-md dark:bg-zp-surface">已关闭 {undo.count} 个标签<button onClick={undoClose} className="font-medium text-zp-primary hover:underline">撤销</button></div>}
   </section>;
 });

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -37,6 +37,7 @@ import {
 import { FileSearch, Loader2, Copy, Check, ArrowDown, X } from "lucide-react";
 
 interface Props {
+  active?: boolean;
   /** null/缺省 = 跨论文问答 */
   paperId?: string | null;
   /** 已有会话 id；null/缺省 = 新会话 */
@@ -68,6 +69,8 @@ interface Props {
   onSendingChange?: (sending: boolean) => void;
 }
 
+const EMPTY_CITATIONS: Citation[] = [];
+
 interface AssistantBodyProps {
   content: string;
   citations: Citation[] | null | undefined;
@@ -77,7 +80,7 @@ interface AssistantBodyProps {
   currentPaperId?: string | null;
 }
 
-function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPaperId }: AssistantBodyProps) {
+const AssistantBody = memo(function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPaperId }: AssistantBodyProps) {
   return (
     <article className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
       <ReactMarkdown
@@ -109,9 +112,9 @@ function AssistantBody({ content, citations, onOpenPaper, onJumpPage, currentPap
       </ReactMarkdown>
     </article>
   );
-}
+});
 
-export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRequoteSelection, onRestoreSelections, onRemoveSelection, maxSelections, onJumpToSelection, onSendingChange }: Props) {
+export function QaChat({ active = true, paperId, conversationId, onOpenPaper, onJumpPage, onConversationCreated, selections, onClearSelections, onRequoteSelection, onRestoreSelections, onRemoveSelection, maxSelections, onJumpToSelection, onSendingChange }: Props) {
   const [messages, setMessages] = useState<QaMessage[]>([]);
   const [convId, setConvId] = useState<string | null>(conversationId ?? null);
   const [input, setInput] = useState("");
@@ -139,10 +142,20 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
   /** AI 澄清请求（ask_user）：非空时输入框改为作答澄清问题 */
   const [pending, setPending] = useState<PendingAsk | null>(null);
   /** 实时流式状态：思考文本 / 回答正文增量 / 工具轨迹（含 running 态） */
+  const activeRef = useRef(active); activeRef.current = active;
+  const buffered = useRef<{ thinking: string; content: string; tools: AgentEvent[] }>({ thinking: "", content: "", tools: [] });
+  useEffect(() => {
+    if (!active) return;
+    const next = buffered.current;
+    buffered.current = { thinking: "", content: "", tools: [] };
+    if (next.thinking) setThinkingText(text => text + next.thinking);
+    if (next.content) setStreamingText(text => text + next.content);
+    for (const event of next.tools) onAgentEvent(event);
+  }, [active]);
   const [thinkingText, setThinkingText] = useState("");
   const [streamingText, setStreamingText] = useState("");
   const [liveTrace, setLiveTrace] = useState<LiveToolStep[]>([]);
-  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([messages, sending, streamingText, thinkingText]);
+  const { scrollRef, atBottom, onScroll, scrollToBottom, stick } = useStickyScroll([messages, sending, streamingText, thinkingText], active);
   // 引用条目悬停：完整内容 + 「跳转到原文」（显示在条目左侧）
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [hoverPos, setHoverPos] = useState<{
@@ -270,11 +283,14 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
 
   /** 实时事件分发：思考/正文增量、工具开始/完成 */
   function onAgentEvent(evt: AgentEvent) {
+    if (!activeRef.current && (evt.type === "tool_start" || evt.type === "tool_end")) { buffered.current.tools.push(evt); return; }
     switch (evt.type) {
       case "thinking":
+        if (!activeRef.current) { buffered.current.thinking += evt.text; break; }
         setThinkingText((t) => t + evt.text);
         break;
       case "content":
+        if (!activeRef.current) { buffered.current.content += evt.text; break; }
         setStreamingText((t) => t + evt.text);
         break;
       case "tool_start":
@@ -326,6 +342,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         return;
       }
       if (ans.cancelled) setPausedNote(true);
+      buffered.current = { thinking: "", content: "", tools: [] };
       setStreamingText("");
       if (ans.answer.trim()) {
         setMessages((prev) => [
@@ -342,6 +359,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
     } catch (e) {
       setError(String(e));
     } finally {
+      buffered.current = { thinking: "", content: "", tools: [] };
       setSending(false);
     }
   }
@@ -393,6 +411,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         return;
       }
       if (ans.cancelled) setPausedNote(true);
+      buffered.current = { thinking: "", content: "", tools: [] };
       setStreamingText("");
       if (ans.answer.trim()) {
         setMessages((prev) => [
@@ -418,9 +437,13 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
       setError(String(e));
       if (sentSelections?.length) onRestoreSelections?.(sentSelections);
     } finally {
+      buffered.current = { thinking: "", content: "", tools: [] };
       setSending(false);
     }
   }
+
+  const displayedMessages = useRef(messages);
+  if (active) displayedMessages.current = messages;
 
   return (
     <div className="chat-workspace flex min-h-0 min-w-0 flex-1 flex-col gap-3">
@@ -431,10 +454,10 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
             <Loader2 className="h-4 w-4 animate-spin" />
             加载会话…
           </div>
-        ) : messages.length === 0 && !sending ? (
+        ) : displayedMessages.current.length === 0 && !sending ? (
           <div className="flex-1" />
         ) : (
-          messages.map((m, i) =>
+          displayedMessages.current.map((m, i) =>
             m.role === "user" ? (
               <div key={i} className="flex justify-end">
                 <div className="max-w-[90%] break-words rounded-2xl rounded-br-md bg-accent px-4 py-3 text-sm leading-6 whitespace-pre-wrap text-foreground">
@@ -501,7 +524,7 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
         {/* 实时生成区：思考胶囊（默认收纳）+ 工具轨迹 + 流式回答 */}
         {sending && (
           <>
-            {thinkingText && <ThinkingPanel text={thinkingText} streaming />}
+            {thinkingText && <ThinkingPanel text={thinkingText} streaming active={active} />}
             {liveTrace.length > 0 && (
               <div className="flex justify-start">
                 <div className="chat-assistant min-w-0 w-full px-1 py-1">
@@ -509,13 +532,13 @@ export function QaChat({ paperId, conversationId, onOpenPaper, onJumpPage, onCon
                 </div>
               </div>
             )}
-            {streamingText && <div className="chat-assistant min-w-0 px-1"><AssistantBody content={streamingText} citations={[]} currentPaperId={paperId} onOpenPaper={onOpenPaper} onJumpPage={onJumpPage} /></div>}
+            {streamingText && <div className="chat-assistant min-w-0 px-1"><AssistantBody content={streamingText} citations={EMPTY_CITATIONS} currentPaperId={paperId} onOpenPaper={onOpenPaper} onJumpPage={onJumpPage} /></div>}
             {!thinkingText && liveTrace.length === 0 && !streamingText && (
               <div className="flex justify-start">
                 <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {mode === "agent" ? "AI 正在研读论文并检索资料…" : "检索并生成回答…"}
-                  <LiveClock />
+                  <LiveClock active={active} />
                 </div>
               </div>
             )}

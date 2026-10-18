@@ -350,8 +350,9 @@ fn list_papers_inner(db: &Db) -> Result<Vec<Paper>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     drop(stmt);
+    drop(conn);
     for paper in &mut papers {
-        backfill_paper_venue(&conn, paper)?;
+        backfill_paper_venue(db, paper)?;
     }
     Ok(papers)
 }
@@ -367,20 +368,21 @@ pub(crate) fn get_paper_inner(db: &Db, paper_id: &str) -> Result<Paper, String> 
     let mut paper = conn
         .query_row(&sql, [paper_id], row_to_paper)
         .map_err(|e| e.to_string())?;
+    drop(conn);
     // 旧库论文没有 github_url；首次打开时从已有 Markdown 轻量回填，无需重新解析。
     if paper.github_url.is_none() && paper.parse_status == "ready" {
         if let Ok(markdown) = std::fs::read_to_string(&paper.md_path) {
             if let Some(url) = extract_github_repo_url(&markdown) {
-                conn.execute(
-                    "UPDATE papers SET github_url = ?2 WHERE id = ?1",
-                    params![paper_id, &url],
+                let changed = db.conn().execute(
+                    "UPDATE papers SET github_url = ?2 WHERE id = ?1 AND github_url IS NULL AND md_path = ?3",
+                    params![paper_id, &url, &paper.md_path],
                 )
                 .map_err(|e| e.to_string())?;
-                paper.github_url = Some(url);
+                if changed > 0 { paper.github_url = Some(url); }
             }
         }
     }
-    backfill_paper_venue(&conn, &mut paper)?;
+    backfill_paper_venue(db, &mut paper)?;
     Ok(paper)
 }
 
@@ -390,19 +392,22 @@ pub fn open_paper(db: State<'_, Db>, paper_id: String) -> Result<Paper, String> 
     open_paper_inner(&db, &paper_id)
 }
 
+#[tauri::command]
+pub fn touch_paper(db: State<'_, Db>, paper_id: String) -> Result<(), String> {
+    touch_paper_inner(&db, &paper_id)
+}
+
+fn touch_paper_inner(db: &Db, paper_id: &str) -> Result<(), String> {
+    let changed = db.conn().execute(
+        "UPDATE papers SET last_read_at = ?2 WHERE id = ?1",
+        params![paper_id, chrono::Utc::now().timestamp()],
+    ).map_err(|e| e.to_string())?;
+    if changed == 0 { return Err("论文不存在".into()); }
+    Ok(())
+}
+
 fn open_paper_inner(db: &Db, paper_id: &str) -> Result<Paper, String> {
-    {
-        let conn = db.conn();
-        let changed = conn
-            .execute(
-                "UPDATE papers SET last_read_at = ?2 WHERE id = ?1",
-                params![paper_id, chrono::Utc::now().timestamp()],
-            )
-            .map_err(|e| e.to_string())?;
-        if changed == 0 {
-            return Err("论文不存在".into());
-        }
-    }
+    touch_paper_inner(db, paper_id)?;
     get_paper_inner(db, paper_id)
 }
 
@@ -977,7 +982,7 @@ fn venue_from_paper_dir(md_path: &str) -> Option<String> {
         })
 }
 
-fn backfill_paper_venue(conn: &rusqlite::Connection, paper: &mut Paper) -> Result<(), String> {
+fn backfill_paper_venue(db: &Db, paper: &mut Paper) -> Result<(), String> {
     if paper.parse_status != "ready" {
         return Ok(());
     }
@@ -1017,12 +1022,12 @@ fn backfill_paper_venue(conn: &rusqlite::Connection, paper: &mut Paper) -> Resul
         _ => false,
     };
     if should_update {
-        conn.execute(
-            "UPDATE papers SET venue = ?2 WHERE id = ?1",
-            params![&paper.id, &detected],
+        let changed = db.conn().execute(
+            "UPDATE papers SET venue = ?2 WHERE id = ?1 AND venue IS ?3 AND md_path = ?4",
+            params![&paper.id, &detected, &paper.venue, &paper.md_path],
         )
         .map_err(|error| error.to_string())?;
-        paper.venue = detected;
+        if changed > 0 { paper.venue = detected; }
     }
     Ok(())
 }
@@ -3681,6 +3686,36 @@ pub async fn ask_question_reply(
     }
 }
 
+/// 阅读侧栏只查询本篇会话摘要，不读取或传输 messages。
+#[derive(Debug, Serialize)]
+pub struct ConversationSummary {
+    id: String,
+    paper_id: Option<String>,
+    #[serde(rename = "type")]
+    conv_type: String,
+    title: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[tauri::command]
+pub fn list_conversation_summaries(db: State<'_, Db>, paper_id: String) -> Result<Vec<ConversationSummary>, String> {
+    list_conversation_summaries_inner(&db, &paper_id)
+}
+
+fn list_conversation_summaries_inner(db: &Db, paper_id: &str) -> Result<Vec<ConversationSummary>, String> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, paper_id, type, title, created_at, updated_at FROM conversations \
+         WHERE type = 'qa' AND paper_id = ?1 ORDER BY updated_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([paper_id], |r| Ok(ConversationSummary {
+        id: r.get(0)?, paper_id: r.get(1)?, conv_type: r.get(2)?,
+        title: r.get(3)?, created_at: r.get(4)?, updated_at: r.get(5)?,
+    })).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 /// 列出所有问答会话（按更新时间倒序）。
 #[tauri::command]
 pub fn list_conversations(db: State<'_, Db>) -> Result<Vec<Conversation>, String> {
@@ -4801,6 +4836,42 @@ mod tests {
             get_paper_inner(&db, &ids[0]).unwrap().reading_status,
             "reading"
         );
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn touch_paper_only_updates_access_timestamp() {
+        let (db, tmp, ids) = folder_test_setup();
+        let before = get_paper_inner(&db, &ids[0]).unwrap();
+        touch_paper_inner(&db, &ids[0]).unwrap();
+        let mut after = get_paper_inner(&db, &ids[0]).unwrap();
+        assert!(after.last_read_at.is_some());
+        after.last_read_at = before.last_read_at;
+        assert_eq!(serde_json::to_value(after).unwrap(), serde_json::to_value(before).unwrap());
+        assert!(get_paper_inner(&db, &ids[1]).unwrap().last_read_at.is_none());
+        assert!(touch_paper_inner(&db, "missing").is_err());
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn conversation_summaries_filter_paper_and_omit_messages() {
+        let (db, tmp, ids) = folder_test_setup();
+        {
+            let conn = db.conn();
+            for (id, paper, kind, updated) in [
+                ("old", &ids[0], "qa", 1), ("new", &ids[0], "qa", 2),
+                ("other", &ids[1], "qa", 3), ("feynman", &ids[0], "feynman", 4),
+            ] {
+                conn.execute("INSERT INTO conversations (id,paper_id,type,title,messages,created_at,updated_at) VALUES (?1,?2,?3,?1,?4,0,?5)",
+                    params![id, paper, kind, "large message body".repeat(1000), updated]).unwrap();
+            }
+        }
+        let summaries = list_conversation_summaries_inner(&db, &ids[0]).unwrap();
+        assert_eq!(summaries.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
+        let value = serde_json::to_value(&summaries).unwrap();
+        assert!(value[0].get("messages").is_none());
+        assert_eq!(value[0]["type"], "qa");
+        assert!(list_conversation_summaries_inner(&db, "missing").unwrap().is_empty());
         fs::remove_dir_all(&tmp).ok();
     }
 

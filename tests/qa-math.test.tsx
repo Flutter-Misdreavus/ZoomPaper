@@ -65,3 +65,22 @@ it.each([
   expect(container.querySelector("sup")?.textContent).toBe("[3]");
   expect(container.querySelector("code")?.textContent).toBe("a[2]");
 });
+
+it("隐藏问答暂停流式展示，激活时补齐内容，后台完成不丢回答", async () => {
+  let finish!: (value: Awaited<ReturnType<typeof askQuestion>>) => void;
+  vi.mocked(askQuestion).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+  const view = render(<QaChat />);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "公式" } });
+  fireEvent.click(screen.getByLabelText("发送消息"));
+  const channel = vi.mocked(askQuestion).mock.calls.at(-1)![1]!.onEvent!;
+  view.rerender(<QaChat active={false} />);
+  act(() => { channel.onmessage({ type: "content", text: "$x[0]$" }); });
+  expect(view.container.querySelector(".katex")).toBeNull();
+  view.rerender(<QaChat active />);
+  expect(view.container.querySelector("annotation")?.textContent).toBe("x[0]");
+  view.rerender(<QaChat active={false} />);
+  await act(async () => { finish({ answer: "$y[1]$", conversation_id: "saved", citations: [] }); });
+  expect(view.container.querySelector("annotation")?.textContent).not.toBe("y[1]");
+  view.rerender(<QaChat active />);
+  expect(view.container.querySelector("annotation")?.textContent).toBe("y[1]");
+});

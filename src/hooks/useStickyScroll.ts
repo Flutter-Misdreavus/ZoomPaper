@@ -11,7 +11,7 @@ const BOTTOM_THRESHOLD = 80;
  * - 自己发消息时调 `stick()`（配合紧随其后的内容变更，由 effect 完成滚动）；
  * - 点「回到底部」调 `scrollToBottom()`（立即滚动并恢复吸附）。
  */
-export function useStickyScroll(deps: unknown[]) {
+export function useStickyScroll(deps: unknown[], active = true) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   // 同步镜像，供滚动 effect 做即时判断（避免闭包读到旧 state）
@@ -42,11 +42,11 @@ export function useStickyScroll(deps: unknown[]) {
   // 内容变化时：仅当用户贴底才跟随滚动
   useEffect(() => {
     const el = scrollRef.current;
-    if (el && atBottomRef.current) {
+    if (active && el && atBottomRef.current) {
       el.scrollTo({ top: el.scrollHeight });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, active]);
 
   return { scrollRef, atBottom, onScroll, scrollToBottom, stick };
 }

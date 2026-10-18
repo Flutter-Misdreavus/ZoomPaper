@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useActiveSnapshot } from "@/hooks/useActiveSnapshot";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
@@ -49,6 +50,8 @@ const MODES: { value: Mode; label: string }[] = [
 ];
 
 interface Props {
+  active?: boolean;
+  onReady?: () => void;
   paperId: string;
   /** 划选「提问」：选中文字 + 来源位置（如「译文·第 5 段」） */
   onAskSelection?: (text: string, location: string) => void;
@@ -80,21 +83,23 @@ function labelFor(docKey: string): string {
  * 划选：三种模式内容均可划选高亮 / 笔记 / 提问，标注按 docKey 分别定位
  * （纯英 trans:en、纯中 trans:zh、对照逐段 trans:bi:<i> 等），持久化到 translation_annotations.json。
  */
-export function TranslatePanel({ paperId, onAskSelection }: Props) {
+export function TranslatePanel({ paperId, onAskSelection, active = true, onReady }: Props) {
   const [mode, setMode] = useState<Mode>(() => { const saved = localStorage.getItem(`zoompaper.translationMode.${paperId}`); return saved === "zh" || saved === "bi" ? saved : "en"; });
   useEffect(() => { localStorage.setItem(`zoompaper.translationMode.${paperId}`, mode); }, [mode, paperId]);
   const [enMd, setEnMd] = useState<string | null>(null);
   const [chunks, setChunks] = useState<TranslationChunk[] | null>(null);
   const [loadingEn, setLoadingEn] = useState(false);
-  const job = useSyncExternalStore(
+  const job = useActiveSnapshot(
+    active,
     (listener) => translationJobs.subscribe(paperId, listener),
     () => translationJobs.getSnapshot(paperId),
-    () => translationJobs.getSnapshot(paperId),
+    paperId,
   );
   const translating = job.status === "running" && job.stage === "translate";
   const fillingMissing = job.status === "running" && job.stage === "repair";
   const progress = job.status === "running" ? job.progress ?? null : null;
   const fillStats = job.status === "completed" ? job.stats ?? null : null;
+  useEffect(() => { if (active && !loadingEn && enMd) onReady?.(); }, [active, loadingEn, enMd, onReady]);
   const [error, setError] = useState<string | null>(null);
 
   // ---- 划选高亮 / 笔记（与 PDF 阅读一致） ----
@@ -177,18 +182,25 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   }, [highlights, highlightsLoaded, paperId]);
 
   // 划选监听
-  useTextSelection(containersRef, (docKey, pending) => setSel({ ...pending, docKey }));
+  useTextSelection(containersRef, (docKey, pending) => setSel({ ...pending, docKey }), active);
 
+  const appliedHighlightVersion = useRef<unknown[]>([]);
   // 内容渲染后重绘高亮
   useLayoutEffect(() => {
+    if (!active) return;
+    const version = [mode, enMd, chunks, references, highlights];
+    if (version.every((value, index) => value === appliedHighlightVersion.current[index])) return;
+    appliedHighlightVersion.current = version;
     for (const [el, docKey] of containersRef.current) {
+      if (!el.isConnected) { containersRef.current.delete(el); continue; }
       applyMarks(el, highlights.filter((h) => h.docKey === docKey));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, enMd, chunks, references, highlights]);
+  }, [mode, enMd, chunks, references, highlights, active]);
 
   // 点击正文高亮 → 打开笔记编辑
   useEffect(() => {
+    if (!active) return;
     const onClick = (e: MouseEvent) => {
       const mark = (e.target as HTMLElement).closest?.(
         "mark.zp-text-highlight",
@@ -201,11 +213,11 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
-  }, [highlights]);
+  }, [highlights, active]);
 
   // 浮动工具条：选区清空或滚动时收起
   useEffect(() => {
-    if (!sel) return;
+    if (!sel || !active) return;
     const hide = () => {
       const s = window.getSelection();
       if (!s || s.isCollapsed) setSel(null);
@@ -220,7 +232,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
       document.removeEventListener("selectionchange", hide);
       window.removeEventListener("scroll", onScroll, true);
     };
-  }, [sel]);
+  }, [sel, active]);
 
   function handleTranslate() {
     if (!enMd || translating || fillingMissing) return;
@@ -239,15 +251,19 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
     return mode === "zh" ? (references ? `${zh}\n\n${references}` : zh) : null;
   }
 
-  const doc = docFor();
+  const doc = useMemo(docFor, [mode, enMd, chunks, references]);
   const needsTranslate = mode !== "en" && !chunks;
   // 对照模式：按翻译块逐块对齐（块内错位不传播到后续块；未对齐内容完整展示）
-  const bi = mode === "bi" && chunks ? pairChunks(chunks) : null;
+  const bi = useMemo(() => mode === "bi" && chunks ? pairChunks(chunks) : null, [mode, chunks]);
 
+  const headingVersion = useRef<unknown[]>([]);
   // 内容渲染后扫描 DOM 标题构建目录（对照模式跳过 .trans-zh 中文段，避免重复条目）
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
-    if (!scroller) return;
+    if (!active || !scroller) return;
+    const version = [mode, enMd, chunks, references];
+    if (version.every((value, index) => value === headingVersion.current[index])) { updateActive(); return; }
+    headingVersion.current = version;
     const entries = extractHeadingEntries(scroller, ".trans-zh");
     flatEntriesRef.current = entries;
     const tree = buildHeadingTree(entries);
@@ -265,7 +281,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
     setActiveEntry(null);
     updateActive();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, enMd, chunks, references]);
+  }, [mode, enMd, chunks, references, active]);
 
   /** 计算当前章节：视口顶部向下 16px 以内、最后一个标题 */
   function updateActive() {
@@ -284,7 +300,12 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
     setActiveEntry(active);
   }
 
+  useEffect(() => () => {
+    if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+  }, [active]);
+
   function handleScroll() {
+    if (!active) return;
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
@@ -356,12 +377,14 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   /** 注册内容容器（callback ref；元素变化时更新 docKey 映射） */
   function registerContainer(el: HTMLElement | null, docKey: string) {
     if (!el) return;
-    containersRef.current.delete(el);
+    for (const [registered, key] of containersRef.current) {
+      if (key === docKey || !registered.isConnected) containersRef.current.delete(registered);
+    }
     containersRef.current.set(el, docKey);
   }
 
   function addHighlight(color: string, openNote: boolean) {
-    if (!sel) return;
+    if (!sel || !active) return;
     const hl: TextHighlight = {
       id: crypto.randomUUID(),
       docKey: sel.docKey,
@@ -381,7 +404,7 @@ export function TranslatePanel({ paperId, onAskSelection }: Props) {
   }
 
   function askSelection() {
-    if (!sel) return;
+    if (!sel || !active) return;
     onAskSelection?.(sel.text, labelFor(sel.docKey));
     setSel(null);
     window.getSelection()?.removeAllRanges();
