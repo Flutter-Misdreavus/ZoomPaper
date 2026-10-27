@@ -1,315 +1,208 @@
 <p align="center">
-  <img src="app-icon.png" alt="ZoomPaper" width="140" />
+  <img src="app-icon.png" alt="ZoomPaper" width="112" />
 </p>
 
 <h1 align="center">ZoomPaper</h1>
 
-<p align="center"><strong>本地优先的论文阅读与知识管理平台 —— 把论文读成自己的知识</strong></p>
+<p align="center">本地优先的论文阅读与知识管理应用</p>
 
 <p align="center">
-  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases">
-    <img src="https://img.shields.io/github/v/release/Flutter-Misdreavus/ZoomPaper?style=flat-square&color=2f6fed" alt="最新版本" />
-  </a>
-  <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS-black?style=flat-square&logo=apple" alt="平台" />
-  <img src="https://img.shields.io/badge/%E6%8A%80%E6%9C%AF-Tauri%20v2%20%2B%20Rust-orange?style=flat-square&logo=rust" alt="Tauri + Rust" />
-  <img src="https://img.shields.io/badge/%E5%89%8D%E7%AB%AF-React%2019%20%2B%20TypeScript-61dafb?style=flat-square" alt="React + TypeScript" />
-  <img src="https://img.shields.io/badge/%E5%AD%98%E5%82%A8-SQLite%20%2B%20sqlite--vec-003b57?style=flat-square&logo=sqlite" alt="SQLite" />
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
+  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases"><img src="https://img.shields.io/github/v/release/Flutter-Misdreavus/ZoomPaper?style=flat-square&color=287c70" alt="最新版本" /></a>
+  <img src="https://img.shields.io/badge/macOS-Apple_Silicon-181818?style=flat-square&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/Tauri_2-React_19-24c8db?style=flat-square" alt="Tauri 2 与 React 19" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License" /></a>
 </p>
 
 <p align="center">
-  <a href="#一键下载">一键下载</a> ·
-  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest">GitHub Releases</a> ·
-  <a href="#从源码构建">从源码构建</a> ·
-  <a href="#使用指南">使用指南</a> ·
-  <a href="#数据与存储">数据与存储</a>
+  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest">下载</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#安装与配置">安装与配置</a> ·
+  <a href="docs/USER_GUIDE.md">使用文档</a> ·
+  <a href="#开发与构建">开发与构建</a> ·
+  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/issues">问题反馈</a>
 </p>
 
-> **说明** —— 本仓库既是源码仓库，也是官方下载渠道。最新安装包发布在
-> [GitHub Releases](https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest)。
+ZoomPaper 集成 PDF 阅读、论文管理、全文翻译和知识库问答，基于 Tauri、Rust 和 React 构建。论文、标注、索引和会话保存在本机，解析与 AI 功能连接配置的外部服务。
 
----
+<p align="center">
+  <img src="docs/images/library.png" alt="论文库：文件夹分类、阅读状态、出版信息与摘要概览" width="100%" />
+</p>
 
-## 这是什么
+## 功能
 
-读论文是一趟**从文献到知识**的旅程：先读原文，再理解脉络，最后能用自己的话讲出来。
-ZoomPaper 把这条链路做成了一个 macOS 桌面应用 —— 所有数据留在你自己的电脑上，云只负责算力。
+- **论文管理**：嵌套文件夹、多文件夹归属、收藏、阅读状态、列表与卡片视图，支持批量操作和回收站。
+- **导入与解析**：本地 PDF 批量导入、浏览器扩展收集、MinerU 后台解析，自动建立索引并通过 DOI 补全出版信息。
+- **阅读与标注**：多论文标签、阅读位置恢复、划词翻译、高亮、批注和笔记导出。
+- **AI 辅助阅读**：全文翻译、中英对照、AI 博客、论文测验，支持 OpenAI、Anthropic、Gemini、DeepSeek 及兼容接口。
+- **检索与问答**：关键词搜索、本地语义检索、单篇与跨论文问答，提供快速和深度模式，回答附带原文引用。
+- **阅读记录**：阅读时间线、热力图、阅读计划、桌面阅读伙伴。
+- **个性化与数据管理**：主题配色、JSON 高级主题、中英文展示偏好、论文库迁移、备份与恢复。
 
-像 Zotero 一样管文献，像 Obsidian 一样沉淀笔记，像费曼一样学进去。
+### 阅读工作区
 
-```mermaid
-flowchart LR
-    A[导入 PDF] --> B[MinerU 解析]
-    B --> C[(本地知识库 SQLite + 向量索引)]
-    C --> D[语义搜索]
-    C --> E[RAG 问答, 引用可回溯原文]
-    C --> F[阅读 / 翻译 / 标注]
-    F --> G[费曼学习 / 教学复盘]
+原文 PDF、AI 翻译和 AI 博客在同一工作区切换，右侧面板提供问答与测验。PDF、译文和博客均支持选文高亮、批注、翻译和提问。
+
+<p align="center">
+  <img src="docs/images/reader.png" alt="阅读工作区：PDF 原文、翻译与博客入口、问答和测验面板" width="100%" />
+</p>
+
+论文标签支持拖动排序、搜索切换、关闭撤销和重启恢复。全文翻译与博客生成在切换论文后继续运行，结果按论文保存；完整退出应用会停止未完成的请求。
+
+### 知识库问答
+
+阅读器内的问答以当前论文为范围，知识库问答支持跨论文检索。回答中的论文引用可跳转到对应原文位置。
+
+| 模式 | 执行方式 |
+| --- | --- |
+| 快速 | 单轮检索后生成回答 |
+| 深度 | 多轮调用语义检索、章节精读、标注与译文等工具，可向用户澄清，并展示工具执行过程 |
+
+深度模式支持联网检索，当前使用 DeepSeek / Anthropic 的原生搜索能力，需配置相应服务。思考内容、工具状态和回答以流式更新。
+
+### 浏览器扩展
+
+ZoomPaper Connector 支持 Chrome 和 Edge，可从论文详情页或 PDF 链接发起导入。扩展通过浏览器下载全文，沿用当前登录与网络环境；应用确认保存后返回回执，正文解析进入后台队列。
+
+支持 arXiv、OpenReview、ACL Anthology 等来源的元数据与全文链接识别。下载失败时提供候选全文地址、手动输入链接和重试入口。具体范围与限制见 [浏览器导入说明](docs/BROWSER-SUPPORT.md)，安装与更新见 [Connector 文档](browser-extension/README.md)。
+
+### 阅读时间线
+
+记录阅读时长、完成状态和阅读历史，提供年度热力图、每日目标与论文清单计划。
+
+<p align="center">
+  <img src="docs/images/timeline.png" alt="阅读时间线：阅读统计、年度热力图、计划与历史" width="100%" />
+</p>
+
+桌面阅读伙伴显示阅读与后台任务气泡，提供导入论文、继续阅读入口，可在设置中切换或隐藏。
+
+<p align="center">
+  <img src="docs/images/companion.png" alt="桌面阅读伙伴" width="260" />
+</p>
+
+<sub>截图来自本地运行的开发版，界面可能与发布版本有所差异。论文内容版权归原作者所有。</sub>
+
+## 安装与配置
+
+### 安装
+
+[下载最新版本](https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest)
+
+当前仓库的自动发布工作流提供 **macOS Apple Silicon（M 系列芯片）** 的 `.dmg` 安装包。下载后打开，将 ZoomPaper 拖入「应用程序」。其他平台的安装包以 Release 实际附件为准。
+
+<details>
+<summary>macOS 首次打开提示与命令行安装</summary>
+
+未公证版本首次打开时，可在「系统设置 → 隐私与安全性」中允许打开。若提示「已损坏」，请先确认安装包来自本仓库的 Releases；该提示也可能与隔离标记或签名有关，并不能单凭提示判断文件是否损坏。
+
+确认来源后，可移除该应用的隔离标记再尝试打开：
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
 ```
 
-## 核心功能
-
-### 导入与解析
-
-一键导入 PDF，调用 **MinerU** 云解析为结构化 Markdown（含图片与章节分块），
-自动提取标题与摘要，并建立本地向量索引。
-
-### 沉浸式阅读
-
-原文 PDF / 中文译文 / AI 博客三种视图自由切换；大纲导航、双指捏合缩放、文内链接跳转；
-划选文字即可查看简洁的中文释义、高亮或写笔记，标注随文档缩放自适应。
-
-### AI 翻译
-
-分块中译全文，参考文献自动跳过、不浪费 token；译文缓存复用，一键重新翻译。
-
-### 语义搜索
-
-本地 embedding（`bge-small-en-v1.5`）+ `sqlite-vec`，无需云端即可跨论文检索段落。
-
-### 知识库问答（RAG）
-
-跨论文提问，回答带 `[n]` 引用标记，点击直达原文位置；阅读时选中段落可**就地提问**。
-**快速 / 深度双模式**：快速 = 单轮检索回答；深度 = AI 自主调用工具多角度研读论文
-（语义检索、章节精读、目录、元数据、你的标注与译文），并可**联网搜索**（复用
-DeepSeek / Anthropic Key 的原生搜索，无需额外密钥）补齐背景与最新进展，回答更深入，
-工具调用轨迹可折叠查看。深度模式下 AI 信息不足时会**向你澄清**（选项或自由作答后
-从断点继续），同会话还会**记忆已查证来源**，后续提问直接复用、不重复检索。
-AI 工作全程**实时可见**：思考内容逐字流出、每个工具「调用中 → 完成（耗时）」实时
-更新、最终回答流式呈现，并记录「AI 思考 Xs · 工具调用 Ys」随消息持久化。
-
-### 费曼学习法
-
-把论文讲成自己的知识：AI 先为论文生成**概念教学计划**（可增删调序），你作为老师
-逐个概念讲解，学生追问、出测验题检验你讲得是否透彻（不过关会标注缺口让你补讲）；
-长对话自动滚动摘要，全部讲完后一键生成教学复盘。
-
-### 访达式论文库
-
-虚拟文件夹（嵌套 / 多归属 / 颜色 / 标签）、拖拽归类、内联重命名、列表/网格双视图 ——
-像 macOS 访达一样整理论文，删除文件夹不会丢失任何论文。
-
-### 本地优先
-
-论文、索引、标注、对话全部保存在本机 SQLite 与文件目录，无账号、无云同步依赖，
-备份即拷贝。
-
-## 一键下载
-
-### 方式一：下载安装包（推荐）
-
-<p align="center">
-  <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest">
-    <img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88-ZoomPaper%20for%20macOS-2f6fed?style=for-the-badge&logo=apple&logoColor=white" alt="下载 ZoomPaper for macOS" />
-  </a>
-</p>
-
-最新版本 → <https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest>
-
-| 平台                    | 安装包                                   |
-| ----------------------- | ---------------------------------------- |
-| macOS（Apple Silicon / M 系列芯片） | `ZoomPaper_<ver>_aarch64.dmg` |
-
-**安装步骤**：
-
-1. 打开下载的 `.dmg` 文件；
-2. 把 **ZoomPaper** 拖入 **Applications** 文件夹；
-3. 首次打开：应用未经过 Apple 签名公证，macOS 会拦一次：
-
-   - 提示「**无法验证开发者**」→ 在「系统设置 → 隐私与安全性」里点「仍要打开」，或右键应用图标 →「打开」；
-   - 提示「**「ZoomPaper」已损坏，无法打开。您应该将它移到废纸篓**」→ 这是 macOS 对被隔离（quarantine）应用的统一提示，**安装包本身没有损坏**，执行下面命令后即可正常打开：
-
-     ```sh
-     xattr -dr com.apple.quarantine /Applications/ZoomPaper.app
-     ```
-
-     注意：「已损坏」这个提示不会出现「仍要打开」按钮，只能按上面的方式处理。
-
-### 方式二：一行命令安装
-
-macOS（Apple Silicon）
+也可使用仓库安装脚本（macOS，有对应架构安装包时可用）：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Flutter-Misdreavus/ZoomPaper/main/install.sh | sh
 ```
 
-脚本会自动识别机器架构，从 GitHub Releases 下载对应的 `.dmg` 并安装到
-`/Applications`，同时自动移除隔离标记；已是最新版本时会自动跳过。
+脚本会下载匹配架构的安装包、安装到 `/Applications` 并移除隔离标记；已安装相同版本时跳过。
 
-### 方式三：从源码构建（开发者）
+</details>
 
-见下方 [从源码构建](#从源码构建) 一节。
+### 服务配置
 
-## 从源码构建
+在「设置」中配置解析和模型服务：
 
-### 环境要求
+| 服务 | 用途 | 配置说明 |
+| --- | --- | --- |
+| MinerU | PDF 转为结构化 Markdown | 正文解析，以及依赖解析内容的检索与 AI 功能 |
+| OpenAI / Anthropic / Gemini / DeepSeek 或兼容接口 | 问答、翻译、博客、测验 | 使用 AI 功能时任选可用配置 |
+| 本地 Embedding 模型 | 建立向量索引、语义检索 | 首次使用需下载模型，之后在本机推理 |
 
-- **macOS 13+**（应用基于 Tauri v2 + WKWebView）
-- **Node.js ≥ 20**（Vite 7 要求）
-- **Rust stable ≥ 1.77**（Tauri 2 要求）
-- Xcode Command Line Tools（`xcode-select --install`）
+PDF 保存后即可打开原文，后台解析完成后再使用正文检索和相关 AI 功能。API 调用费用由所选服务商收取。
 
-### 安装与构建
+### 导入与阅读
 
-```bash
-# 1. 安装依赖
-npm install
+1. 点击论文库右上角的**上传图标**，选择一个或多个 PDF；也可以使用浏览器扩展导入。
+2. 双击论文打开阅读工作区，选中文字可执行翻译、标注或提问。
+3. 在工作区切换原文、AI 翻译或 AI 博客；右侧面板提供问答与测验。
 
-# 2. 开发模式（启动桌面应用，改动热更新）
-npm run tauri dev
-
-# 3. 打包为 .app / .dmg
-npm run tauri build
-```
-
-构建产物位于 `src-tauri/target/release/bundle/`，可直接分发或上传至 GitHub Releases。
-
-本地/CI 构建默认使用 **ad-hoc 签名**（`tauri.conf.json` 的 `bundle.macOS.signingIdentity: "-"`）。
-这是 Apple Silicon 的硬性要求：没有有效签名的 `.app` 一旦带上浏览器的隔离标记，
-macOS 会直接报「已损坏，无法打开」。ad-hoc 签名可以消除「已损坏」，但用户首次打开仍需
-手动放行一次。
-
-### 发布（签名与公证）
-
-推送 `v*` 标签或手动触发 `Release` workflow 会构建并上传草稿 Release。
-要在用户机器上做到**双击即可打开**（无任何警告），需在仓库 Secrets 中配置
-Apple Developer（付费账号，99 美元/年）的 Developer ID 证书与公证凭据：
-
-| Secret | 说明 |
-| ------ | ---- |
-| `APPLE_CERTIFICATE` | `Developer ID Application` 证书导出的 `.p12`，转成 base64（`openssl base64 -A -in cert.p12`） |
-| `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
-| `APPLE_SIGNING_IDENTITY` | 如 `Developer ID Application: Your Name (TEAMID)` |
-| `APPLE_ID` | Apple 账号邮箱 |
-| `APPLE_PASSWORD` | Apple 账号的 App 专用密码 |
-| `APPLE_TEAM_ID` | Apple Team ID |
-
-也可改用 App Store Connect API Key（`APPLE_API_ISSUER` / `APPLE_API_KEY` / `APPLE_API_KEY_PATH`）。
-未配置这些 secrets 时，workflow 自动回退为 ad-hoc 签名；无论哪种模式，构建后都会执行
-`codesign --verify` 校验，签名无效时 job 直接失败，避免再次发布「已损坏」的安装包。
-
-## 使用指南
-
-### 第一步：配置 API Key
-
-打开 **设置** 页：
-
-| 服务                          | 用途                           | 是否必需 |
-| ----------------------------- | ------------------------------ | -------- |
-| **MinerU**                    | PDF → Markdown 高精度解析       | 必需     |
-| **OpenAI / Anthropic / Gemini / DeepSeek** | 翻译、博客、问答、费曼 | 任选其一 |
-
-可在设置中自定义论文库目录（默认存放在应用数据目录）；向量检索使用本地
-embedding 模型，首次使用自动下载。
-
-### 第二步：导入与解析
-
-论文库页点击 **「导入论文」** 选择 PDF，应用会自动复制进本地库并触发 MinerU 解析。
-解析完成后即可阅读、搜索、问答。
-
-### 从浏览器导入
-
-1. 安装并启动一次包含浏览器导入功能的 ZoomPaper，下载本仓库源码并解压。
-2. 打开 Chrome 的 `chrome://extensions` 或 Edge 的 `edge://extensions`，开启**开发者模式**，点击**加载已解压的扩展程序**，选择源码中的 `browser-extension` 文件夹（其中包含 `manifest.json`）。
-3. 在论文页面右键选择**加入 ZoomPaper**，或点击扩展图标；首次使用时允许浏览器打开桌面应用。
-
-更新扩展源码后，在扩展管理页点击**重新加载**。支持范围见[浏览器扩展说明](browser-extension/README.md)。
-
-### 第三步：阅读与学习
-
-- **阅读**：左栏切换原文 / 中文译文 / AI 博客；划选文字即可高亮、写笔记
-- **问答**：阅读页右侧问答面板随时提问（单篇），或到问答页进行跨论文检索
-- **费曼**：阅读页打开费曼面板，AI 生成概念教学计划后逐个概念闯关讲解，
-  用测验逼出你的盲区，最后生成复盘
-
-### 整理论文库
-
-- 左侧侧栏 **「新建文件夹」**，右键文件夹可改颜色、加标签、建子文件夹
-- 直接**拖拽**论文（支持多选批量拖）到文件夹完成归类；一篇论文可同时属于多个文件夹
-- 双击标题**内联重命名**；删除文件夹不会删除论文（自动回到「未分类」）
+操作说明见 [使用文档](docs/USER_GUIDE.md)，应用内「帮助」提供同一份功能手册。
 
 ## 数据与存储
 
-一切数据都属于你，备份即拷贝：
+ZoomPaper 无需应用账号。论文文件、解析结果、向量索引、阅读记录、标注和会话保存在本机。
 
-```
-~/Library/Application Support/com.paper-reader/
-├── database.sqlite          # 结构化数据 + 向量索引（SQLite / sqlite-vec）
-├── settings.json            # API Key 与偏好设置
-└── papers/                  # 论文库（可在设置中改路径）
+PDF 解析将文件发送至 MinerU；AI 功能将请求与所需上下文发送至配置的模型服务；DOI 补全向 Crossref / DataCite 查询 DOI。语义检索使用本地 Embedding 模型和 SQLite 向量索引，首次运行需下载模型。
+
+默认数据目录：
+
+- macOS：`~/Library/Application Support/com.paper-reader/`
+- Windows：`%APPDATA%\com.paper-reader\`（使用 `dirs::data_dir()` 定位）
+
+```text
+com.paper-reader/
+├── database.sqlite       # 论文元数据、向量索引、会话等
+├── settings.json         # API 密钥与配置
+└── papers/               # 可在设置中迁移论文库位置
     └── {uuid}/
-        ├── paper.pdf        # 原始 PDF
-        ├── paper.md         # MinerU 解析结果
-        ├── blog.md          # AI 博客
-        ├── images/          # 解析出的图片资源
-        ├── annotations.json # 高亮与笔记
-        └── translation.json # 中文译文缓存
+        ├── paper.pdf     # 原始论文
+        ├── paper.md      # 结构化正文
+        ├── images/       # 解析图片
+        ├── blog.md       # 已生成的博客
+        ├── annotations.json
+        └── translation.json
 ```
 
-## 技术架构
+「设置 → 数据与存储」提供完整备份与恢复：备份包含论文与生成内容、会话、标注和界面偏好，**不包含 API 密钥**。恢复通过校验后在重启时生效，保留当前 API 配置；操作前请等待后台任务完成。`settings.json` 中的密钥以本地明文保存，请妥善保管。
 
-| 层级         | 选型                                   | 说明                             |
-| ------------ | -------------------------------------- | -------------------------------- |
-| 桌面框架     | **Tauri v2**                           | Rust 后端 + 系统 WebView，原生 `.app` |
-| 前端         | **React 19 + TypeScript + Vite**       | Tailwind CSS v4 + shadcn/ui（Base UI）+ Motion |
-| 本地数据库   | **SQLite（rusqlite）**                 | 单文件，备份即拷贝               |
-| 向量检索     | **sqlite-vec**                         | SQLite 扩展，零外部依赖          |
-| 本地 Embedding | **fastembed（bge-small-en-v1.5）**   | 384 维，纯本地推理               |
-| PDF 解析     | **MinerU API**                         | 云端转换，结果落本地             |
-| PDF 渲染     | **pdfjs-dist + KaTeX**                 | 阅读器与公式渲染                 |
+## 开发与构建
 
-```
-├── src/                    # 前端（React）
-│   ├── pages/              # 论文库 / 阅读器 / 搜索 / 问答 / 设置
-│   ├── components/         # PDF 阅读、问答、费曼、翻译、标注等面板
-│   └── lib/                # API 封装、文件夹树、Markdown 工具
-└── src-tauri/              # 后端（Rust）
-    ├── src/
-    │   ├── commands.rs     # Tauri 命令层（论文 / 检索 / 问答 / 费曼 / 整理）
-    │   ├── agent/          # 深度研究 agent：工具注册表 + 循环驱动 + 联网搜索
-    │   ├── db/             # SQLite 迁移与数据模型
-    │   ├── rag/            # 分块、向量索引、检索
-    │   ├── ai/             # LLM 多 Provider（含工具调用）、Embedding、MinerU
-    │   └── fs/             # 论文目录与文件管理
-    └── capabilities/       # 权限声明
+桌面端基于 **Tauri v2 + Rust + React 19 + TypeScript**，使用 Tailwind CSS v4、Base UI 与 Motion 构建界面。
+
+在 macOS 上开发需准备 **Node.js 20.19+ 或 22.12+**、Rust stable 和 Xcode Command Line Tools（`xcode-select --install`）。其他平台需安装对应的 Tauri 系统依赖；当前发布工作流验证的打包目标为 Apple Silicon macOS。
+
+```bash
+git clone https://github.com/Flutter-Misdreavus/ZoomPaper.git
+cd ZoomPaper
+npm ci
+
+npm run tauri dev       # 启动桌面开发环境
+npm run test            # 前端测试
+npm run tauri build     # 构建桌面安装包
 ```
 
-## Roadmap
+构建产物在 `src-tauri/target/release/bundle/`；指定 target 构建时位于对应 target 子目录。浏览器扩展可通过 `npm run package:extension` 打包，详见 [扩展开发说明](browser-extension/README.md)。
 
-- [ ] 元数据增强：作者、年份、期刊自动提取与展示
-- [ ] PDF 首页缩略图网格视图
-- [ ] 文件夹拖拽重组与自定义排序
-- [ ] 标签全局筛选与文件夹维度搜索
-- [ ] 阅读进度 / 统计仪表盘
-- [ ] Windows / Linux 支持
+### 技术架构
 
-## 协议
+```mermaid
+flowchart LR
+    A[本地 PDF / 浏览器收集] --> B[MinerU 结构化解析]
+    B --> C[本地文件与 SQLite]
+    C --> D[fastembed 本地向量索引]
+    D --> E[语义检索 / 跨论文问答]
+    C --> F[阅读 / 翻译 / 博客]
+    F --> G[标注 / 笔记 / 测验]
+    E --> H[引用回到原文]
+```
 
-本项目基于 [MIT License](LICENSE) 开源。
+| 模块 | 实现与入口 |
+| --- | --- |
+| 论文工作区 | `src/components/PaperWorkspace.tsx`：论文库与多标签阅读 |
+| 阅读与 AI 界面 | `src/pages/Reader.tsx`、`AskPage.tsx`：原文、翻译与问答 |
+| 桌面命令 | `src-tauri/src/commands.rs` + `lib.rs`：前后端通信与注册 |
+| 深度问答 | `src-tauri/src/agent/`：执行循环、工具注册与调用 |
+| 模型与解析服务 | `src-tauri/src/ai/`：多 Provider LLM、Embedding、MinerU |
+| 检索与存储 | `src-tauri/src/rag/` + `db/`：fastembed、SQLite、sqlite-vec（384 维） |
 
-Copyright © 2025 Flutter-Misdreavus
+发布流程、Developer ID 签名与公证配置见 [发布说明](docs/RELEASING.md)。
 
-你可以自由地**使用、修改、分发**（含商业用途），只需在副本中保留上述版权声明与许可声明。
-本项目按「现状」提供，不附带任何明示或默示的担保。
+## 贡献
 
----
+通过 [Issues](https://github.com/Flutter-Misdreavus/ZoomPaper/issues) 提交问题或功能建议，通过 Pull Request 提交代码变更。问题报告请包含系统、应用版本和复现步骤。
 
-<p align="center">
-  <sub>
-    <a href="https://github.com/Flutter-Misdreavus/ZoomPaper">在 GitHub 上查看</a> ·
-    <a href="https://github.com/Flutter-Misdreavus/ZoomPaper/releases/latest">下载最新版本</a> ·
-    <a href="#一键下载">一键安装</a>
-  </sub>
-</p>
+## 许可证
 
-
-## 阅读工作流更新
-
-- 浏览器导入支持候选全文地址、失败恢复与保存回执；解析在后台排队，可同时继续导入和阅读。
-- DOI 自动补全会议、期刊和出版信息，论文库与阅读历史使用来源图标。
-- 桌面阅读伙伴显示阅读与任务气泡，支持拖动、隐藏、导入论文和继续阅读。
-- 多论文标签自动调整宽度，溢出标签可搜索，支持关闭、撤销和重启恢复。
-- 全文翻译切换论文后继续生成；标题与摘要支持中文、英文和双语展示。
-- 设置支持分类搜索、阅读偏好、解析并发、论文库迁移、完整备份和恢复。
-
-操作步骤见[功能指南](docs/USER_GUIDE.md)和[浏览器导入说明](docs/BROWSER-SUPPORT.md)。
+[MIT](LICENSE) · Copyright 2025 Flutter-Misdreavus
