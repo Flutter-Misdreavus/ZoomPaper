@@ -449,7 +449,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection, active = tru
                 ref={(el) => registerContainer(el, `blog:analysis:${activeKey}`)}
               >
                 {activeText ? (
-                  <MarkdownView markdown={activeText} baseDir={baseDir} />
+                  <MarkdownView enableImageAnnotations markdown={activeText} baseDir={baseDir} />
                 ) : (
                   <p className="py-8 text-center text-sm text-muted-foreground">
                     该部分内容缺失，可点击「重新生成」获取
@@ -465,7 +465,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection, active = tru
             ref={(el) => registerContainer(el, "blog:body")}
           >
             <h2 className="text-base font-semibold">博客正文</h2>
-            <MarkdownView markdown={parsed?.body ?? blog} baseDir={baseDir} />
+            <MarkdownView enableImageAnnotations markdown={parsed?.body ?? blog} baseDir={baseDir} />
           </div>
         </>
       ) : null}

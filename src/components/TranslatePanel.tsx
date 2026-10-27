@@ -628,8 +628,8 @@ export function TranslatePanel({ paperId, onAskSelection, active = true, onReady
                   className="flex flex-col gap-1.5"
                   ref={(el) => registerContainer(el, `trans:bi:${i}`)}
                 >
-                  <MarkdownView markdown={p.en} />
-                  {zh && <MarkdownView markdown={zh} className="trans-zh" />}
+                  <MarkdownView enableImageAnnotations markdown={p.en} />
+                  {zh && <MarkdownView enableImageAnnotations markdown={zh} className="trans-zh" />}
                 </div>
               );
             })}
@@ -643,7 +643,7 @@ export function TranslatePanel({ paperId, onAskSelection, active = true, onReady
                 <span className="inline-block w-fit rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   无中文译文
                 </span>
-                <MarkdownView markdown={en} />
+                <MarkdownView enableImageAnnotations markdown={en} />
               </div>
             ))}
             {/* 未配对中文段：多余译文，同样完整展示，不再静默丢弃 */}
@@ -658,7 +658,7 @@ export function TranslatePanel({ paperId, onAskSelection, active = true, onReady
                   <span className="inline-block w-fit rounded border border-dashed px-1.5 py-0.5 text-[11px] text-muted-foreground">
                     多余译文
                   </span>
-                  <MarkdownView markdown={stripped} className="trans-zh" />
+                  <MarkdownView enableImageAnnotations markdown={stripped} className="trans-zh" />
                 </div>
               ) : null;
             })}
@@ -668,7 +668,7 @@ export function TranslatePanel({ paperId, onAskSelection, active = true, onReady
                 className="border-t pt-3"
                 ref={(el) => registerContainer(el, "trans:bi:refs")}
               >
-                <MarkdownView markdown={references} />
+                <MarkdownView enableImageAnnotations markdown={references} />
               </div>
             )}
           </div>
@@ -678,7 +678,7 @@ export function TranslatePanel({ paperId, onAskSelection, active = true, onReady
           </p>
         ) : doc ? (
           <div ref={(el) => registerContainer(el, `trans:${mode}`)}>
-            <MarkdownView markdown={doc} />
+            <MarkdownView enableImageAnnotations markdown={doc} />
           </div>
         ) : null}
       </div>

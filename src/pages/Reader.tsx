@@ -1,3 +1,4 @@
+import { ImageAnnotationProvider } from "@/components/ImageAnnotationViewer";
 import { usePreferences, paperTitle } from "@/lib/preferences";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -119,6 +120,7 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
   const ready = paper?.parse_status === "ready";
 
   return (
+    <ImageAnnotationProvider paperId={paperId} active={active} baseDir={paper?.md_path?.replace(/[^/\\]+$/, "").replace(/[\\/]+$/, "") ?? ""}>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
         <IconTooltip label="返回论文库" side="bottom"><Button
@@ -251,6 +253,7 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
         </div>
       ) : null}
     </div>
+    </ImageAnnotationProvider>
   );
 }
 

@@ -453,6 +453,10 @@ fn export_notes_inner(db: &Db, paper_id: &str, destination: &str) -> Result<(), 
     let paper = get_paper_inner(db, paper_id)?;
     let mut output = format!("# {} — 阅读笔记\n\n", paper.title);
     for (kind, file) in ANNOTATION_KINDS {
+        // 图片标注不纳入文字笔记导出。
+        if kind == "image" {
+            continue;
+        }
         if let Some(raw) = get_annotations_file(&db, &paper_id, file)? {
             let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
             {
@@ -2922,12 +2926,13 @@ pub fn get_translation(
 
 // ---------- 阅读标注（高亮 / 笔记） ----------
 
-/// 标注文件的 kind → 文件名白名单（PDF 原文 / AI 博客 / AI 译文 各自独立文件，
+/// 标注文件的 kind → 文件名白名单（PDF 原文 / AI 博客 / AI 译文 / 图片独立文件，
 /// 前端自持 schema，后端仅读写字符串；分开存放避免跨视图全量覆盖竞态）。
-const ANNOTATION_KINDS: [(&str, &str); 3] = [
+const ANNOTATION_KINDS: [(&str, &str); 4] = [
     ("annotations", "annotations.json"),
     ("blog", "blog_annotations.json"),
     ("translate", "translation_annotations.json"),
+    ("image", "image_annotations.json"),
 ];
 
 /// 解析标注 kind（缺省 = PDF 原文标注）；未知 kind 报错。
@@ -2940,7 +2945,7 @@ fn resolve_annotation_file(kind: Option<&str>) -> Result<&'static str, String> {
         .ok_or_else(|| format!("未知的标注类型: {kind}"))
 }
 
-/// 读取论文目录下某类标注文件（kind：annotations / blog / translate），不存在返回 None。
+/// 读取论文目录下某类标注文件（kind：annotations / blog / translate / image），不存在返回 None。
 /// 返回原始 JSON 字符串，schema 由前端维护（与 save 侧对称）。
 #[tauri::command]
 pub fn get_annotations(
@@ -4604,6 +4609,7 @@ mod tests {
             r#"{"highlights":[{"page_idx":2,"text":"Evidence","note":{"text":"My note"}}]}"#,
         )
         .unwrap();
+        save_annotations_file(&db, &paper.id, "image_annotations.json", r#"{"version":1,"images":{}}"#).unwrap();
         let dest = tmp.join("notes.md");
         export_notes_inner(&db, &paper.id, dest.to_str().unwrap()).unwrap();
         let text = fs::read_to_string(&dest).unwrap();
@@ -4668,10 +4674,11 @@ mod tests {
         fs::write(&src, b"%PDF-1.4 test").unwrap();
         let paper = import_pdf_inner(&db, &library, src.to_str().unwrap()).unwrap();
 
-        // 三种 kind 各自独立文件，互不覆盖
+        // 各种 kind 独立文件，互不覆盖
         for (kind, filename, payload) in [
             ("annotations", "annotations.json", r#"{"kind":"pdf"}"#),
             ("blog", "blog_annotations.json", r#"{"kind":"blog"}"#),
+            ("image", "image_annotations.json", r#"{"kind":"image"}"#),
             (
                 "translate",
                 "translation_annotations.json",
