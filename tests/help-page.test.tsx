@@ -27,7 +27,6 @@ describe("HelpPage", () => {
 
     expect(screen.getByRole("button", { name: "AI 全文翻译" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "AI 博客" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "费曼学习" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "论文测验" })).toBeTruthy();
   });
 });

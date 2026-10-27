@@ -201,25 +201,6 @@ pub fn build_tools(
     tools
 }
 
-/// 费曼学习场景的工具集：本地研读 + 联网（按启用状态），
-/// **不含** `ask_user`（费曼是老师↔学生对话流，不允许澄清打断）与 `read_selection`（无选中段落）。
-pub fn build_feynman_tools(settings: &Settings) -> Vec<ToolKind> {
-    let mut tools = vec![
-        ToolKind::SearchPapers,
-        ToolKind::ReadSection,
-        ToolKind::GetOutline,
-        ToolKind::GetPaperMeta,
-        ToolKind::ListPapers,
-        ToolKind::ReadAnnotations,
-        ToolKind::ReadTranslation,
-    ];
-    if settings.web_search_available().is_some() {
-        tools.push(ToolKind::WebSearch);
-        tools.push(ToolKind::WebFetch);
-    }
-    tools
-}
-
 /// 执行一个工具（顺序执行；`offset` 为当前全局引用编号起点，工具内部编号顺延）。
 ///
 /// 注意：`AskUser` 由循环层（agent::drive_loop）拦截处理，不经过本函数。
@@ -361,7 +342,7 @@ fn format_sections_context(
     (text, citations)
 }
 
-/// 2. 精读章节：检索命中的章节升级为章节全文（复用费曼的 expand_sections）。
+/// 2. 精读章节：检索命中的章节升级为章节全文。
 fn read_section(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolOutput, String> {
     let paper_id = resolve_paper(ctx, args)?;
     let topic = args["topic"]
@@ -371,7 +352,7 @@ fn read_section(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolOu
         .ok_or_else(|| "缺少 topic 参数".to_string())?;
     let max_sections = args["max_sections"].as_u64().unwrap_or(2).min(4) as usize;
     let conn = ctx.db.conn();
-    let hits = rag::search(&conn, topic, crate::feynman::TOP_K, Some(&paper_id))
+    let hits = rag::search(&conn, topic, crate::rag::TOP_K, Some(&paper_id))
         .map_err(|e| format!("检索失败: {e}"))?;
     if hits.is_empty() {
         return Ok(ToolOutput {
@@ -388,8 +369,8 @@ fn read_section(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<ToolOu
         &paper_id,
         &hits,
         max_sections,
-        crate::feynman::SECTION_MAX_CHARS,
-        crate::feynman::SECTION_CTX_TOTAL_MAX,
+        crate::rag::SECTION_MAX_CHARS,
+        crate::rag::SECTION_CTX_TOTAL_MAX,
     )
     .map_err(|e| format!("展开章节失败: {e}"))?;
     let (text, citations) = format_sections_context(&title, &paper_id, &sections, &hits, offset);
@@ -1009,32 +990,6 @@ mod tests {
         }];
         let tools = build_tools(&s, Some("p1"), &sel);
         assert!(tools.contains(&ToolKind::ReadSelection));
-    }
-
-    #[test]
-    fn feynman_tools_exclude_ask_user_and_read_selection() {
-        let mut s = Settings::default();
-        s.web_search_provider = "none".into();
-        let tools = build_feynman_tools(&s);
-        assert!(tools.contains(&ToolKind::ReadSection));
-        assert!(!tools.contains(&ToolKind::AskUser)); // 费曼不允许澄清打断
-        assert!(!tools.contains(&ToolKind::ReadSelection)); // 无选中段落
-        assert!(!tools.contains(&ToolKind::WebSearch));
-        // 启用联网后包含 web 工具
-        s.web_search_provider = "auto".into();
-        s.providers.push(crate::settings::ProviderConfig {
-            id: "deepseek".to_string(),
-            name: "DeepSeek".to_string(),
-            provider_type: "openai-compat".to_string(),
-            api_key: "sk-test".to_string(),
-            base_url: Some("https://api.deepseek.com".to_string()),
-            default_model: "deepseek-chat".to_string(),
-            models: vec![],
-            enabled: true,
-        });
-        let tools2 = build_feynman_tools(&s);
-        assert!(tools2.contains(&ToolKind::WebSearch));
-        assert!(tools2.contains(&ToolKind::WebFetch));
     }
 
     #[test]

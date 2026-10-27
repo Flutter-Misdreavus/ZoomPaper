@@ -185,7 +185,7 @@ pub async fn run_agent<L: LlmChat>(
 
 /// 通用循环入口：给定完整消息列表（system + 历史 + user）与工具集，运行 agent 循环。
 ///
-/// 供费曼等非 RAG 场景复用（调用方自行组装消息与工具集）；行为与 [`run_agent`] 一致：
+/// 供非 RAG 场景复用（调用方自行组装消息与工具集）；行为与 [`run_agent`] 一致：
 /// 流式思考/正文经 `sink` 转发、工具执行发 ToolStart/ToolEnd、耗时累计返回。
 /// `cancel`：用户「暂停」标志，置位时中断生成并返回已生成的部分内容。
 pub async fn run_agent_loop<L: LlmChat>(
@@ -230,11 +230,6 @@ pub async fn run_agent_loop<L: LlmChat>(
         &mut tool_ms,
     )
     .await
-}
-
-/// 把纯文本消息列表转为 agent 消息（费曼等非工具消息场景复用）。
-pub fn plain_messages(messages: Vec<ChatMessage>) -> Vec<AgentMsg> {
-    messages.into_iter().map(AgentMsg::Plain).collect()
 }
 
 /// 从澄清断点续跑：把用户回答回喂为 ask_user 的结果，继续循环。

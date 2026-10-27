@@ -11,7 +11,7 @@ import {
 import type { Conversation } from "@/lib/api";
 
 interface Props {
-  conversation: Conversation | null;
+  conversation: Pick<Conversation, "id" | "title"> | null;
   deleting: boolean;
   onConfirm: () => void;
   onCancel: () => void;

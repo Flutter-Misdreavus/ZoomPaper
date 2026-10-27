@@ -1,10 +1,10 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { QaChat } from "@/components/QaChat";
 import { QuizPanel } from "@/components/QuizPanel";
 import { ConversationDeleteDialog } from "@/components/ConversationDeleteDialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
-import { deleteConversation, listConversations, type Conversation } from "@/lib/api";
+import { deleteConversation, listConversationSummaries, type ConversationSummary } from "@/lib/api";
 import { formatTime } from "@/lib/utils";
 import type { AnnotationRect } from "@/lib/api";
 import { CircleHelp, History, PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
@@ -49,6 +49,7 @@ export interface QaPanelHandle {
 }
 
 interface Props {
+  active?: boolean;
   paperId: string;
   defaultOpen?: boolean;
   onBusyChange?: (busy: boolean) => void;
@@ -67,10 +68,10 @@ const MAX_SELECTIONS = 5;
  * QaChat 始终挂载（display:none 隐藏），收纳不丢会话状态。
  * 头部「历史会话」下拉：当前论文的历史会话选择 / 新对话 / 删除（带确认）；
  * 用 localStorage 记住每篇论文上次打开的会话，重新进入自动恢复。
- * 注：费曼学习法已提升为左列独立视图（Reader 的 Tabs），此处仅保留普通问答。
+ * 注：此处仅保留普通问答与论文测验。
  */
 export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
-  { paperId, onJumpPage, onJumpToSelection, onBusyChange, defaultOpen = true },
+  { paperId, onJumpPage, onJumpToSelection, onBusyChange, defaultOpen = true, active = true },
   ref,
 ) {
   const [tab, setTab] = useState<"qa" | "quiz">(() => localStorage.getItem(`zoompaper.qaTab.${paperId}`) === "quiz" ? "quiz" : "qa");
@@ -81,6 +82,13 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     () => !defaultOpen,
   );
   useEffect(()=>setCollapsed(!defaultOpen),[defaultOpen]);
+  const [visited, setVisited] = useState<Set<string>>(() => new Set(defaultOpen ? [tab] : []));
+  const visible = active && !collapsed;
+  const qaVisited = visited.has("qa") || (visible && tab === "qa");
+  const quizVisited = visited.has("quiz") || (visible && tab === "quiz");
+  useEffect(() => {
+    if (visible) setVisited(current => current.has(tab) ? current : new Set([...current, tab]));
+  }, [visible, tab]);
   const [dragging, setDragging] = useState(false);
   // PDF 选中的段落列表（上下文引用区，可多条；发送成功后由 QaChat 回调清空）
   const [selections, setSelections] = useState<AskSelection[]>([]);
@@ -88,7 +96,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   const rootRef = useRef<HTMLDivElement>(null);
 
   // ---- 历史会话 ----
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   /** null = 新会话 */
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [chatRevision, setChatRevision] = useState(0);
@@ -96,7 +104,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   /** 待删除确认的会话 */
-  const [confirmDelete, setConfirmDelete] = useState<Conversation | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ConversationSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   /** QaChat 上报的发送状态（生成中禁用会话切换） */
   const [sending, setSending] = useState(false);
@@ -181,7 +189,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
   // 会话列表刷新（创建/删除后调用；保持当前激活会话不变）
   const refresh = useCallback(async () => {
     try {
-      const all = await listConversations();
+      const all = await listConversationSummaries(paperId);
       // 仅展示当前论文的会话
       setConversations(all.filter((c) => c.paper_id === paperId));
     } catch (e) {
@@ -191,6 +199,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
 
   // 论文切换/挂载：重置为新会话并加载该论文历史，尝试恢复上次打开的会话
   useEffect(() => {
+    if (!qaVisited) return;
     let cancelled = false;
     setActiveConvId(null);
     setSelections([]);
@@ -199,7 +208,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     setHistoryError(null);
     (async () => {
       try {
-        const all = await listConversations();
+        const all = await listConversationSummaries(paperId);
         if (cancelled) return;
         const mine = all.filter((c) => c.paper_id === paperId);
         setConversations(mine);
@@ -219,7 +228,7 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     return () => {
       cancelled = true;
     };
-  }, [paperId]);
+  }, [paperId, qaVisited]);
 
   /** 新会话创建成功：设为当前并记住（供下次进入恢复） */
   function handleConversationCreated(id: string) {
@@ -391,7 +400,8 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
             </div>
           </div>
           <div className={`min-h-0 flex-1 flex-col px-3 pb-3 ${tab === "qa" ? "flex" : "hidden"}`}>
-            {historyLoading ? <div role="status" className="flex flex-1 items-center justify-center text-sm text-muted-foreground">正在恢复对话…</div> : <QaChat
+            {qaVisited && (historyLoading ? <div role="status" className="flex flex-1 items-center justify-center text-sm text-muted-foreground">正在恢复对话…</div> : <MemoQaChat
+              active={visible && tab === "qa"}
               key={`${paperId}:${chatRevision}`}
               paperId={paperId}
               conversationId={activeConvId}
@@ -407,9 +417,9 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
               }
               onConversationCreated={handleConversationCreated}
               onSendingChange={setSending}
-            />}
+            />)}
           </div>
-          <div className={`min-h-0 flex-1 flex-col px-3 pb-3 ${tab === "quiz" ? "flex" : "hidden"}`}><QuizPanel paperId={paperId} /></div>
+          <div className={`min-h-0 flex-1 flex-col px-3 pb-3 ${tab === "quiz" ? "flex" : "hidden"}`}>{quizVisited && <MemoQuizPanel paperId={paperId} />}</div>
         </div>
       </aside>
 
@@ -423,3 +433,6 @@ export const QaPanel = forwardRef<QaPanelHandle, Props>(function QaPanel(
     </div>
   );
 });
+
+const MemoQaChat = memo(QaChat);
+const MemoQuizPanel = memo(QuizPanel);

@@ -1,5 +1,6 @@
+import { ImageAnnotationProvider } from "@/components/ImageAnnotationViewer";
 import { usePreferences, paperTitle } from "@/lib/preferences";
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
@@ -7,24 +8,26 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BlogPanel } from "@/components/BlogPanel";
 import { TranslatePanel } from "@/components/TranslatePanel";
-import { FeynmanChat } from "@/components/FeynmanChat";
 import { PdfViewer, type PdfViewerHandle } from "@/components/PdfViewer";
 import { QaPanel, type QaPanelHandle } from "@/components/QaPanel";
 import {
   addReadingTime,
   markPaperRead,
-  openPaperForReading,
+  touchPaper,
   getPaper,
   refreshPaperPublication,
   setPaperStatus,
   type Paper,
 } from "@/lib/api";
+import { readerCommitted, readerDisplayed } from "@/lib/readerPerformance";
 import { formatDuration } from "@/lib/utils";
 import { ArrowLeft, BookCheck, Clock, GitFork, MessageSquare } from "lucide-react";
 
 interface Props {
   paperId: string;
   active?: boolean;
+  retainPdf?: boolean;
+  onPdfActive?: () => void;
   onBusyChange?: (busy: boolean) => void;
   /** 外部跳入的目标页（0-based），如搜索结果/引用定位 */
   initialPageIdx?: number;
@@ -33,87 +36,57 @@ interface Props {
   onTitleChange?: (title: string) => void;
 }
 
-export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitleChange, active = true, onBusyChange }: Props) {
+export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitleChange, active = true, retainPdf = true, onPdfActive, onBusyChange }: Props) {
   const prefs=usePreferences();
   const endMarked=useRef(false);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [visited, setVisited] = useState(active);
-  useEffect(() => { if (active) setVisited(true); }, [active]);
   const pdfRef = useRef<PdfViewerHandle>(null);
   const qaRef = useRef<QaPanelHandle>(null);
+  const [navigationTarget, setNavigationTarget] = useState<{ pageIdx: number; rects?: import("@/lib/api").AnnotationRect[] }>();
+  const displayed = useCallback(() => readerDisplayed(paperId), [paperId]);
 
+  const initialRefresh = useRef(refreshSignal);
+  const loaded = useRef(false);
+  const publicationRequested = useRef(false);
+  const updatePaper = useCallback((next: Paper) => {
+    setPaper(current => current && JSON.stringify(current) === JSON.stringify(next) ? current : next);
+  }, []);
   useEffect(() => {
+    if (!active || (loaded.current && initialRefresh.current === refreshSignal)) return;
     let cancelled = false;
-    getPaper(paperId)
-      .then((p) => {
-        if (cancelled) return;
-        setPaper(p);
-        refreshPaperPublication(paperId).then((updated) => {
-          if (!cancelled) setPaper((current) => current?.id === updated.id ? { ...current, venue: updated.venue, authors: updated.authors } : current);
+    if (!loaded.current) setLoading(true);
+    getPaper(paperId).then(p => {
+      if (cancelled) return;
+      loaded.current = true;
+      initialRefresh.current = refreshSignal;
+      setError(null);
+      updatePaper(p);
+      if (!publicationRequested.current) {
+        publicationRequested.current = true;
+        void refreshPaperPublication(paperId).then(updated => {
+          if (!cancelled) setPaper(current => {
+            if (!current || current.id !== updated.id || (current.venue === updated.venue && current.authors === updated.authors)) return current;
+            return { ...current, venue: updated.venue, authors: updated.authors };
+          });
         }).catch(() => {});
-      })
-      .catch((e) => !cancelled && setError(String(e)))
+      }
+    }).catch(e => !cancelled && setError(String(e)))
       .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [paperId]);
-
-  useEffect(() => {
-    let canceled = false;
-    getPaper(paperId).then((updated) => { if (!canceled) setPaper(updated); }).catch(() => {});
-    return () => { canceled = true; };
-  }, [paperId, refreshSignal]);
+    return () => { cancelled = true; };
+  // 缓存论文只在失效且可见时刷新，不因激活重复读取。
+  }, [paperId, active, refreshSignal, updatePaper]);
   useEffect(() => { if (paper) onTitleChange?.(paperTitle(paper,"tab",prefs)); }, [paper?.title, paper?.title_zh, onTitleChange, prefs]);
-
-  useEffect(() => {
-    if (!active) return;
-    let canceled = false;
-    void openPaperForReading(paperId).then(updated => { if (!canceled) setPaper(updated); }).catch(() => {});
-    return () => { canceled = true; };
+  useEffect(() => { if (active) void touchPaper(paperId).catch(() => {}); }, [active, paperId]);
+  useLayoutEffect(() => {
+    if (active) readerCommitted(paperId);
   }, [active, paperId]);
-
   // 打开论文即进入「在读」状态（未读 → 在读；已读保持不变）。失败静默，不影响阅读。
   useEffect(() => {
     if (!prefs.markReading || !active || !paper || paper.reading_status === "reading" || paper.reading_status === "read") return;
     setPaperStatus(paper.id, "reading").catch(() => {});
   }, [paper, active, prefs.markReading]);
-
-  // 阅读时长累计：仅页面可见时计时，每 30s 上报一次，卸载/换论文时上报零头。失败静默。
-  const [sessionSeconds, setSessionSeconds] = useState(0);
-  useEffect(() => {
-    if (!paper || !active) return;
-    const pid = paper.id;
-    setSessionSeconds(0);
-    let pending = 0;
-    let visible = document.visibilityState === "visible";
-    const onVis = () => {
-      visible = document.visibilityState === "visible";
-    };
-    const flush = () => {
-      if (pending <= 0) return;
-      const s = pending;
-      pending = 0;
-      addReadingTime(pid, s).catch(() => {
-        pending += s; // 上报失败则留待下次
-      });
-    };
-    document.addEventListener("visibilitychange", onVis);
-    const timer = setInterval(() => {
-      if (!visible) return;
-      pending += 5;
-      setSessionSeconds((v) => v + 5);
-      if (pending >= 30) flush();
-    }, 5000);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVis);
-      flush();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 以论文 id 为计时边界
-  }, [paper?.id, active]);
 
   // 标记/取消已读（时间线统计口径）
   const toggleRead = () => {
@@ -123,10 +96,31 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
       .catch(() => {});
   };
 
-  const [readerMode, setReaderMode] = useState(() => localStorage.getItem(`zoompaper.readerMode.${paperId}`) ?? "pdf");
+  // 老用户本地可能存了已下线 tab 的值，非法时回退为 pdf
+  const [readerMode, setReaderMode] = useState(() => {
+    const saved = localStorage.getItem(`zoompaper.readerMode.${paperId}`);
+    return saved === "blog" || saved === "translate" ? saved : "pdf";
+  });
+  useLayoutEffect(() => { if (active && readerMode === "pdf") onPdfActive?.(); }, [active, readerMode, onPdfActive]);
+  const [visitedModes, setVisitedModes] = useState<Set<string>>(() => new Set([readerMode]));
+  useEffect(() => {
+    if (active) setVisitedModes(current => current.has(readerMode) ? current : new Set([...current, readerMode]));
+  }, [active, readerMode]);
+  const acceptPdfSelection = useCallback((text: string, pageIdx: number, rects?: import("@/lib/api").AnnotationRect[]) => qaRef.current?.acceptSelection(text, pageIdx, rects), []);
+  const acceptTextSelection = useCallback((text: string, location: string) => qaRef.current?.acceptSelection(text, null, undefined, location), []);
+  const blogGenerated = useCallback((path: string) => setPaper(current => current && current.blog_md_path !== path ? { ...current, blog_md_path: path } : current), []);
+  const jumpPage = useCallback((pageIdx: number) => { setNavigationTarget({ pageIdx }); setReaderMode("pdf"); }, []);
+  const jumpSelection = useCallback((pageIdx: number, rects?: import("@/lib/api").AnnotationRect[]) => { setNavigationTarget({ pageIdx, rects }); setReaderMode("pdf"); }, []);
+  const reachEnd = useCallback(() => {
+    if (prefs.markReadAtEnd && active && paper && !endMarked.current && paper.reading_status !== "read") {
+      endMarked.current = true;
+      void markPaperRead(paper.id, true).then(updatePaper).catch(() => { endMarked.current = false; });
+    }
+  }, [prefs.markReadAtEnd, active, paper?.id, paper?.reading_status, updatePaper]);
   const ready = paper?.parse_status === "ready";
 
   return (
+    <ImageAnnotationProvider paperId={paperId} active={active} baseDir={paper?.md_path?.replace(/[^/\\]+$/, "").replace(/[\\/]+$/, "") ?? ""}>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
       <div className="flex items-center gap-3">
         <IconTooltip label="返回论文库" side="bottom"><Button
@@ -159,13 +153,7 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
                 <GitFork className="h-4 w-4" />
               </Button></IconTooltip>
             )}
-            <span
-              className="flex items-center gap-1.5 text-sm text-muted-foreground"
-              title="本篇累计阅读时长"
-            >
-              <Clock className="h-4 w-4" strokeWidth={1.8} />
-              已阅读 {formatDuration(paper.total_read_seconds + sessionSeconds)}
-            </span>
+            <ReadingClock paperId={paperId} total={paper.total_read_seconds} active={active} />
             <Button
               variant={paper.reading_status === "read" ? "secondary" : "outline"}
               size="sm"
@@ -208,64 +196,54 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
               >
                 AI 翻译
               </TabsTrigger>
-              <TabsTrigger
-                value="feynman"
-                disabled={!ready}
-                title={ready ? undefined : "解析完成后可用"}
-              >
-                费曼学习法
-              </TabsTrigger>
             </TabsList>
             <TabsContent value="pdf" keepMounted className="flex min-h-0 flex-col">
-              {visited && <PdfViewer
+              {(visitedModes.has("pdf") || readerMode === "pdf") && <PdfViewer
                 ref={pdfRef}
                 active={active && readerMode === "pdf"}
-                onReachEnd={() => {if(prefs.markReadAtEnd && active && !endMarked.current && paper.reading_status!=="read"){endMarked.current=true;void markPaperRead(paper.id,true).then(setPaper).catch(()=>{endMarked.current=false;});}}}
+                retainResources={retainPdf}
+                onReady={displayed}
+                navigationTarget={navigationTarget}
+                onReachEnd={reachEnd}
                 pdfPath={paper.pdf_path}
                 paperId={paperId}
                 initialPageIdx={initialPageIdx}
-                onAskSelection={(text, pageIdx, rects) =>
-                  qaRef.current?.acceptSelection(text, pageIdx, rects)
-                }
+                onAskSelection={acceptPdfSelection}
               />}
             </TabsContent>
             <TabsContent value="blog" keepMounted className="min-h-0 overflow-y-auto pt-4 pr-4">
-              {ready && (
-                <BlogPanel
+              {ready && (visitedModes.has("blog") || readerMode === "blog") && (
+                <MemoBlogPanel
+                  active={active && readerMode === "blog"}
+                  onReady={displayed}
                   paper={paper}
-                  onBlogGenerated={(path) =>
-                    setPaper({ ...paper, blog_md_path: path })
-                  }
-                  onAskSelection={(text, location) =>
-                    qaRef.current?.acceptSelection(text, null, undefined, location)
-                  }
+                  onBlogGenerated={blogGenerated}
+                  onAskSelection={acceptTextSelection}
                 />
               )}
             </TabsContent>
             <TabsContent value="translate" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
-              {ready && (
-                <TranslatePanel
+              {ready && (visitedModes.has("translate") || readerMode === "translate") && (
+                <MemoTranslatePanel
+                  active={active && readerMode === "translate"}
+                  onReady={displayed}
                   paperId={paperId}
-                  onAskSelection={(text, location) =>
-                    qaRef.current?.acceptSelection(text, null, undefined, location)
-                  }
+                  onAskSelection={acceptTextSelection}
                 />
               )}
-            </TabsContent>
-            <TabsContent value="feynman" keepMounted className="flex min-h-0 flex-1 flex-col pt-4 pr-4">
-              {ready && <FeynmanChat paperId={paperId} />}
             </TabsContent>
           </Tabs>
 
           {/* 右列：问答（可拖拽调宽 / 收纳）；未解析时禁用 */}
           {ready ? (
-            <QaPanel
+            <MemoQaPanel
+              active={active}
               ref={qaRef}
               paperId={paperId}
               defaultOpen={prefs.showAssistant}
               onBusyChange={onBusyChange}
-              onJumpPage={(idx) => { setReaderMode("pdf"); requestAnimationFrame(() => pdfRef.current?.jumpToPage(idx)); }}
-              onJumpToSelection={(pageIdx, rects) => { setReaderMode("pdf"); requestAnimationFrame(() => pdfRef.current?.jumpToSelection(pageIdx, rects)); }}
+              onJumpPage={jumpPage}
+              onJumpToSelection={jumpSelection}
             />
           ) : (
             <div className="ml-2 flex w-10 shrink-0 items-start justify-center py-3 text-muted-foreground" title="解析完成后可用论文助手">
@@ -275,5 +253,37 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
         </div>
       ) : null}
     </div>
+    </ImageAnnotationProvider>
   );
 }
+
+const MemoBlogPanel = memo(BlogPanel);
+const MemoTranslatePanel = memo(TranslatePanel);
+const MemoQaPanel = memo(QaPanel);
+
+/** 计时只刷新自身，不驱动整篇内容重新渲染。 */
+const ReadingClock = memo(function ReadingClock({ paperId, total, active }: { paperId: string; total: number; active: boolean }) {
+  const [seconds, setSeconds] = useState(total);
+  const pending = useRef(0);
+  useEffect(() => { setSeconds(current => Math.max(current, total)); }, [total]);
+  useEffect(() => {
+    if (!active) return;
+    let visible = document.visibilityState === "visible";
+    const onVisibility = () => { visible = document.visibilityState === "visible"; };
+    const flush = () => {
+      const amount = pending.current;
+      if (!amount) return;
+      pending.current = 0;
+      void addReadingTime(paperId, amount).catch(() => { pending.current += amount; });
+    };
+    const timer = setInterval(() => {
+      if (!visible) return;
+      pending.current += 5;
+      setSeconds(current => current + 5);
+      if (pending.current >= 30) flush();
+    }, 5000);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); flush(); };
+  }, [paperId, active]);
+  return <span className="flex items-center gap-1.5 text-sm text-muted-foreground" title="本篇累计阅读时长"><Clock className="h-4 w-4" strokeWidth={1.8} />已阅读 {formatDuration(seconds)}</span>;
+});

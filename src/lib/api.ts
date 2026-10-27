@@ -178,73 +178,6 @@ export interface Conversation {
   messages: string;
   created_at: number;
   updated_at: number;
-  /** 遗留：旧版费曼要点笔记，已弃用 */
-  notes?: string | null;
-  /** 费曼会话滚动「教学进展」摘要（长对话控 token；qa 会话为 null） */
-  summary?: string | null;
-  /** 费曼闯关状态 JSON（概念计划 / 当前关卡 / 各概念状态）；null = 旧版自由聊天会话 */
-  feynman_state?: string | null;
-  /** 费曼「概念级独立会话」标记：null = 主行（或 qa / 旧版单会话）；N = 概念 N 的会话行 */
-  concept_index?: number | null;
-}
-
-export interface FeynmanMessage {
-  role: "user" | "assistant";
-  content: string;
-  /** 学生研读论文的工具调用轨迹（仅 assistant 消息携带；旧数据为 null） */
-  trace?: ToolStep[] | null;
-  /** 学生研读耗时（仅 assistant 消息携带；旧数据为 null） */
-  timing?: Timing | null;
-}
-
-/** 教学计划中的一项（一个概念 + 教学目标） */
-export interface PlanItem {
-  name: string;
-  objective: string;
-}
-
-export type ConceptStatus = "pending" | "teaching" | "quiz" | "passed" | "weak";
-
-export type StageStatus = "planning" | "teaching" | "quiz" | "done";
-
-/** 单个概念的状态记录 */
-export interface ConceptState {
-  name: string;
-  status: ConceptStatus;
-  /** 上次测验未通过时记录的缺口描述 */
-  weak_points: string[];
-  quiz_attempts: number;
-  /** 通过测验的时间戳（unix 秒） */
-  taught_at: number | null;
-  /** 该概念独立会话行的 conversation id（概念级会话机制；旧结构为 null） */
-  session_id?: string | null;
-  /** 概念完成摘要（测验通过后生成，供后续概念参考；未通过为 null） */
-  summary?: string | null;
-}
-
-/** 会话级闯关状态（持久化于 conversations.feynman_state JSON） */
-export interface FeynmanState {
-  plan: PlanItem[];
-  current_index: number;
-  status: StageStatus;
-  concepts: ConceptState[];
-}
-
-export interface FeynmanTurn {
-  conversation_id: string;
-  reply: string;
-  /** 闯关状态；旧会话为 null */
-  state?: FeynmanState | null;
-  /** 概念级会话机制下，新建/激活的概念会话行 id（教学轮为 null） */
-  concept_session_id?: string | null;
-  /** 本轮学生思考内容（非流式返回；仅实时展示，不持久化） */
-  thinking?: string | null;
-  /** 本轮工具调用轨迹（与消息持久化的 trace 一致） */
-  trace?: ToolStep[];
-  /** 本轮研读耗时 */
-  timing?: Timing;
-  /** 用户点击「暂停」：reply 为已生成的部分内容（可能为空） */
-  cancelled?: boolean;
 }
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -262,7 +195,14 @@ export const updateSettings = (newSettings: Settings) =>
   invoke<Settings>("update_settings", { newSettings });
 
 export const listPapers = () => invoke<Paper[]>("list_papers");
-export const getPaper = (paperId: string) => invoke<Paper>("get_paper", { paperId });
+const paperRequests = new Map<string, Promise<Paper>>();
+export const getPaper = (paperId: string): Promise<Paper> => {
+  const existing = paperRequests.get(paperId);
+  if (existing) return existing;
+  const request = invoke<Paper>("get_paper", { paperId }).finally(() => { if (paperRequests.get(paperId) === request) paperRequests.delete(paperId); });
+  paperRequests.set(paperId, request);
+  return request;
+};
 export const refreshPaperPublication = (paperId: string) => invoke<Paper>("refresh_paper_publication", { paperId });
 export const getPaperMd = (paperId: string) => invoke<string>("get_paper_md", { paperId });
 export const importPdf = (sourcePath: string) =>
@@ -549,6 +489,8 @@ export const askQuestionReply = (
 export const cancelGeneration = (cancelToken: string) =>
   invoke<void>("cancel_generation", { cancelToken });
 
+export type ConversationSummary = Omit<Conversation, "messages">;
+export const listConversationSummaries = (paperId: string) => invoke<ConversationSummary[]>("list_conversation_summaries", { paperId });
 export const listConversations = () =>
   invoke<Conversation[]>("list_conversations");
 
@@ -558,89 +500,6 @@ export const getConversation = (conversationId: string) =>
 /** 删除单个问答会话（含其全部消息） */
 export const deleteConversation = (conversationId: string) =>
   invoke<void>("delete_conversation", { conversationId });
-
-export const feynmanStart = (paperId: string) =>
-  invoke<FeynmanTurn>("feynman_start", { paperId });
-
-export const feynmanConfirmPlan = (
-  conversationId: string,
-  plan: PlanItem[],
-  webSearch?: boolean,
-  cancelToken?: string | null,
-  onEvent?: Channel<AgentEvent>,
-) =>
-  invoke<FeynmanTurn>("feynman_confirm_plan", {
-    conversationId,
-    plan,
-    webSearch: webSearch ?? true,
-    cancelToken: cancelToken ?? null,
-    onEvent: onEvent ?? new Channel<AgentEvent>(),
-  });
-
-export const feynmanTurn = (
-  message: string,
-  paperId: string,
-  conversationId?: string | null,
-  webSearch?: boolean,
-  cancelToken?: string | null,
-  onEvent?: Channel<AgentEvent>,
-) =>
-  invoke<FeynmanTurn>("feynman_turn", {
-    message,
-    paperId,
-    conversationId: conversationId ?? null,
-    webSearch: webSearch ?? true,
-    cancelToken: cancelToken ?? null,
-    onEvent: onEvent ?? new Channel<AgentEvent>(),
-  });
-
-/** 对当前概念出测验题（状态置为 quiz） */
-export const feynmanQuiz = (
-  conversationId: string,
-  webSearch?: boolean,
-  cancelToken?: string | null,
-  onEvent?: Channel<AgentEvent>,
-) =>
-  invoke<FeynmanTurn>("feynman_quiz", {
-    conversationId,
-    webSearch: webSearch ?? true,
-    cancelToken: cancelToken ?? null,
-    onEvent: onEvent ?? new Channel<AgentEvent>(),
-  });
-
-/** 交卷判定：收集出题之后的作答，判定 通过/需补讲 */
-export const feynmanJudge = (
-  conversationId: string,
-  webSearch?: boolean,
-  cancelToken?: string | null,
-  onEvent?: Channel<AgentEvent>,
-) =>
-  invoke<FeynmanTurn>("feynman_judge", {
-    conversationId,
-    webSearch: webSearch ?? true,
-    cancelToken: cancelToken ?? null,
-    onEvent: onEvent ?? new Channel<AgentEvent>(),
-  });
-
-/** 进入下一概念 */
-export const feynmanNext = (
-  conversationId: string,
-  webSearch?: boolean,
-  cancelToken?: string | null,
-  onEvent?: Channel<AgentEvent>,
-) =>
-  invoke<FeynmanTurn>("feynman_next", {
-    conversationId,
-    webSearch: webSearch ?? true,
-    cancelToken: cancelToken ?? null,
-    onEvent: onEvent ?? new Channel<AgentEvent>(),
-  });
-
-export const feynmanReview = (conversationId: string) =>
-  invoke<string>("feynman_review", { conversationId });
-
-export const getFeynmanConversation = (paperId: string) =>
-  invoke<Conversation | null>("get_feynman_conversation", { paperId });
 
 /** AI 翻译：一个分块对（en 为原文块，zh 为对应中文块） */
 export interface TranslationChunk {
@@ -708,6 +567,7 @@ export const saveAnnotations = (paperId: string, data: string, kind?: string) =>
 export const translateSelection = (text: string, context = "") =>
   invoke<string>("translate_selection", { text, context });
 
+export const touchPaper = (paperId: string) => invoke<void>("touch_paper", { paperId });
 export const openPaperForReading = (paperId: string) => invoke<Paper>("open_paper", { paperId });
 
 export const setReadingStatus = (paperIds: string[], status: string) => invoke<void>("set_reading_status", { paperIds, status });

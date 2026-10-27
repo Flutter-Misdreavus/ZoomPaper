@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** 整秒格式（DSH 风格）：<60s → "12s"；≥60s → "2m05s" */
 export function fmtDur(secs: number): string {
@@ -12,14 +12,15 @@ export function fmtDur(secs: number): string {
  * 实时计时：挂载即从 0 开始、**每秒**跳动（DSH `TurnStatus` 同款）。
  * 仅挂载在生成/思考阶段，完成后组件卸载即消失。
  */
-export function LiveClock() {
+export function LiveClock({ active = true }: { active?: boolean }) {
   const [secs, setSecs] = useState(0);
+  const start = useRef(Date.now());
   useEffect(() => {
-    const start = Date.now();
+    if (!active) return;
     const id = setInterval(() => {
-      setSecs(Math.floor((Date.now() - start) / 1000));
+      setSecs(Math.floor((Date.now() - start.current) / 1000));
     }, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [active]);
   return <span className="tabular-nums">{fmtDur(secs)}</span>;
 }

@@ -20,11 +20,13 @@ export interface PendingSelection {
 export function useTextSelection(
   containersRef: React.RefObject<Map<HTMLElement, string>>,
   onSelection: (docKey: string, sel: PendingSelection) => void,
+  active = true,
 ) {
   const cbRef = useRef(onSelection);
   cbRef.current = onSelection;
 
   useEffect(() => {
+    if (!active) return;
     const onMouseUp = (e: MouseEvent) => {
       if (e.button !== 0) return;
       const selObj = window.getSelection();
@@ -59,5 +61,5 @@ export function useTextSelection(
     document.addEventListener("mouseup", onMouseUp);
     return () => document.removeEventListener("mouseup", onMouseUp);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [active]);
 }

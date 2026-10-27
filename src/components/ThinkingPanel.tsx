@@ -3,6 +3,7 @@ import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 import { fmtDur } from "@/components/LiveClock";
 
 interface Props {
+  active?: boolean;
   /** 已累计的思考文本 */
   text: string;
   /** 是否正在生成中（胶囊显示「AI 思考中…」+ 实时计时） */
@@ -14,30 +15,31 @@ interface Props {
  * - 生成中：胶囊与展开头部共用**同一个计时器**（每秒跳动，DSH `TurnStatus` 同款），
  *   显示「AI 思考中… Ns」，让用户清晰看到 AI 正在思考。
  * - 完成后：仅显示「已深度思考」（**不再显示时间**）；思考内容不持久化，
- *   仅本次会话内可展开回顾；总耗时由回答下方的 TimingLine 记录。
+ *   仅本次会话内可展开回顾。
  */
-export function ThinkingPanel({ text, streaming }: Props) {
+export function ThinkingPanel({ text, streaming, active = true }: Props) {
   const [open, setOpen] = useState(false); // 默认收纳
   const [elapsedMs, setElapsedMs] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  const started = useRef(Date.now());
   // 生成中：单一计时器，从思考开始每秒跳动（展开/收起不影响）
   useEffect(() => {
     if (!streaming) {
       setElapsedMs(0);
       return;
     }
-    const start = Date.now();
-    const id = setInterval(() => setElapsedMs(Date.now() - start), 1000);
+    if (!active) return;
+    const id = setInterval(() => setElapsedMs(Date.now() - started.current), 1000);
     return () => clearInterval(id);
-  }, [streaming]);
+  }, [streaming, active]);
 
   // 展开状态下生成中自动滚底
   useEffect(() => {
-    if (open && streaming) {
+    if (active && open && streaming) {
       ref.current?.scrollTo({ top: ref.current.scrollHeight });
     }
-  }, [text, open, streaming]);
+  }, [text, open, streaming, active]);
 
   if (!text) return null;
 

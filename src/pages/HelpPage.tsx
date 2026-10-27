@@ -77,7 +77,6 @@ const guideSections: GuideSection[] = [
     items: [
       { id: "full-translate", title: "AI 全文翻译", icon: Languages, summary: "生成中文译文并支持对照阅读。", steps: ["打开论文并切换到“AI 翻译”。", "点击开始翻译。", "完成后切换中文或中英对照视图。"] },
       { id: "blog", title: "AI 博客", icon: Newspaper, summary: "把论文整理为更易读的讲解。", steps: ["打开论文并切换到博客。", "点击生成博客。", "生成期间可以切换论文，返回后继续查看进度。"] },
-      { id: "feynman", title: "费曼学习", icon: Brain, summary: "按概念讲解、追问和复盘。", steps: ["打开论文并进入费曼学习。", "生成并确认概念计划。", "逐个概念讲给 AI 学生，回答追问并完成测验。"] },
       { id: "quiz", title: "论文测验", icon: ClipboardCheck, summary: "用题目检查对论文的理解。", steps: ["打开论文并切换到测验。", "点击新建测验。", "作答并提交，查看答案与解析。"] },
     ],
   },

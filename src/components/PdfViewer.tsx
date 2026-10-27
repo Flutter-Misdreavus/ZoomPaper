@@ -1,5 +1,9 @@
+import { pdfCanvasCache, pdfRenderQueue, trackPdfDocument } from "@/lib/pdfResources";
+import { recordReaderPerformance } from "@/lib/readerPerformance";
 import {
   forwardRef,
+  memo,
+  useId,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -96,8 +100,11 @@ export interface PdfViewerHandle {
 
 interface Props {
   onReachEnd?: () => void;
+  onReady?: () => void;
+  navigationTarget?: { pageIdx: number; rects?: AnnotationRect[] };
   pdfPath: string;
   active?: boolean;
+  retainResources?: boolean;
   /** 论文 id：高亮/笔记按论文持久化到 annotations.json */
   paperId: string;
   /** 初始跳入的目标页（0-based），文档加载后自动跳转 */
@@ -170,6 +177,7 @@ function correctTextLayerWidths(
 ) {
   const divs = textLayer.textDivs;
   const n = Math.min(divs.length, log.length);
+  const corrections: Array<[HTMLElement, number]> = [];
   for (let i = 0; i < n; i++) {
     const div = divs[i];
     if (!div.isConnected) continue;
@@ -183,9 +191,10 @@ function correctTextLayerWidths(
     if (actual > 0.5 && Math.abs(target - actual) > 0.5) {
       // 宽夹紧仅防病态数据；真实字体度量差异通常在 0.85–1.25 之间
       const ratio = Math.min(4, Math.max(0.25, target / actual));
-      div.style.setProperty("--scale-x", String(ratio));
+      corrections.push([div, ratio]);
     }
   }
+  for (const [div, ratio] of corrections) div.style.setProperty("--scale-x", String(ratio));
 }
 
 /** 链接/目录目标解析结果：pageIdx 0-based；yFrac 为目标点距页顶比例（0..1，无则跳页顶） */
@@ -258,16 +267,29 @@ async function resolveDestination(
  * - 高亮/笔记持久化到论文目录 annotations.json（归一化矩形，随缩放自动缩放）；
  * - 原生带 outline 的 PDF 显示目录侧栏，点击跳页。
  */
-export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfPath, paperId, onReachEnd, initialPageIdx, onAskSelection, active = true },
+export const PdfViewer = memo(forwardRef<PdfViewerHandle, Props>(function PdfViewer(
+  { pdfPath, paperId, onReachEnd, initialPageIdx, onAskSelection, active = true, retainResources = true, onReady, navigationTarget },
   ref,
 ) {
+  const owner = useId();
+  const readyCallback = useRef(onReady); readyCallback.current = onReady;
+  const consumedTarget = useRef<typeof navigationTarget>(undefined);
+  const generation = useRef(0);
+  const sequence = useRef(0);
+  const lastInitialPage = useRef(initialPageIdx);
+  const activeRef = useRef(active); activeRef.current = active;
+  const currentPageRef = useRef(1);
+  const visiblePages = useRef(new Set<number>());
+  const renderKeys = useRef(new Map<number, string>());
+  const renderedScale = useRef<number | null>(null);
+  const resumed = useRef(false);
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [slots, setSlots] = useState<PageSlot[]>([]);
   const [scale, setScale] = useState(() => { const saved = Number(localStorage.getItem(`zoompaper:scale:${paperId}`) ?? 1); return Number.isFinite(saved) ? Math.max(0.5, Math.min(4, saved)) : 1; });
   useEffect(() => { localStorage.setItem(`zoompaper:scale:${paperId}`, String(scale)); }, [scale, paperId]);
   const [fitScale, setFitScale] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
+  currentPageRef.current = currentPage;
   const [pageInput, setPageInput] = useState("1");
   const restoredPage = useRef(false);
   const [loading, setLoading] = useState(true);
@@ -293,6 +315,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastScroll = useRef({ top: 0, left: 0 });
+  const hasScrollPosition = useRef(false);
   useLayoutEffect(() => {
     if (!active) { setSelToolbar(null); return; }
     const frame = requestAnimationFrame(() => {
@@ -388,29 +411,50 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }
 
-  // 加载文档
+  function releasePage(idx: number) {
+    const key = renderKeys.current.get(idx);
+    if (key) pdfRenderQueue.cancel(key);
+    renderKeys.current.delete(idx);
+    pdfCanvasCache.forget(`${owner}:${idx}`);
+    textLayersRef.current[idx]?.cancel();
+    textLayersRef.current[idx] = null;
+    const element = pageRefs.current[idx];
+    const canvas = element?.querySelector("canvas");
+    if (canvas) { canvas.width = 0; canvas.height = 0; canvas.remove(); }
+    element?.querySelector(".textLayer")?.remove();
+    element?.querySelector(".zp-links")?.remove();
+    renderedRef.current.delete(idx);
+    linksBuiltRef.current.delete(idx);
+  }
+  function releasePages() {
+    generation.current++;
+    pdfRenderQueue.cancelOwner(owner);
+    for (const idx of [...renderedRef.current]) releasePage(idx);
+    renderedScale.current = null;
+  }
   useEffect(() => {
+    if (!retainResources) { setDoc(null); return; }
     let cancelled = false;
     let task: pdfjs.PDFDocumentLoadingTask | null = null;
+    let untrack: (() => void) | undefined;
+    const abort = new AbortController();
     (async () => {
+      restoredPage.current = false;
       setLoading(true);
       setError(null);
-      setDoc(null);
-      renderedRef.current.clear();
-      linksBuiltRef.current.clear();
-      textLayersRef.current.forEach((tl) => tl?.cancel());
-      textLayersRef.current = [];
       try {
-        const resp = await fetch(convertFileSrc(pdfPath));
+        const started = performance.now();
+        const resp = await fetch(convertFileSrc(pdfPath), { signal: abort.signal });
         if (!resp.ok) throw new Error(`读取 PDF 失败（${resp.status}）`);
         const data = await resp.arrayBuffer();
+        if (cancelled) return;
         task = pdfjs.getDocument({ data });
+        untrack = trackPdfDocument();
         const docProxy = await task.promise;
         if (cancelled) return;
-
-        // 逐页取原始尺寸，建立占位
         const pageSlots: PageSlot[] = [];
         for (let i = 1; i <= docProxy.numPages; i++) {
+          if (cancelled) return;
           const page = await docProxy.getPage(i);
           const vp = page.getViewport({ scale: 1 });
           pageSlots.push({ width: vp.width, height: vp.height });
@@ -418,10 +462,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         if (cancelled) return;
         setSlots(pageSlots);
         setDoc(docProxy);
-        setScale(1);
-        setCurrentPage(1);
-        setShowToc(false);
-        setShowAnnotations(false);
+        recordReaderPerformance("pdf-load", started);
       } catch (e) {
         if (!cancelled) setError(String(e));
       } finally {
@@ -430,13 +471,15 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     })();
     return () => {
       cancelled = true;
-      void task?.destroy();
+      abort.abort();
+      releasePages();
+      untrack?.();
+      void task?.destroy().catch(() => {});
     };
-  }, [pdfPath]);
+  }, [pdfPath, retainResources]);
 
   // 读取该论文已持久化的标注
   useEffect(() => {
-    if (!doc) return;
     let cancelled = false;
     annotationsLoadedRef.current = false;
     getAnnotations(paperId)
@@ -470,7 +513,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, paperId]);
+  }, [paperId]);
 
   // Queue immediately so leaving the reader cannot discard the last edit.
   useEffect(() => {
@@ -506,7 +549,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   // 目录侧栏打开时一次性预解析所有节点页码（顺序 await + 缓存）
   useEffect(() => {
-    if (!showToc || !doc || !outline) return;
+    if (!active || !showToc || !doc || !outline) return;
     let cancelled = false;
     (async () => {
       const stack = [...outline];
@@ -524,12 +567,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     return () => {
       cancelled = true;
     };
-  }, [showToc, doc, outline]);
+  }, [showToc, doc, outline, active]);
 
   // 选择结束（mouseup / 选区清空）移除各页文本层 selecting，恢复链接可点；
   // 选区存在期间保持链接禁用（官方行为：先点空白清除选区，再点链接）
   useEffect(() => {
-    if (!doc) return;
+    if (!doc || !active) return;
     const clearSelecting = () => {
       for (const el of pageRefs.current) {
         el?.querySelector(".textLayer")?.classList.remove("selecting");
@@ -559,11 +602,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       document.removeEventListener("mouseup", clearSelecting);
       document.removeEventListener("selectionchange", onSelectionChange);
     };
-  }, [doc]);
+  }, [doc, active]);
 
   // fit-width：容器宽 / 第一页原始宽
   useEffect(() => {
-    if (!slots.length || !scrollRef.current) return;
+    if (!active || !slots.length || !scrollRef.current) return;
     const el = scrollRef.current;
     const update = () => {
       // 留出内边距与滚动条余量
@@ -573,11 +616,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [slots]);
+  }, [slots, active, loading]);
 
   // 懒渲染 + 当前页跟踪
   useEffect(() => {
-    if (!doc || !scrollRef.current) return;
+    if (!active || !doc || !scrollRef.current) return;
     const root = scrollRef.current;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -585,12 +628,23 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           const idx = Number((entry.target as HTMLElement).dataset.pageIdx);
           if (entry.isIntersecting && !renderedRef.current.has(idx)) {
             renderedRef.current.add(idx);
-            void renderPage(doc, idx);
+            queuePage(doc, idx);
           }
         }
       },
       { root, rootMargin: "600px 0px" },
     );
+    const visibility = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const idx = Number((entry.target as HTMLElement).dataset.pageIdx);
+        if (entry.isIntersecting) {
+          visiblePages.current.add(idx);
+          pdfCanvasCache.touch(`${owner}:${idx}`);
+          if (!renderedRef.current.has(idx)) { renderedRef.current.add(idx); queuePage(doc, idx); }
+        } else visiblePages.current.delete(idx);
+      }
+      pdfCanvasCache.trim();
+    }, { root });
     const tracker = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -605,13 +659,16 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       if (el) {
         observer.observe(el);
         tracker.observe(el);
+        visibility.observe(el);
       }
     });
     return () => {
+      visiblePages.current.clear();
       observer.disconnect();
       tracker.disconnect();
+      visibility.disconnect();
     };
-  }, [doc, slots, dpr]);
+  }, [doc, slots, dpr, active]);
 
   // HiDPI：窗口在 Retina / 普通屏之间拖动时 DPR 变化，更新 dpr 触发下方重渲逻辑
   useEffect(() => {
@@ -624,7 +681,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   // Ctrl+滚轮 / 双指捏合缩放：原生非被动监听（React 合成 onWheel 无法可靠 preventDefault）
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!active || !el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
@@ -663,7 +720,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       el.removeEventListener("gestureend", onGestureEnd);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
+  }, [loading, active]);
 
   // 缩放锚点应用：DOM 提交后按锚点校正滚动，保持光标下内容点不动
   useLayoutEffect(() => {
@@ -675,39 +732,33 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     zoomAnchorRef.current = null;
   }, [scale]);
 
-  // 缩放/dpr 变化后「防抖」重渲：手势期间旧 canvas 先 CSS 拉伸（流畅），停止后再补锐
   useEffect(() => {
-    if (!doc) return;
-    rerenderTimerRef.current = window.setTimeout(() => {
-      renderedRef.current.clear();
-      pageRefs.current.forEach((el, idx) => {
-        if (!el) return;
-        const canvas = el.querySelector("canvas");
-        if (canvas) canvas.remove();
-        textLayersRef.current[idx]?.cancel();
-        textLayersRef.current[idx] = null;
-        el.querySelector(".textLayer")?.remove();
-      });
-      // 对可见页直接渲染
-      pageRefs.current.forEach((el, idx) => {
-        if (!el || !scrollRef.current) return;
-        const r = el.getBoundingClientRect();
-        const root = scrollRef.current.getBoundingClientRect();
-        if (r.bottom > root.top - 600 && r.top < root.bottom + 600) {
-          renderedRef.current.add(idx);
-          void renderPage(doc, idx);
-        }
-      });
-      rerenderTimerRef.current = null;
-    }, 150);
-    return () => {
-      if (rerenderTimerRef.current !== null) {
-        window.clearTimeout(rerenderTimerRef.current);
-        rerenderTimerRef.current = null;
+    if (!active) {
+      for (const [idx, key] of [...renderKeys.current]) {
+        pdfRenderQueue.cancel(key);
+        releasePage(idx);
       }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, effectiveScale, dpr]);
+      pdfCanvasCache.trim();
+      return;
+    }
+    if (!doc) return;
+    const resolution = effectiveScale * dpr;
+    if (renderedScale.current === resolution) return;
+    rerenderTimerRef.current = window.setTimeout(() => {
+      releasePages();
+      renderedScale.current = resolution;
+      const root = scrollRef.current?.getBoundingClientRect();
+      if (!root) return;
+      const nearby = pageRefs.current.map((el, idx) => ({ idx, rect: el?.getBoundingClientRect() }));
+      for (const { idx, rect } of nearby) {
+        if (rect && rect.bottom > root.top - 600 && rect.top < root.bottom + 600) {
+          renderedRef.current.add(idx);
+          queuePage(doc, idx);
+        }
+      }
+    }, 150);
+    return () => { if (rerenderTimerRef.current !== null) window.clearTimeout(rerenderTimerRef.current); };
+  }, [doc, effectiveScale, dpr, active]);
 
   // 划选结束：把选区换算为各页归一化矩形，弹出浮动工具条
   function handleMouseUp(e: React.MouseEvent) {
@@ -924,23 +975,43 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     ));
   }
 
+  function pagePriority(idx: number) {
+    return activeRef.current ? Math.abs(idx - currentPageRef.current + 1) : 100000 + Math.abs(idx - currentPageRef.current + 1);
+  }
+  function queuePage(docProxy: pdfjs.PDFDocumentProxy, idx: number) {
+    const epoch = generation.current;
+    const key = `${owner}:${epoch}:${idx}:${++sequence.current}`;
+    if (renderKeys.current.has(idx)) return;
+    renderKeys.current.set(idx, key);
+    pdfRenderQueue.enqueue(key, pagePriority(idx), async signal => {
+      try { await renderPage(docProxy, idx, signal, epoch); }
+      finally { if (renderKeys.current.get(idx) === key) renderKeys.current.delete(idx); }
+    });
+  }
+
   async function renderPage(
     docProxy: pdfjs.PDFDocumentProxy,
     idx: number,
+    signal: AbortSignal,
+    epoch: number,
   ) {
+    const started = performance.now();
+    const valid = () => !signal.aborted && epoch === generation.current && activeRef.current;
     const container = pageRefs.current[idx];
     if (!container || container.querySelector("canvas")) return;
     try {
       const page = await docProxy.getPage(idx + 1);
+      if (!valid()) return;
+      const cssScale = effectiveScaleRef.current;
       // 后备缓冲按 dpr 倍渲染：canvas 物理像素 = CSS 像素 × dpr，显示尺寸不变 → 文字锐利
-      const viewport = page.getViewport({ scale: effectiveScaleRef.current * dpr });
+      const viewport = page.getViewport({ scale: cssScale * dpr });
       const canvas = document.createElement("canvas");
       canvas.width = Math.floor(viewport.width);
       canvas.height = Math.floor(viewport.height);
       canvas.className = "block h-auto w-full";
       container.appendChild(canvas);
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) { releasePage(idx); return; }
       // 文本层：CSS 比例（不乘 dpr），与 canvas 并行渲染。
       // 包装 textContentSource 以按序记录每个文本 item（与 textDivs 一一对应），
       // 渲染完成后做宽度校正，解决通用字体族与内嵌字体的宽度度量差异。
@@ -952,9 +1023,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         textDiv.classList.add("selecting");
       });
       const itemLog: TextItemLog[] = [];
+      const sourceReader = page.streamTextContent().getReader();
       const wrappedStream = new ReadableStream({
         async start(controller) {
-          const reader = page.streamTextContent().getReader();
+          const reader = sourceReader;
           try {
             while (true) {
               const { value, done } = await reader.read();
@@ -984,23 +1056,45 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const textLayer = new pdfjs.TextLayer({
         textContentSource: wrappedStream,
         container: textDiv,
-        viewport: page.getViewport({ scale: effectiveScaleRef.current }),
+        viewport: page.getViewport({ scale: cssScale }),
       });
       textLayersRef.current[idx] = textLayer;
       const textLayerTask = textLayer
         .render()
         .then(() => {
-          correctTextLayerWidths(textLayer, itemLog, effectiveScaleRef.current);
+          if (valid()) correctTextLayerWidths(textLayer, itemLog, cssScale);
         })
         .catch(() => {
           /* 文档销毁/缩放取消时静默忽略 */
         });
       // 链接层：每页仅构建一次（百分比定位，缩放重建时无需重建）
-      const linksTask = buildLinksLayer(page, idx).catch(() => {});
-      await Promise.all([page.render({ canvas, canvasContext: ctx, viewport }).promise, textLayerTask, linksTask]);
+      const linksTask = buildLinksLayer(page, idx, valid).catch(() => {});
+      const renderTask = page.render({ canvas, canvasContext: ctx, viewport });
+      const cancel = () => { renderTask.cancel(); textLayer.cancel(); void sourceReader.cancel().catch(() => {}); };
+      signal.addEventListener("abort", cancel, { once: true });
+      pdfCanvasCache.register(`${owner}:${idx}`, canvas.width * canvas.height * 4, () => {
+        if (activeRef.current && isPageVisible(idx)) return -1;
+        return pagePriority(idx);
+      }, () => releasePage(idx));
+      try {
+        await Promise.all([renderTask.promise, textLayerTask, linksTask]);
+        if (valid()) {
+          recordReaderPerformance("pdf-render", started);
+          if (isPageVisible(idx)) readyCallback.current?.();
+        }
+      } finally { signal.removeEventListener("abort", cancel); }
     } catch {
-      /* 文档销毁/缩放取消时静默忽略 */
+      if (epoch === generation.current && !signal.aborted) releasePage(idx);
     }
+  }
+
+  function isPageVisible(idx: number) {
+    const element = pageRefs.current[idx];
+    const root = scrollRef.current;
+    if (!element || !root || !root.clientHeight) return false;
+    const rect = element.getBoundingClientRect();
+    const viewport = root.getBoundingClientRect();
+    return rect.bottom > viewport.top && rect.top < viewport.bottom;
   }
 
   function jumpToPage(pageIdx: number) {
@@ -1051,7 +1145,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   }
 
   /** 构建某页的链接层（百分比定位，缩放自动缩放；每页仅一次） */
-  async function buildLinksLayer(page: pdfjs.PDFPageProxy, idx: number) {
+  async function buildLinksLayer(page: pdfjs.PDFPageProxy, idx: number, valid: () => boolean) {
     const container = pageRefs.current[idx];
     if (!container || linksBuiltRef.current.has(idx)) return;
     linksBuiltRef.current.add(idx);
@@ -1067,6 +1161,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     } catch {
       return;
     }
+    if (!valid()) return;
     const links = annotations.filter(
       (a) =>
         a.annotationType === pdfjs.AnnotationType.LINK &&
@@ -1102,7 +1197,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       });
       layer.appendChild(el);
     }
-    if (layer.childElementCount) container.appendChild(layer);
+    if (valid() && layer.childElementCount) container.appendChild(layer);
   }
 
   /** 跳转到选中段落位置：有归一化矩形时精确滚动到段落顶部（跨缩放仍有效），否则跳页顶 */
@@ -1124,16 +1219,47 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     }
   }, [currentPage, doc, paperId, active, onReachEnd]);
 
+  useEffect(() => {
+    if (!active || !doc) return;
+    const frame = requestAnimationFrame(() => {
+      if ([...renderedRef.current].some(idx => !renderKeys.current.has(idx) && isPageVisible(idx))) readyCallback.current?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, doc]);
+
   // 文档就绪后跳到外部指定页（搜索/引用定位）
   useEffect(() => {
-    if (!doc) return;
+    if (!doc || !active) return;
+    if (navigationTarget && consumedTarget.current !== navigationTarget) {
+      consumedTarget.current = navigationTarget;
+      jumpToSelection(navigationTarget.pageIdx, navigationTarget.rects);
+      restoredPage.current = true;
+      resumed.current = true;
+      return;
+    }
+    const changedTarget = lastInitialPage.current !== initialPageIdx;
+    lastInitialPage.current = initialPageIdx;
+    if (changedTarget && initialPageIdx !== undefined) {
+      jumpToPage(Math.max(0, Math.min(doc.numPages - 1, initialPageIdx)));
+      restoredPage.current = true;
+      resumed.current = true;
+      return;
+    }
+    if (resumed.current) {
+      const element = scrollRef.current;
+      if (element && hasScrollPosition.current) { element.scrollTop = lastScroll.current.top; element.scrollLeft = lastScroll.current.left; }
+      else jumpToPage(currentPageRef.current - 1);
+      restoredPage.current = true;
+      return;
+    }
     let saved = 0;
     try { saved = Number(localStorage.getItem(`zoompaper:page:${paperId}`) ?? 0); } catch { /* storage unavailable */ }
     const target = Math.max(0, Math.min(doc.numPages - 1, initialPageIdx ?? (Number.isFinite(saved) ? saved : 0)));
     jumpToPage(target);
     restoredPage.current = true;
+    resumed.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, initialPageIdx]);
+  }, [doc, initialPageIdx, active, navigationTarget]);
 
   if (loading) {
     return (
@@ -1230,7 +1356,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
         onPointerCancel={endDrag}
         onMouseUp={handleMouseUp}
         onDoubleClick={handleMouseUp}
-        onScroll={() => { setSelToolbar(null); const element = scrollRef.current; if (active && element && element.clientHeight > 0) lastScroll.current = { top: element.scrollTop, left: element.scrollLeft }; }}
+        onScroll={() => { setSelToolbar(null); const element = scrollRef.current; if (active && element && element.clientHeight > 0) { hasScrollPosition.current = true; lastScroll.current = { top: element.scrollTop, left: element.scrollLeft }; } }}
         className={`min-h-0 flex-1 overflow-auto pt-2 pr-4 pb-4 ${
           scale > 1 ? (dragging ? "cursor-grabbing" : "cursor-grab") : ""
         }`}
@@ -1438,4 +1564,4 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       )}
     </div>
   );
-});
+}));

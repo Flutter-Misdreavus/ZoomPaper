@@ -67,4 +67,6 @@ ZoomPaper-Connector_*/
 *.sln
 *.sw?
 
+docs/performance/
+
 /ZoomPaper-Connector/

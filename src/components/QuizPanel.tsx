@@ -814,6 +814,15 @@ function ConfigView({
   );
 }
 
+/** 测验窄栏沿用正文的公式渲染，保留紧凑字号与选项的状态颜色。 */
+function QuizMarkdown({ markdown, className = "" }: { markdown: string; className?: string }) {
+  return (
+    <div className={`min-w-0 [&>article]:text-[13px] [&>article]:leading-relaxed [&>article]:text-inherit [&>article>:first-child]:mt-0 [&>article>:last-child]:mb-0 ${className}`}>
+      <MarkdownView markdown={markdown} />
+    </div>
+  );
+}
+
 /** 选择题选项列表（作答点选 / 批改后揭示对错） */
 function ChoiceList({
   q,
@@ -854,7 +863,7 @@ function ChoiceList({
             className={`flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default ${cls}`}
           >
             <span className="shrink-0 font-medium">{letter}.</span>
-            <span className="min-w-0">{opt}</span>
+            <QuizMarkdown markdown={opt} className="flex-1" />
           </button>
         );
       })}
@@ -911,10 +920,10 @@ function GradeDetail({
         </p>
       )}
       {grade.feedback && (
-        <p className="text-xs leading-relaxed text-muted-foreground">{grade.feedback}</p>
+        <QuizMarkdown markdown={grade.feedback} className="text-muted-foreground" />
       )}
       {isChoice && !correct && !grade.feedback && q.explanation && (
-        <p className="text-xs leading-relaxed text-muted-foreground">{q.explanation}</p>
+        <QuizMarkdown markdown={q.explanation} className="text-muted-foreground" />
       )}
       {gaps.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
@@ -940,9 +949,7 @@ function GradeDetail({
             参考答案
           </button>
           {showRef && (
-            <p className="mt-1 rounded-md bg-muted/50 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-              {q.answer}
-            </p>
+            <QuizMarkdown markdown={q.answer} className="mt-1 rounded-md bg-muted/50 px-2 py-1.5 text-muted-foreground" />
           )}
         </div>
       )}
@@ -1085,7 +1092,7 @@ function QuestionCard({
         </Badge>
         {q.section && <span className="ml-auto truncate">{q.section}</span>}
       </div>
-      <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{q.question}</p>
+      <QuizMarkdown markdown={q.question} />
       {q.qtype === "choice" ? (
         <ChoiceList
           q={q}

@@ -9,7 +9,7 @@ interface Props {
   disabled?: boolean;
 }
 
-/** 联网搜索开关（pill 样式）：对话页与费曼窗口共用 */
+/** 联网搜索开关（pill 样式）：问答输入区使用 */
 export function WebToggle({ on, onChange, configured, disabled }: Props) {
   return (
     <div className="flex items-center gap-1.5">

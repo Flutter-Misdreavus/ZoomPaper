@@ -1,10 +1,10 @@
+import { useActiveSnapshot } from "@/hooks/useActiveSnapshot";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 
 interface Props {
+  active?: boolean;
+  onReady?: () => void;
   paper: Paper;
   /** 生成成功后回写 blog_md_path，让外层 paper 状态保持最新 */
   onBlogGenerated: (path: string) => void;
@@ -52,7 +54,7 @@ function labelFor(docKey: string): string {
   return "博客正文";
 }
 
-export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
+export function BlogPanel({ paper, onBlogGenerated, onAskSelection, active = true, onReady }: Props) {
   const [blog, setBlog] = useState<string | null>(null);
   const [parsed, setParsed] = useState<ParsedBlog | null>(null);
   const [activeKey, setActiveKey] = useState<AnalysisKey>("task");
@@ -65,11 +67,13 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
     () => blogJobs.getSnapshot(paper.id),
     [paper.id],
   );
-  const job = useSyncExternalStore(
+  const job = useActiveSnapshot(
+    active,
     subscribeToJob,
     getJobSnapshot,
-    getJobSnapshot,
+    paper.id,
   );
+  useEffect(() => { if (active && !loading && blog) onReady?.(); }, [active, loading, blog, onReady]);
   const [error, setError] = useState<string | null>(null);
   const onBlogGeneratedRef = useRef(onBlogGenerated);
 
@@ -157,17 +161,24 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
   }, [highlights, highlightsLoaded, paper.id]);
 
   // 划选监听：定位到所属容器并映射偏移
-  useTextSelection(containersRef, (docKey, pending) => setSel({ ...pending, docKey }));
+  useTextSelection(containersRef, (docKey, pending) => setSel({ ...pending, docKey }), active);
 
+  const appliedHighlightVersion = useRef<unknown[]>([]);
   // 内容渲染后重绘高亮（幂等：先解包再按当前列表重包）
   useLayoutEffect(() => {
+    if (!active) return;
+    const version = [blog, activeKey, highlights];
+    if (version.every((value, index) => value === appliedHighlightVersion.current[index])) return;
+    appliedHighlightVersion.current = version;
     for (const [el, docKey] of containersRef.current) {
+      if (!el.isConnected) { containersRef.current.delete(el); continue; }
       applyMarks(el, highlights.filter((h) => h.docKey === docKey));
     }
-  }, [blog, activeKey, highlights]);
+  }, [blog, activeKey, highlights, active]);
 
   // 点击正文高亮 → 打开笔记编辑
   useEffect(() => {
+    if (!active) return;
     const onClick = (e: MouseEvent) => {
       const mark = (e.target as HTMLElement).closest?.(
         "mark.zp-text-highlight",
@@ -180,11 +191,11 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
-  }, [highlights]);
+  }, [highlights, active]);
 
   // 浮动工具条：选区清空或滚动时收起
   useEffect(() => {
-    if (!sel) return;
+    if (!sel || !active) return;
     const hide = () => {
       const s = window.getSelection();
       if (!s || s.isCollapsed) setSel(null);
@@ -199,7 +210,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
       document.removeEventListener("selectionchange", hide);
       window.removeEventListener("scroll", onScroll, true);
     };
-  }, [sel]);
+  }, [sel, active]);
 
   function handleGenerate() {
     setError(null);
@@ -209,12 +220,14 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
   /** 注册内容容器（callback ref；元素变化时更新 docKey 映射） */
   function registerContainer(el: HTMLElement | null, docKey: string) {
     if (!el) return;
-    containersRef.current.delete(el);
+    for (const [registered, key] of containersRef.current) {
+      if (key === docKey || !registered.isConnected) containersRef.current.delete(registered);
+    }
     containersRef.current.set(el, docKey);
   }
 
   function addHighlight(color: string, openNote: boolean) {
-    if (!sel) return;
+    if (!sel || !active) return;
     const hl: TextHighlight = {
       id: crypto.randomUUID(),
       docKey: sel.docKey,
@@ -234,7 +247,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
   }
 
   function askSelection() {
-    if (!sel) return;
+    if (!sel || !active) return;
     onAskSelection?.(sel.text, labelFor(sel.docKey));
     setSel(null);
     window.getSelection()?.removeAllRanges();
@@ -436,7 +449,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
                 ref={(el) => registerContainer(el, `blog:analysis:${activeKey}`)}
               >
                 {activeText ? (
-                  <MarkdownView markdown={activeText} baseDir={baseDir} />
+                  <MarkdownView enableImageAnnotations markdown={activeText} baseDir={baseDir} />
                 ) : (
                   <p className="py-8 text-center text-sm text-muted-foreground">
                     该部分内容缺失，可点击「重新生成」获取
@@ -452,7 +465,7 @@ export function BlogPanel({ paper, onBlogGenerated, onAskSelection }: Props) {
             ref={(el) => registerContainer(el, "blog:body")}
           >
             <h2 className="text-base font-semibold">博客正文</h2>
-            <MarkdownView markdown={parsed?.body ?? blog} baseDir={baseDir} />
+            <MarkdownView enableImageAnnotations markdown={parsed?.body ?? blog} baseDir={baseDir} />
           </div>
         </>
       ) : null}

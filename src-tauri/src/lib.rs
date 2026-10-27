@@ -7,7 +7,6 @@ mod commands;
 mod companion;
 mod connector;
 mod db;
-mod feynman;
 mod fs;
 mod jobs;
 mod publication;
@@ -120,6 +119,7 @@ pub fn run() {
             commands::list_papers,
             commands::get_paper,
             commands::open_paper,
+            commands::touch_paper,
             commands::set_reading_status,
             commands::export_notes,
             commands::get_paper_md,
@@ -171,16 +171,9 @@ pub fn run() {
             commands::ask_question_reply,
             commands::cancel_generation,
             commands::list_conversations,
+            commands::list_conversation_summaries,
             commands::get_conversation,
             commands::delete_conversation,
-            commands::feynman_turn,
-            commands::feynman_start,
-            commands::feynman_confirm_plan,
-            commands::feynman_quiz,
-            commands::feynman_judge,
-            commands::feynman_next,
-            commands::feynman_review,
-            commands::get_feynman_conversation,
             commands::quiz_sections,
             commands::quiz_generate,
             commands::quiz_submit_answer,

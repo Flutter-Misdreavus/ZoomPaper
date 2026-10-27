@@ -17,6 +17,18 @@ use zerocopy::AsBytes;
 /// 合并后的单个 chunk 目标长度（字符）。
 const CHUNK_CHAR_LIMIT: usize = 800;
 
+/// 每轮检索该论文相关段落的条数。
+pub const TOP_K: usize = 5;
+
+/// 单个章节全文的长度上限（字符）。
+pub const SECTION_MAX_CHARS: usize = 8000;
+
+/// 章节级上下文总长度上限（字符）。
+pub const SECTION_CTX_TOTAL_MAX: usize = 12000;
+
+/// 章节地图 TOC 最多列出的章节数（其余省略）。
+const TOC_MAX_SECTIONS: usize = 30;
+
 /// content_list.json 中的单个块。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContentBlock {
@@ -328,7 +340,7 @@ pub fn search_with_embedding(
     Ok(out)
 }
 
-/// 某篇论文按阅读顺序去重后的非空章节列表（供费曼章节地图 TOC，零 token 成本）。
+/// 某篇论文按阅读顺序去重后的非空章节列表（供章节地图 TOC，零 token 成本）。
 pub fn sections_for_paper(conn: &Connection, paper_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT section FROM paper_chunks WHERE paper_id = ?1 AND section <> '' \
@@ -336,6 +348,25 @@ pub fn sections_for_paper(conn: &Connection, paper_id: &str) -> Result<Vec<Strin
     )?;
     let rows = stmt.query_map([paper_id], |r| r.get::<_, String>(0))?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// 组装章节地图：`【论文章节】\n- {name}`，节名截断 ≤60 字符、至多 `TOC_MAX_SECTIONS` 条。
+pub fn build_toc(sections: &[String]) -> String {
+    if sections.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("【论文章节】\n");
+    for s in sections.iter().take(TOC_MAX_SECTIONS) {
+        let name: String = s.chars().take(60).collect();
+        out.push_str(&format!("- {name}\n"));
+    }
+    if sections.len() > TOC_MAX_SECTIONS {
+        out.push_str(&format!(
+            "- ……（共 {} 节，仅列出前 {TOC_MAX_SECTIONS} 节）\n",
+            sections.len()
+        ));
+    }
+    out
 }
 
 /// 把检索命中的段落升级为「章节级全文」：按相关性（distance 升序）取前 `max_sections`
@@ -406,6 +437,27 @@ mod tests {
             bbox: Some(vec![0.0, 0.0, 100.0, 100.0]),
             page_idx: Some(page),
         }
+    }
+
+    #[test]
+    fn build_toc_formats_and_caps_sections() {
+        // 空 → 空字符串
+        assert_eq!(build_toc(&[]), "");
+
+        // 超长节名截断到 60 字符
+        let long = "x".repeat(100);
+        let toc = build_toc(&[long]);
+        assert!(toc.starts_with("【论文章节】\n- "));
+        assert!(toc.contains(&"x".repeat(60)));
+        assert!(!toc.contains(&"x".repeat(61)));
+
+        // 超过 TOC_MAX_SECTIONS → 省略提示
+        let many: Vec<String> = (0..TOC_MAX_SECTIONS + 5)
+            .map(|i| format!("Sec {i}"))
+            .collect();
+        let toc = build_toc(&many);
+        assert_eq!(toc.matches("- Sec ").count(), TOC_MAX_SECTIONS);
+        assert!(toc.contains("仅列出前"));
     }
 
     #[test]
