@@ -77,6 +77,29 @@ fn default_enabled() -> bool {
     true
 }
 
+/// 单次联网搜索默认返回条数。
+pub const WEB_SEARCH_DEFAULT_COUNT: u32 = 8;
+
+/// DeepSeek 官方 Base URL（DeepSeek Provider 未填 base_url 时使用）。
+pub const DEEPSEEK_DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
+
+fn default_web_search_count() -> u32 {
+    WEB_SEARCH_DEFAULT_COUNT
+}
+
+/// 联网搜索运行配置：已从 providers 解析出实际生效的 provider、Key、Base URL 与条数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchConfig {
+    /// 搜索后端：`deepseek` / `anthropic`
+    pub provider: String,
+    pub api_key: String,
+    pub base_url: String,
+    /// 仅 Anthropic 原生搜索使用；DeepSeek Search API 不需要模型名。
+    pub model: Option<String>,
+    /// 单次返回条数（已限制在 1-50）。
+    pub count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkflowSettings {
@@ -127,10 +150,14 @@ pub struct Settings {
     pub paper_library_path: Option<PathBuf>,
     /// 本地 embedding 模型名（fastembed）
     pub embedding_model: String,
-    /// 联网搜索 provider：`none` / `auto` / `deepseek` / `anthropic`（复用对应 API Key）
+    /// 联网搜索 provider：`none` / `auto` / `deepseek` / `anthropic`
+    /// （deepseek 使用官方 Search/Fetch API，anthropic 使用原生 web_search 工具）
     pub web_search_provider: String,
-    /// 原生搜索用的模型名；None 用 provider 默认（deepseek-v4-flash / llm_model）
+    /// Anthropic 原生搜索用的模型名；None 用 provider 默认模型
     pub web_search_model: Option<String>,
+    /// 单次联网搜索返回条数（1-50，默认 8）
+    #[serde(default = "default_web_search_count")]
+    pub web_search_count: u32,
 }
 
 impl Default for Settings {
@@ -147,6 +174,7 @@ impl Default for Settings {
             embedding_model: "bge-small-en-v1.5".to_string(),
             web_search_provider: "auto".to_string(),
             web_search_model: None,
+            web_search_count: WEB_SEARCH_DEFAULT_COUNT,
         }
     }
 }
@@ -337,64 +365,77 @@ impl Settings {
         true
     }
 
-    /// 解析联网搜索 provider：返回 `(provider, model)`；不可用时返回 None。
-    /// 前端「未配置」提示由 getSettings 的字段自行判断（provider 非 none 且对应 Key 非空）。
+    /// 查找可用于联网搜索的 provider（存在、启用且 Key 非空）。
+    fn search_provider(&self, id: &str) -> Option<&ProviderConfig> {
+        self.providers
+            .iter()
+            .find(|p| p.id == id && p.enabled && !p.api_key.trim().is_empty())
+    }
+
+    /// 单次搜索条数（限制在官方允许的 1-50）。
+    fn search_count(&self) -> usize {
+        self.web_search_count.clamp(1, 50) as usize
+    }
+
+    fn deepseek_search_config(&self) -> Option<WebSearchConfig> {
+        let provider = self.search_provider("deepseek")?;
+        Some(WebSearchConfig {
+            provider: "deepseek".to_string(),
+            api_key: provider.api_key.trim().to_string(),
+            base_url: provider
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|base| !base.is_empty())
+                .unwrap_or(DEEPSEEK_DEFAULT_BASE_URL)
+                .to_string(),
+            model: None,
+            count: self.search_count(),
+        })
+    }
+
+    fn anthropic_search_config(&self) -> Option<WebSearchConfig> {
+        let provider = self.search_provider("anthropic")?;
+        let model = self
+            .web_search_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                let model = provider.default_model.trim();
+                (!model.is_empty()).then(|| model.to_string())
+            })
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+        Some(WebSearchConfig {
+            provider: "anthropic".to_string(),
+            api_key: provider.api_key.trim().to_string(),
+            base_url: provider
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .map(|base| base.trim_end_matches('/').to_string())
+                .filter(|base| !base.is_empty())
+                .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string()),
+            model: Some(model),
+            count: self.search_count(),
+        })
+    }
+
+    /// 解析当前设置下实际生效的联网搜索配置；不可用时返回 None。
     ///
-    /// - `deepseek` → 需对应 provider 存在且启用，模型默认 `deepseek-v4-flash`；
-    /// - `anthropic` → 需对应 provider 存在且启用，模型默认当前激活 provider 的模型（若类型是 anthropic）否则 `claude-sonnet-4-6`；
-    /// - `auto` → 优先 deepseek 再 anthropic（任一可用即可）。
-    pub fn web_search_available(&self) -> Option<(String, String)> {
-        let provider = self.web_search_provider.to_lowercase();
-        let model = |default: &str| {
-            self.web_search_model
-                .clone()
-                .unwrap_or_else(|| default.to_string())
-        };
-
-        // 从 providers 中查找 provider
-        let find_provider = |id: &str| -> bool {
-            self.providers
-                .iter()
-                .any(|p| p.id == id && p.enabled && !p.api_key.is_empty())
-        };
-
-        let candidates: Vec<(&str, bool, String)> = vec![
-            (
-                "deepseek",
-                find_provider("deepseek"),
-                model("deepseek-v4-flash"),
-            ),
-            (
-                "anthropic",
-                find_provider("anthropic"),
-                model(
-                    if self
-                        .active_provider()
-                        .ok()
-                        .map(|p| p.provider_type.as_str())
-                        == Some("anthropic")
-                    {
-                        self.active_provider()
-                            .ok()
-                            .map(|p| p.default_model.as_str())
-                            .unwrap_or("claude-sonnet-4-6")
-                    } else {
-                        "claude-sonnet-4-6"
-                    },
-                ),
-            ),
-        ];
-
-        match provider.as_str() {
-            "deepseek" | "anthropic" => candidates
-                .into_iter()
-                .find(|(p, _, _)| *p == provider)
-                .filter(|(_, ok, _)| *ok)
-                .map(|(p, _, m)| (p.to_string(), m)),
-            "auto" => candidates
-                .into_iter()
-                .find(|(_, ok, _)| *ok)
-                .map(|(p, _, m)| (p.to_string(), m)),
+    /// - `deepseek` → 使用官方 Search/Fetch API（复用 DeepSeek Provider 的 Key 与 Base URL）；
+    /// - `anthropic` → 使用 Anthropic 原生 `web_search` 工具，模型取
+    ///   `web_search_model` / Provider 默认模型 / `claude-sonnet-4-6`；
+    /// - `auto` → 优先 deepseek，再 anthropic（任一可用即可）；
+    /// - `none` 或未知值 → None。
+    pub fn web_search_config(&self) -> Option<WebSearchConfig> {
+        match self.web_search_provider.trim().to_lowercase().as_str() {
+            "deepseek" => self.deepseek_search_config(),
+            "anthropic" => self.anthropic_search_config(),
+            "auto" => self
+                .deepseek_search_config()
+                .or_else(|| self.anthropic_search_config()),
             _ => None,
         }
     }
@@ -408,8 +449,9 @@ mod tests {
     fn default_web_provider_is_auto_and_keys_gate_availability() {
         let mut s = Settings::default();
         assert_eq!(s.web_search_provider, "auto");
+        assert_eq!(s.web_search_count, WEB_SEARCH_DEFAULT_COUNT);
         // 无 provider → 不可用
-        assert!(s.web_search_available().is_none());
+        assert!(s.web_search_config().is_none());
 
         // 添加 deepseek provider → 可用（auto 优先 deepseek）
         s.providers.push(ProviderConfig {
@@ -422,8 +464,11 @@ mod tests {
             models: vec![],
             enabled: true,
         });
-        let (provider, _model) = s.web_search_available().unwrap();
-        assert_eq!(provider, "deepseek");
+        let config = s.web_search_config().unwrap();
+        assert_eq!(config.provider, "deepseek");
+        assert_eq!(config.base_url, "https://api.deepseek.com");
+        assert_eq!(config.count, WEB_SEARCH_DEFAULT_COUNT as usize);
+        assert!(config.model.is_none());
 
         // 只有 anthropic provider 时选 anthropic
         let mut s2 = Settings::default();
@@ -437,8 +482,92 @@ mod tests {
             models: vec![],
             enabled: true,
         });
-        let (provider2, _m2) = s2.web_search_available().unwrap();
-        assert_eq!(provider2, "anthropic");
+        let config2 = s2.web_search_config().unwrap();
+        assert_eq!(config2.provider, "anthropic");
+        assert_eq!(config2.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(config2.model.as_deref(), Some("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn web_search_config_resolves_explicit_provider_count_and_model() {
+        let mut s = Settings::default();
+        s.providers.push(ProviderConfig {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "sk-test".to_string(),
+            base_url: Some("https://api.deepseek.com/v1".to_string()),
+            default_model: "deepseek-chat".to_string(),
+            models: vec![],
+            enabled: true,
+        });
+        s.providers.push(ProviderConfig {
+            id: "anthropic".to_string(),
+            name: "Anthropic".to_string(),
+            provider_type: "anthropic".to_string(),
+            api_key: "sk-ant".to_string(),
+            base_url: Some("https://api.anthropic.com/v1/".to_string()),
+            default_model: "claude-provider-default".to_string(),
+            models: vec![],
+            enabled: true,
+        });
+
+        // 显式选择 anthropic + 覆盖模型 + 条数上限
+        s.web_search_provider = "anthropic".into();
+        s.web_search_model = Some("claude-custom".into());
+        s.web_search_count = 100;
+        let config = s.web_search_config().unwrap();
+        assert_eq!(config.provider, "anthropic");
+        assert_eq!(config.model.as_deref(), Some("claude-custom"));
+        assert_eq!(config.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(config.count, 50);
+
+        // 未覆盖模型时用 Provider 默认模型
+        s.web_search_model = None;
+        s.web_search_count = 5;
+        let config = s.web_search_config().unwrap();
+        assert_eq!(config.model.as_deref(), Some("claude-provider-default"));
+        assert_eq!(config.count, 5);
+
+        // 关闭 / 未知值 → 不可用
+        s.web_search_provider = "none".into();
+        assert!(s.web_search_config().is_none());
+        s.web_search_provider = "unknown".into();
+        assert!(s.web_search_config().is_none());
+
+        // 显式选择 deepseek 时不要求 anthropic 可用
+        s.web_search_provider = "deepseek".into();
+        assert_eq!(s.web_search_config().unwrap().provider, "deepseek");
+    }
+
+    #[test]
+    fn disabled_or_keyless_provider_is_not_used() {
+        let mut s = Settings::default();
+        s.web_search_provider = "deepseek".into();
+        s.providers.push(ProviderConfig {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            provider_type: "openai-compat".to_string(),
+            api_key: "   ".to_string(),
+            base_url: None,
+            default_model: "deepseek-chat".to_string(),
+            models: vec![],
+            enabled: true,
+        });
+        assert!(s.web_search_config().is_none());
+
+        s.providers[0].api_key = "sk-test".to_string();
+        s.providers[0].enabled = false;
+        assert!(s.web_search_config().is_none());
+    }
+
+    #[test]
+    fn old_settings_without_web_search_count_default_to_eight() {
+        let s: Settings =
+            serde_json::from_str(r#"{"providers":[],"web_search_provider":"deepseek"}"#).unwrap();
+        assert_eq!(s.web_search_provider, "deepseek");
+        assert_eq!(s.web_search_count, WEB_SEARCH_DEFAULT_COUNT);
+        assert_eq!(s.web_search_count, 8);
     }
 
     #[test]

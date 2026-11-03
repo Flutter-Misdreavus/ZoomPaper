@@ -1,6 +1,6 @@
 import { getTheme, setTheme, getCustomTheme, setCustomTheme, type CustomTheme, THEME_PRESETS, THEME_CHANGED_EVENT } from "@/lib/theme";
 import { invoke } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { usePreferences, setPreferences, exportViewPreferences, missingMetadata, type Preferences } from "@/lib/preferences";
 import { blogJobs } from "@/lib/blogJobs";
@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Check, Loader2, Plus, Edit2, Trash2 } from "lucide-react";
-import { getSettings, getThemesDir, listCustomThemes, listPapers, listJobs, emptyTrash, enqueueMetadataTranslations, DEFAULT_WORKFLOW, type Paper, type WorkflowSettings, reindexAllPapers, updateSettings, addProvider, updateProvider, deleteProvider, setActiveProvider, type Settings, type ProviderConfig, } from "@/lib/api";
+import { getSettings, getThemesDir, listCustomThemes, listPapers, listJobs, emptyTrash, enqueueMetadataTranslations, DEFAULT_WORKFLOW, normalizeSettings, type Paper, type WorkflowSettings, reindexAllPapers, updateSettings, addProvider, updateProvider, deleteProvider, setActiveProvider, webSearchStatus, testWebSearch, type Settings, type ProviderConfig, type WebSearchPreview, } from "@/lib/api";
 import { PROVIDER_TEMPLATES, createProviderFromTemplate, type ProviderTemplate } from "@/lib/providerTemplates";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, } from "@/components/ui/dialog";
 type SettingsSection = 'general' | 'reader' | 'companion' | 'ai' | 'import' | 'data';
@@ -47,6 +47,12 @@ export function SettingsPage() {
     }
     useEffect(() => { void invoke<string>('library_storage_path').then(setStoragePath).catch(() => {}); }, []);
     const [concurrency, setConcurrency] = useState('2');
+    const [webCount, setWebCount] = useState('8');
+    const [webTestOpen, setWebTestOpen] = useState(false);
+    const [webTestQuery, setWebTestQuery] = useState('DeepSeek 最新模型');
+    const [webTestRunning, setWebTestRunning] = useState(false);
+    const [webTestResult, setWebTestResult] = useState<WebSearchPreview | null>(null);
+    const [webTestError, setWebTestError] = useState<string | null>(null);
     const settingsRef = useRef<Settings | null>(null);
     const saveQueue = useRef(Promise.resolve());
     const [petEnabled, setPetEnabled] = useState(companionEnabled);
@@ -71,6 +77,7 @@ export function SettingsPage() {
             setSettings(s);
             settingsRef.current = s;
             setConcurrency(String(s.workflow?.parseConcurrency ?? 2));
+            setWebCount(String(s.web_search_count ?? 8));
             setError(null);
         }
         catch (e) {
@@ -92,7 +99,8 @@ export function SettingsPage() {
         setSaved(false);
         setError(null);
         try {
-            await updateSettings(current);
+            // 使用最新设置：联网搜索等字段会先通过 saveSettingsPatch 更新 settingsRef
+            await updateSettings(settingsRef.current!);
             setSaved(true);
             setTimeout(() => setSaved(false), 3000);
         }
@@ -134,6 +142,45 @@ export function SettingsPage() {
         finally {
             setSaving(false);
         } });
+    }
+    function saveSettingsPatch(patch: Partial<Settings>) {
+        const next = { ...settingsRef.current!, ...patch };
+        settingsRef.current = next;
+        setSettings(next);
+        setError(null);
+        setSaving(true);
+        saveQueue.current = saveQueue.current.catch(() => { }).then(async () => { try {
+            await updateSettings(next);
+            setSaved(true);
+            setTimeout(() => setSaved(false), 2000);
+        }
+        catch (e) {
+            setError(String(e));
+        }
+        finally {
+            setSaving(false);
+        } });
+    }
+    async function runWebSearchTest() {
+        const testQuery = webTestQuery.trim();
+        if (!testQuery) {
+            setWebTestError('请输入测试搜索词');
+            return;
+        }
+        setWebTestRunning(true);
+        setWebTestError(null);
+        setWebTestResult(null);
+        try {
+            // 等待设置保存队列，确保测试使用刚修改的 Provider / 条数
+            await saveQueue.current;
+            setWebTestResult(await testWebSearch(testQuery));
+        }
+        catch (e) {
+            setWebTestError(String(e));
+        }
+        finally {
+            setWebTestRunning(false);
+        }
     }
     async function perform(name: string) {
         setWorking(true);
@@ -178,7 +225,7 @@ export function SettingsPage() {
                     setActionStatus('备份已校验，请完全退出并重新打开应用完成恢复。');
                 }
                 else if (name === 'path') {
-                    const updated = await invoke<Settings>('relocate_library', { destination: path });
+                    const updated = normalizeSettings(await invoke<Settings>('relocate_library', { destination: path }));
                     setSettings(updated);
                     setStoragePath(updated.paper_library_path ?? storagePath);
                     setPendingPath('');
@@ -274,11 +321,24 @@ export function SettingsPage() {
     const language = (key: keyof Preferences, label: string, _inherit = false) => row(key, label, selectControl(label, String(prefs[key] === 'inherit' ? prefs.titleLanguage : prefs[key]), [{value:'original',label:'英文'},{value:'zh',label:'中文'},{value:'both',label:'中英双语'}], value=>void changeLanguage(key,value)));
     const workflowToggle = (key: keyof WorkflowSettings, label: string) => row(key, label, <Switch aria-label={label} checked={Boolean(workflow[key])} onCheckedChange={value => saveWorkflow({ [key]: value })}/>);
     const action = (id: string, label: string, button: string) => row(id, label, <Button size="sm" variant="outline" disabled={working || reindexing} onClick={() => ['extension', 'extensionDir', 'backup', 'restore'].includes(id) ? void perform(id) : setOperation(id)}>{button}</Button>);
+    const webStatus = webSearchStatus(current);
+    const webProviderLabel = webStatus.provider === 'deepseek' ? 'DeepSeek 搜索 API' : webStatus.provider === 'anthropic' ? 'Anthropic 原生搜索' : '未配置';
+    const webProviderOptions = [{value:'none',label:'关闭'},{value:'auto',label:'自动（优先 DeepSeek）'},{value:'deepseek',label:'DeepSeek 搜索 API'},{value:'anthropic',label:'Anthropic 原生搜索'}];
     const panels = [
         { id: 'general', groups: [{ title: '外观', rows: [row('theme', '主题配色', <>{selectControl('主题配色', theme.scheme, [...THEME_PRESETS.map(p => ({value:p.key,label:p.key==='green'?'默认':p.label})), {value:'custom',label:'自定义'}], value=>setTheme(value as typeof theme.scheme))}{theme.scheme==='custom' && <input type="color" aria-label="自定义主色" value={theme.customColor} onChange={event=>setTheme('custom',event.target.value)} className="h-8 w-10 cursor-pointer rounded border border-zp-border"/>}</>)] }, { title: '高级主题', rows: [row('customTheme', 'JSON 主题', <>{selectControl('JSON 主题', customThemeName||'none', [{value:'none',label:'无'},...customThemes.map(t=>({value:t.name,label:t.name}))], value=>{const name=value==='none'?'':value;updateCustomThemeName(name);setCustomTheme(customThemes.find(t=>t.name===name)??null);})}<Button size="sm" variant="outline" onClick={()=>void getThemesDir().then(revealItemInDir).catch(error=>setError(String(error)))}>主题目录</Button><Button size="sm" variant="ghost" onClick={()=>void refreshThemes()}>刷新</Button></>)] }, { title: '标题与摘要'  , rows: [language('titleLanguage', '统一标题语言'), language('libraryLanguage', '论文库标题', true), language('tabLanguage', '论文标签标题', true), language('detailLanguage', '概览标题', true), language('abstractLanguage', '概览摘要'), language('historyLanguage', '阅读历史标题', true)] }, { title: '启动', rows: [toggle('restoreTabs', '恢复上次打开的论文')] }] },
         { id: 'reader', groups: [{ title: '阅读器', rows: [toggle('markReading', '打开后标记在读'), toggle('markReadAtEnd', '读到末页自动标记已读'), toggle('showAssistant', '默认显示 AI 助手')] }] },
         { id: 'companion', groups: [{ title: '阅读伙伴', rows: [row('pet', '显示桌面阅读伙伴', <Switch aria-label="显示桌面阅读伙伴" checked={petEnabled} onCheckedChange={setCompanionEnabled}/>), row('petAnimation', '角色动画', selectControl('角色动画',prefs.petAnimation?'rich':'normal',[{value:'rich',label:'丰富'},{value:'normal',label:'普通'}],value=>setPreferences({petAnimation:value==='rich'}))), toggle('petReading', '显示正在阅读'), toggle('petTasks', '显示任务气泡')] }] },
-        { id: 'ai', groups: [{ title: 'AI 服务', rows: [<div key="providers" className="space-y-3 py-4">{current.providers.map(provider => <ProviderCard key={provider.id} provider={provider} isActive={provider.id === current.active_provider_id} onSetActive={() => handleSetActive(provider.id)} onEdit={() => { setEditingProvider(provider); setShowEditDialog(true); }} onDelete={() => handleDeleteProvider(provider.id)}/>)}<Button size="sm" variant="outline" onClick={() => setShowAddDialog(true)}><Plus size={15}/>添加 Provider</Button></div>] }, { title: '联网搜索', rows: [row('webProvider', '搜索 Provider', selectControl('搜索 Provider',current.web_search_provider,[{value:'none',label:'关闭'},{value:'auto',label:'自动'},{value:'deepseek',label:'DeepSeek'},{value:'anthropic',label:'Anthropic'}],value=>setSettings({...current,web_search_provider:value}))), row('webModel', '搜索模型名', <Input aria-label="搜索模型名" value={current.web_search_model ?? ''} onChange={e => setSettings({ ...current, web_search_model: e.target.value || null })} className="w-56"/>)] }] },
+        { id: 'ai', groups: [{ title: 'AI 服务', rows: [<div key="providers" className="space-y-3 py-4">{current.providers.map(provider => <ProviderCard key={provider.id} provider={provider} isActive={provider.id === current.active_provider_id} onSetActive={() => handleSetActive(provider.id)} onEdit={() => { setEditingProvider(provider); setShowEditDialog(true); }} onDelete={() => handleDeleteProvider(provider.id)}/>)}<Button size="sm" variant="outline" onClick={() => setShowAddDialog(true)}><Plus size={15}/>添加 Provider</Button></div>] }, { title: '联网搜索', rows: [
+            row('webProvider', '搜索 Provider', <>{selectControl('搜索 Provider', current.web_search_provider || 'auto', webProviderOptions, value => saveSettingsPatch({ web_search_provider: value }))}<span className={`text-xs ${webStatus.configured ? 'text-zp-tertiary' : 'text-amber-600'}`}>{webStatus.configured ? `已就绪：${webProviderLabel}` : '未配置'}</span></>),
+            row('webCount', '返回条数', <Input aria-label="返回条数" type="number" min={1} max={50} step={1} value={webCount} onChange={e => setWebCount(e.target.value)} onBlur={() => { const n = Number(webCount); if (!Number.isSafeInteger(n) || n < 1 || n > 50) {
+                            setError('联网搜索返回条数需在 1-50 之间');
+                            setWebCount(String(current.web_search_count ?? 8));
+                        }
+                        else
+                            saveSettingsPatch({ web_search_count: n }); }} className="w-24"/>),
+            row('webModel', '原生搜索模型', <Input aria-label="原生搜索模型" placeholder="仅 Anthropic 使用" value={current.web_search_model ?? ''} onChange={e => setSettings({ ...current, web_search_model: e.target.value || null })} onBlur={() => saveSettingsPatch({ web_search_model: (settingsRef.current?.web_search_model ?? '').trim() || null })} className="w-56"/>),
+            row('webTest', '连接测试', <><Button size="sm" variant="outline" onClick={() => { setWebTestError(null); setWebTestResult(null); setWebTestOpen(true); }}>测试搜索</Button><Button size="sm" variant="ghost" onClick={() => void openUrl('https://api-docs.deepseek.com/zh-cn/guides/search/').catch(e => setError(String(e)))}>DeepSeek 文档</Button></>),
+        ] }] },
         { id: 'import', groups: [{ title: 'PDF 解析', rows: [row('mineru', 'MinerU API Key', <Input aria-label="MinerU API Key" type="password" autoComplete="off" value={current.mineru_api_key} onBlur={() => saveWorkflow({})} onChange={e => setSettings({ ...current, mineru_api_key: e.target.value })} className="w-56"/>), workflowToggle('autoParse', '导入后自动解析'), row('parseConcurrency', '同时解析论文数', <Input aria-label="同时解析论文数" type="number" min={1} step={1} value={concurrency} onChange={e => setConcurrency(e.target.value)} onBlur={() => { const n = Number(concurrency); if (!Number.isSafeInteger(n) || n < 1 || n > 4294967295) {
                             setError('同时解析论文数必须为正整数');
                             setConcurrency(String(workflow.parseConcurrency));
@@ -314,6 +374,8 @@ export function SettingsPage() {
     } }}>全部翻译</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={operation !== null} onOpenChange={value => { if (!value && !working)
         setOperation(null); }}><DialogContent><DialogHeader><DialogTitle>{operation === 'trash' ? '清空回收站？' : operation === 'restore' ? '从备份恢复？' : operation === 'path' ? '迁移论文库？' : operation === 'cache' ? '清理缓存？' : '重建索引？'}</DialogTitle></DialogHeader><p className="py-3 text-sm">{operation === 'trash' ? '永久删除回收站中的论文与文件。' : operation === 'restore' ? '校验备份，重启时恢复；恢复前自动备份当前论文库。' : operation === 'path' ? '复制到所选文件夹中新建的论文库，保留旧目录。' : operation === 'cache' ? '清理 DOI 查询缓存，保留论文、笔记与译文。' : '重新生成索引，保留论文与笔记。'}</p><DialogFooter><Button variant="outline" disabled={working} onClick={() => setOperation(null)}>取消</Button><Button disabled={working} onClick={() => void perform(operation!)}>{working ? '处理中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={webTestOpen} onOpenChange={setWebTestOpen}><DialogContent><DialogHeader><DialogTitle>测试联网搜索</DialogTitle><DialogDescription>使用已保存的 Provider 配置调用搜索接口，确认 Key、余额与网络是否正常。</DialogDescription></DialogHeader><div className="space-y-3 py-3"><div className="flex items-center gap-2"><Input aria-label="测试搜索词" value={webTestQuery} onChange={e => setWebTestQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter')
+        void runWebSearchTest(); }} disabled={webTestRunning} placeholder="输入测试搜索词"/><Button onClick={() => void runWebSearchTest()} disabled={webTestRunning}>{webTestRunning ? '搜索中…' : '搜索'}</Button></div>{webTestError && <p role="alert" className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600">{webTestError}</p>}{webTestResult && <div className="space-y-2"><p className="text-xs text-zp-tertiary">{webTestResult.provider === 'deepseek' ? 'DeepSeek 搜索 API' : 'Anthropic 原生搜索'} · {webTestResult.sources.length} 条 · {webTestResult.elapsed_ms}ms</p>{webTestResult.sources.length === 0 ? <p className="text-sm text-zp-secondary">没有搜索结果，可换一个关键词。</p> : <ul className="max-h-72 space-y-3 overflow-y-auto pr-1">{webTestResult.sources.map(source => <li key={source.url} className="rounded-lg border border-zp-border p-3"><button type="button" className="text-left text-sm font-medium text-primary hover:underline" onClick={() => void openUrl(source.url).catch(e => setWebTestError(String(e)))}>{source.title || source.url}</button><p className="mt-1 break-all text-[11px] text-zp-tertiary">{source.url}</p>{source.snippet && <p className="mt-1 text-xs leading-relaxed text-zp-secondary">{source.snippet}</p>}{[source.site_name, source.published_at].filter(Boolean).length > 0 && <p className="mt-1 text-[11px] text-zp-tertiary">{[source.site_name, source.published_at].filter(Boolean).join(' · ')}</p>}</li>)}</ul>}</div>}</div><DialogFooter><Button variant="outline" onClick={() => setWebTestOpen(false)} disabled={webTestRunning}>关闭</Button></DialogFooter></DialogContent></Dialog>
     <AddProviderDialog open={showAddDialog} onClose={() => { setShowAddDialog(false); setSelectedTemplate(null); }} onAdd={handleAddProvider} selectedTemplate={selectedTemplate} onSelectTemplate={setSelectedTemplate}/>
     {editingProvider && <EditProviderDialog open={showEditDialog} provider={editingProvider} onClose={() => { setShowEditDialog(false); setEditingProvider(null); }} onSave={handleUpdateProvider}/>}
   </div>;

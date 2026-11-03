@@ -1,7 +1,7 @@
 import {render,screen,fireEvent,waitFor,cleanup} from '@testing-library/react';import{afterEach,expect,it,vi}from'vitest';import{SettingsPage}from'@/pages/Settings';
-const mocks=vi.hoisted(()=>({save:vi.fn(async(s:any)=>s),enqueue:vi.fn().mockResolvedValue(undefined),reveal:vi.fn().mockResolvedValue(undefined),folder:vi.fn(),invoke:vi.fn(async(command:string,args?:any)=>command==='library_storage_path'?'/test/papers':command==='prepare_browser_extension'?'/test/extension':command==='relocate_library'?{providers:[],active_provider_id:'',mineru_api_key:'',web_search_provider:'auto',web_search_model:null,paper_library_path:args.destination+'/ZoomPaper-library'}:false)}));
-vi.mock('@/lib/api',()=>({listCustomThemes:async()=>[],getThemesDir:async()=>"/test/themes",getSettings:async()=>({providers:[],active_provider_id:'',mineru_api_key:'',web_search_provider:'auto',web_search_model:null,paper_library_path:null}),updateSettings:mocks.save,listPapers:async()=>[{id:'a',title:'A',title_zh:null,abstract:'Text',abstract_zh:null}],listJobs:async()=>[],enqueueMetadataTranslations:mocks.enqueue,emptyTrash:vi.fn(),reindexAllPapers:vi.fn(),addProvider:vi.fn(),updateProvider:vi.fn(),deleteProvider:vi.fn(),setActiveProvider:vi.fn(),generateBlog:vi.fn(),translateChunk:vi.fn(),saveTranslation:vi.fn(),DEFAULT_WORKFLOW:{autoParse:true,parseConcurrency:2,autoDoi:true,autoMetadataTranslation:true,autoFullTranslation:false}}));
-vi.mock('@tauri-apps/api/core',()=>({invoke:mocks.invoke}));vi.mock('@tauri-apps/plugin-dialog',()=>({open:mocks.folder}));vi.mock('@tauri-apps/plugin-opener',()=>({revealItemInDir:mocks.reveal}));
+const mocks=vi.hoisted(()=>({save:vi.fn(async(s:any)=>s),enqueue:vi.fn().mockResolvedValue(undefined),reveal:vi.fn().mockResolvedValue(undefined),folder:vi.fn(),testWeb:vi.fn(),openUrl:vi.fn().mockResolvedValue(undefined),invoke:vi.fn(async(command:string,args?:any)=>command==='library_storage_path'?'/test/papers':command==='prepare_browser_extension'?'/test/extension':command==='relocate_library'?{providers:[],active_provider_id:'',mineru_api_key:'',web_search_provider:'auto',web_search_model:null,web_search_count:8,paper_library_path:args.destination+'/ZoomPaper-library'}:false)}));
+vi.mock('@/lib/api',()=>({listCustomThemes:async()=>[],getThemesDir:async()=>"/test/themes",getSettings:async()=>({providers:[],active_provider_id:'',mineru_api_key:'',web_search_provider:'auto',web_search_model:null,web_search_count:8,paper_library_path:null}),normalizeSettings:(s:any)=>({...s,providers:s.providers??[],web_search_count:s.web_search_count??8}),updateSettings:mocks.save,listPapers:async()=>[{id:'a',title:'A',title_zh:null,abstract:'Text',abstract_zh:null}],listJobs:async()=>[],enqueueMetadataTranslations:mocks.enqueue,emptyTrash:vi.fn(),reindexAllPapers:vi.fn(),addProvider:vi.fn(),updateProvider:vi.fn(),deleteProvider:vi.fn(),setActiveProvider:vi.fn(),generateBlog:vi.fn(),translateChunk:vi.fn(),saveTranslation:vi.fn(),webSearchStatus:()=>({configured:false,provider:null}),testWebSearch:mocks.testWeb,DEFAULT_WORKFLOW:{autoParse:true,parseConcurrency:2,autoDoi:true,autoMetadataTranslation:true,autoFullTranslation:false}}));
+vi.mock('@tauri-apps/api/core',()=>({invoke:mocks.invoke}));vi.mock('@tauri-apps/plugin-dialog',()=>({open:mocks.folder}));vi.mock('@tauri-apps/plugin-opener',()=>({revealItemInDir:mocks.reveal,openUrl:mocks.openUrl}));
 afterEach(()=>{cleanup();localStorage.clear();vi.clearAllMocks();});
 it('offers the approved categories without task notifications or help icons',async()=>{
  render(<SettingsPage/>);await screen.findByLabelText('统一标题语言');expect(screen.getByRole('navigation').querySelectorAll('button')).toHaveLength(6);fireEvent.click(screen.getByRole('button',{name:'阅读伙伴'}));expect(screen.getByLabelText('显示正在阅读')).toBeTruthy();expect(screen.queryByText('任务通知')).toBeNull();expect(screen.queryByText('i')).toBeNull();
@@ -30,6 +30,26 @@ it('shows format errors from backup validation',async()=>{
  render(<SettingsPage/>);await screen.findByLabelText('统一标题语言');fireEvent.click(screen.getByRole('button',{name:'数据与存储'}));mocks.folder.mockResolvedValueOnce('/bad-backup');mocks.invoke.mockImplementationOnce(async()=>{throw new Error('请选择 ZoomPaper 导出的备份文件夹');});fireEvent.click(screen.getByRole('button',{name:'选择'}));await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('备份文件夹'));
 });
 
+it('persists the web search provider and validates result count',async()=>{
+ render(<SettingsPage/>);await screen.findByLabelText('统一标题语言');fireEvent.click(screen.getByRole('button',{name:'AI 模型与 API'}));
+ const provider=screen.getByLabelText('搜索 Provider');fireEvent.click(provider);const deepseek=await screen.findByRole('option',{name:'DeepSeek 搜索 API'});fireEvent.pointerDown(deepseek);fireEvent.click(deepseek);
+ await waitFor(()=>expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({web_search_provider:'deepseek'})));
+ mocks.save.mockClear();
+ const count=screen.getByLabelText('返回条数');fireEvent.change(count,{target:{value:'20'}});fireEvent.blur(count);
+ await waitFor(()=>expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({web_search_count:20})));
+ mocks.save.mockClear();
+ fireEvent.change(count,{target:{value:'0'}});fireEvent.blur(count);
+ expect(mocks.save).not.toHaveBeenCalled();
+ expect(screen.getByRole('alert').textContent).toContain('1-50');
+});
+
+it('runs a web search connection test from settings',async()=>{
+ mocks.testWeb.mockResolvedValueOnce({provider:'deepseek',elapsed_ms:123,sources:[{title:'结果 A',url:'https://a.example/1',snippet:'摘要 A',site_name:'站点 A',published_at:'2026-06-01'}]});
+ render(<SettingsPage/>);await screen.findByLabelText('统一标题语言');fireEvent.click(screen.getByRole('button',{name:'AI 模型与 API'}));fireEvent.click(screen.getByRole('button',{name:'测试搜索'}));
+ const input=await screen.findByLabelText('测试搜索词');fireEvent.change(input,{target:{value:'DeepSeek 新模型'}});fireEvent.click(screen.getByRole('button',{name:'搜索'}));
+ await screen.findByText('结果 A');expect(mocks.testWeb).toHaveBeenCalledWith('DeepSeek 新模型');expect(screen.getByText(/1 条/)).toBeTruthy();
+ fireEvent.click(screen.getByText('结果 A'));expect(mocks.openUrl).toHaveBeenCalledWith('https://a.example/1');
+});
 it('integrates theme selection into existing settings and persists a custom color',async()=>{
  render(<SettingsPage/>);const trigger=await screen.findByLabelText('主题配色');fireEvent.click(trigger);
  const dark=await screen.findByRole('option',{name:'深色'});fireEvent.pointerDown(dark);fireEvent.click(dark);

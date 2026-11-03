@@ -94,8 +94,8 @@ impl ToolKind {
             Self::ListPapers => "列出论文库中的论文（可按标题关键词过滤），拿到论文 id 与标题。",
             Self::ReadAnnotations => "读取用户在这篇论文上的高亮与笔记（了解用户关注点）。",
             Self::ReadTranslation => "读取这篇论文的中文译文缓存分块（可带关键词过滤）。",
-            Self::WebSearch => "联网搜索资料（返回来源列表与摘录）。",
-            Self::WebFetch => "抓取指定 URL 的网页正文（转 markdown）。",
+            Self::WebSearch => "联网搜索资料（DeepSeek 搜索 API / Anthropic 原生搜索），返回标题、URL、摘要与发布时间。query 支持 site:、-site:、\"精确短语\"、lang:、after:、before: 等检索语法。",
+            Self::WebFetch => "抓取指定 URL 的网页正文（优先 DeepSeek Fetch API，失败时本地解析 HTML 并转 markdown）。",
             Self::ReadSelection => "读取用户选中的一段论文原文（带页码）。",
             Self::AskUser => "向用户提问澄清（问题有歧义或需要用户选择研究方向时使用，每轮最多一次）。",
         }
@@ -150,11 +150,11 @@ impl ToolKind {
             ),
             Self::WebSearch => obj(
                 &["query"],
-                json!({ "query": { "type": "string", "description": "搜索关键词" } }),
+                json!({ "query": { "type": "string", "description": "搜索关键词，支持 site:/after:/before:/引号短语等检索语法" } }),
             ),
             Self::WebFetch => obj(
                 &["url"],
-                json!({ "url": { "type": "string", "description": "要抓取的 http/https 链接" } }),
+                json!({ "url": { "type": "string", "description": "要抓取的 http/https 链接（不能包含用户名或密码）" } }),
             ),
             Self::ReadSelection => obj(
                 &["index"],
@@ -190,7 +190,7 @@ pub fn build_tools(
         ToolKind::ReadTranslation,
         ToolKind::AskUser,
     ];
-    if settings.web_search_available().is_some() {
+    if settings.web_search_config().is_some() {
         tools.push(ToolKind::WebSearch);
         tools.push(ToolKind::WebFetch);
     }
@@ -706,42 +706,25 @@ fn read_translation(ctx: &ToolCtx<'_>, args: &Value, offset: usize) -> Result<To
     })
 }
 
-/// 8. 联网搜索（原生搜索，复用 DeepSeek / Anthropic Key）。
+/// 8. 联网搜索（DeepSeek Search API / Anthropic 原生搜索，复用对应 Provider 配置）。
 async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
     let query = args["query"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "缺少 query 参数".to_string())?;
-    let (provider, model) = ctx.settings.web_search_available().ok_or_else(|| {
-        "联网搜索未启用，请先在设置页配置（复用 DeepSeek/Anthropic Key）".to_string()
+    let config = ctx.settings.web_search_config().ok_or_else(|| {
+        "联网搜索未启用，请在设置 → AI 模型与 API → 联网搜索中选择 Provider，并确保对应 API Key 已填写"
+            .to_string()
     })?;
 
-    // 从 providers 中查找对应的 API key
-    let api_key = ctx
-        .settings
-        .providers
-        .iter()
-        .find(|p| p.id == provider)
-        .map(|p| p.api_key.clone())
-        .ok_or_else(|| format!("未找到 provider '{}' 的配置", provider))?;
-
-    let base_url = match provider.as_str() {
-        "deepseek" => "https://api.deepseek.com/anthropic/v1".to_string(),
-        "anthropic" => "https://api.anthropic.com/v1".to_string(),
-        other => return Err(format!("未知的搜索 provider: {other}")),
-    };
-
-    let result = web::native_search(
-        ctx.http,
-        &base_url,
-        &api_key,
-        &model,
-        query,
-        web::WEB_SEARCH_MAX_RESULTS,
-    )
-    .await?;
-    let text = web::format_search_result(&result);
+    let result = web::search(ctx.http, &config, query, config.count).await?;
+    let mut text = web::format_search_result(&result);
+    // 返回条数较大时控制回喂模型的上下文体积（保留前面的高相关结果）。
+    if text.chars().count() > TOOL_RESULT_MAX_CHARS {
+        text = truncate(&text, TOOL_RESULT_MAX_CHARS.saturating_sub(80));
+        text.push_str("\n（结果较多，已截断；可减少返回条数或缩小搜索范围。）");
+    }
     // 摘要收录前 2 个来源 URL（供研究记忆与轨迹展示）
     let urls: Vec<&str> = result
         .sources
@@ -750,9 +733,14 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
         .map(|s| s.url.as_str())
         .collect();
     let summary = if urls.is_empty() {
-        format!("{} 条来源", result.sources.len())
+        format!("{} 条来源（{}）", result.sources.len(), result.provider_label())
     } else {
-        format!("{} 条来源：{}", result.sources.len(), urls.join(", "))
+        format!(
+            "{} 条来源（{}）：{}",
+            result.sources.len(),
+            result.provider_label(),
+            urls.join(", ")
+        )
     };
     Ok(ToolOutput {
         text,
@@ -761,7 +749,25 @@ async fn web_search(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
     })
 }
 
-/// 9. 抓取网页正文（静态 HTML → markdown）。
+/// 校验待抓取链接（与 DeepSeek Fetch API 的限制保持一致）。
+fn validate_web_url(url: &str) -> Result<(), String> {
+    if url.chars().count() > 8192 {
+        return Err("链接过长（最多 8192 字符）".to_string());
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|_| "链接格式无效".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("仅支持 http/https 链接".to_string());
+    }
+    if parsed.host_str().is_none() {
+        return Err("链接缺少主机名".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("链接不能包含用户名或密码".to_string());
+    }
+    Ok(())
+}
+
+/// 9. 抓取网页正文（优先 DeepSeek Fetch API，失败时本地 HTML → markdown）。
 /// blocking 抓取 + 流式提取（在 spawn_blocking 内运行：
 /// html5ever Tokenizer 因 tendril 的 NonAtomic 引用计数而 !Send，不能跨 await 持有）。
 fn fetch_extract_blocking(url: &str) -> Result<(String, bool, reqwest::StatusCode), String> {
@@ -816,21 +822,57 @@ fn fetch_extract_blocking(url: &str) -> Result<(String, bool, reqwest::StatusCod
     Ok((body, hit_cap, status))
 }
 
-async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
+async fn web_fetch(ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, String> {
     let url = args["url"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "缺少 url 参数".to_string())?;
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("仅支持 http/https 链接".to_string());
+    validate_web_url(url)?;
+
+    // 1) 选择 DeepSeek 搜索时，优先用官方 Fetch API（服务端抓取 + Markdown）。
+    let mut deepseek_error: Option<String> = None;
+    if let Some(config) = ctx.settings.web_search_config() {
+        if config.provider == "deepseek" {
+            match web::deepseek_fetch(ctx.http, &config.base_url, &config.api_key, url).await {
+                Ok(page) if !page.content.trim().is_empty() => {
+                    let text = match page
+                        .title
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|title| !title.is_empty())
+                    {
+                        Some(title) => format!("网页：{url}\n标题：{title}\n\n{}", page.content),
+                        None => format!("网页：{url}\n\n{}", page.content),
+                    };
+                    return Ok(ToolOutput {
+                        text: truncate(&text, TOOL_RESULT_MAX_CHARS),
+                        citations: vec![],
+                        summary: format!("抓取 {url}（DeepSeek Fetch）"),
+                    });
+                }
+                Ok(_) => deepseek_error = Some("DeepSeek Fetch 未返回正文".to_string()),
+                Err(error) => deepseek_error = Some(error),
+            }
+        }
     }
-    // 下载 + 提取整体放入 spawn_blocking（HtmlExtractor 非 Send，不能跨 await 持有）
+
+    // 2) 本地抓取兜底
     let url_owned = url.to_string();
-    let (body, hit_cap, status) =
-        tokio::task::spawn_blocking(move || fetch_extract_blocking(&url_owned))
-            .await
-            .map_err(|e| format!("抓取任务失败: {e}"))??;
+    let local = tokio::task::spawn_blocking(move || fetch_extract_blocking(&url_owned))
+        .await
+        .map_err(|e| format!("抓取任务失败: {e}"))?;
+    let (body, hit_cap, status) = match local {
+        Ok(value) => value,
+        Err(local_error) => {
+            return Err(match deepseek_error {
+                Some(deepseek_error) => {
+                    format!("{deepseek_error}；本地抓取也失败：{local_error}")
+                }
+                None => local_error,
+            });
+        }
+    };
 
     let status_note = if status.is_success() {
         String::new()
@@ -843,9 +885,13 @@ async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
         ""
     };
     if body.trim().is_empty() {
+        let deepseek_note = deepseek_error
+            .as_deref()
+            .map(|error| format!("（DeepSeek Fetch：{error}）"))
+            .unwrap_or_default();
         return Ok(ToolOutput {
             text: format!(
-                "{status_note}未提取到有效正文内容（页面可能为脚本渲染，或需要登录）。{cap_note}"
+                "{status_note}未提取到有效正文内容（页面可能为脚本渲染，或需要登录）。{cap_note}{deepseek_note}"
             ),
             citations: vec![],
             summary: format!("抓取 {url}（无正文）"),
@@ -857,7 +903,7 @@ async fn web_fetch(_ctx: &ToolCtx<'_>, args: &Value) -> Result<ToolOutput, Strin
             TOOL_RESULT_MAX_CHARS,
         ),
         citations: vec![],
-        summary: format!("抓取 {url}"),
+        summary: format!("抓取 {url}（本地）"),
     })
 }
 
@@ -1188,6 +1234,18 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("不存在"));
+    }
+
+    #[test]
+    fn web_fetch_url_validation_rejects_unsafe_or_invalid_links() {
+        assert!(validate_web_url("https://example.com/a").is_ok());
+        assert!(validate_web_url("http://example.com").is_ok());
+        assert!(validate_web_url("ftp://example.com").is_err());
+        assert!(validate_web_url("https://user:pass@example.com").is_err());
+        assert!(validate_web_url("example.com").is_err());
+        assert!(validate_web_url("https://").is_err());
+        assert!(validate_web_url("https://?q=1").is_err());
+        assert!(validate_web_url(&format!("https://example.com/{}", "a".repeat(8200))).is_err());
     }
 
     #[test]

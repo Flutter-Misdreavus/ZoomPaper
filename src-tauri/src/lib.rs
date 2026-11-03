@@ -99,6 +99,7 @@ pub fn run() {
             companion::companion_release,
             commands::get_settings,
             commands::update_settings,
+            commands::test_web_search,
             commands::get_themes_dir,
             commands::list_custom_themes,
             commands::enqueue_metadata_translations,

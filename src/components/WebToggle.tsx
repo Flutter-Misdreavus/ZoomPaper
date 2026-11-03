@@ -30,7 +30,7 @@ export function WebToggle({ on, onChange, configured, disabled }: Props) {
       {on && !configured && (
         <span
           className="text-[11px] text-muted-foreground"
-          title="请在设置页选择搜索 Provider（自动/DeepSeek/Anthropic）并确保对应 API Key 已填写"
+          title="请在设置 → AI 模型与 API → 联网搜索中选择 Provider（自动 / DeepSeek 搜索 API / Anthropic 原生搜索），并确保对应 API Key 已填写"
         >
           未配置
         </span>

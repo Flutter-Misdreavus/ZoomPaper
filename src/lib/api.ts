@@ -32,10 +32,13 @@ export interface Settings {
   embedding_model: string;
   llm_provider?: string | null;
   llm_model?: string | null;
-  /** 联网搜索 provider：none / auto / deepseek / anthropic（复用对应 API Key） */
+  /** 联网搜索 provider：none / auto / deepseek / anthropic
+   * （deepseek 使用官方 Search/Fetch API，anthropic 使用原生 web_search 工具） */
   web_search_provider: string;
-  /** 原生搜索用模型名；null = 用 provider 默认 */
+  /** Anthropic 原生搜索用模型名；null = 用 Provider 默认模型 */
   web_search_model: string | null;
+  /** 单次联网搜索返回条数（1-50，默认 8；旧设置缺省按 8 处理） */
+  web_search_count?: number;
 }
 
 export interface Paper {
@@ -180,19 +183,66 @@ export interface Conversation {
   updated_at: number;
 }
 
-export const getSettings = () => invoke<Settings>("get_settings");
-
-/** 判断联网搜索是否已配置可用：provider 非 none 且对应 API Key 非空（auto 时任一 Key） */
-export function isWebSearchConfigured(s: Settings): boolean {
-  const p = (s.web_search_provider ?? "").toLowerCase();
-  const has = (id: string) => s.providers.some((provider) => provider.id === id && provider.enabled && !!provider.api_key);
-  if (p === "deepseek" || p === "anthropic") return has(p);
-  return p === "auto" && (has("deepseek") || has("anthropic"));
+/** 后端序列化空 providers 时会省略该字段；统一补成数组并填充默认条数。 */
+export function normalizeSettings(settings: Settings): Settings {
+  return {
+    ...settings,
+    providers: settings.providers ?? [],
+    web_search_count: settings.web_search_count ?? 8,
+  };
 }
+
+export const getSettings = async () =>
+  normalizeSettings(await invoke<Settings>("get_settings"));
+
+export type WebSearchProviderId = "deepseek" | "anthropic";
+
+/** 解析实际生效的联网搜索 provider；未配置时 provider 为 null。
+ *  auto 优先 DeepSeek（官方 Search API），其次 Anthropic 原生搜索。 */
+export function webSearchStatus(s: Settings): { configured: boolean; provider: WebSearchProviderId | null } {
+  const p = (s.web_search_provider ?? "").toLowerCase();
+  // 后端序列化空 providers 时会省略该字段，这里按空列表处理
+  const providers = s.providers ?? [];
+  const has = (id: string) =>
+    providers.some(
+      (provider) => provider.id === id && provider.enabled && !!provider.api_key?.trim(),
+    );
+  if (p === "deepseek") return { configured: has("deepseek"), provider: has("deepseek") ? "deepseek" : null };
+  if (p === "anthropic") return { configured: has("anthropic"), provider: has("anthropic") ? "anthropic" : null };
+  if (p === "auto") {
+    if (has("deepseek")) return { configured: true, provider: "deepseek" };
+    if (has("anthropic")) return { configured: true, provider: "anthropic" };
+  }
+  return { configured: false, provider: null };
+}
+
+/** 判断联网搜索是否已配置可用（provider 非 none 且对应 API Key 非空） */
+export function isWebSearchConfigured(s: Settings): boolean {
+  return webSearchStatus(s).configured;
+}
+
+/** 设置页「测试搜索」结果（字段与 Rust 端 WebSearchPreview 对应） */
+export interface WebSearchPreviewSource {
+  title: string;
+  url: string;
+  snippet: string;
+  site_name: string | null;
+  published_at: string | null;
+}
+
+export interface WebSearchPreview {
+  provider: string;
+  elapsed_ms: number;
+  sources: WebSearchPreviewSource[];
+}
+
+export const testWebSearch = (query: string) =>
+  invoke<WebSearchPreview>("test_web_search", { query });
+
 export const generateBlog = (paperId: string) =>
   invoke<string>("generate_blog", { paperId });
-export const updateSettings = (newSettings: Settings) =>
-  invoke<Settings>("update_settings", { newSettings });
+export const updateSettings = async (newSettings: Settings) =>
+  normalizeSettings(await invoke<Settings>("update_settings", { newSettings }));
 
 export const listPapers = () => invoke<Paper[]>("list_papers");
 const paperRequests = new Map<string, Promise<Paper>>();
@@ -575,17 +625,17 @@ export const exportNotes = (paperId: string, destination: string) => invoke<void
 
 export const keywordSearch = (query: string, paperId: string | null) => invoke<SearchHit[]>("keyword_search", { query, paperId });
 
-export const addProvider = (config: ProviderConfig) =>
-  invoke<Settings>("add_provider", { config });
+export const addProvider = async (config: ProviderConfig) =>
+  normalizeSettings(await invoke<Settings>("add_provider", { config }));
 
-export const updateProvider = (id: string, config: ProviderConfig) =>
-  invoke<Settings>("update_provider", { id, config });
+export const updateProvider = async (id: string, config: ProviderConfig) =>
+  normalizeSettings(await invoke<Settings>("update_provider", { id, config }));
 
-export const deleteProvider = (id: string) =>
-  invoke<Settings>("delete_provider", { id });
+export const deleteProvider = async (id: string) =>
+  normalizeSettings(await invoke<Settings>("delete_provider", { id }));
 
-export const setActiveProvider = (id: string) =>
-  invoke<Settings>("set_active_provider", { id });
+export const setActiveProvider = async (id: string) =>
+  normalizeSettings(await invoke<Settings>("set_active_provider", { id }));
 
 
 export interface QuizConfig {

@@ -139,12 +139,91 @@ pub fn get_settings() -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn update_settings(new_settings: Settings) -> Result<Settings, String> {
+pub fn update_settings(mut new_settings: Settings) -> Result<Settings, String> {
     if new_settings.workflow.parse_concurrency == 0 {
         return Err("同时解析论文数必须为正整数".into());
     }
+    let provider = new_settings.web_search_provider.trim().to_lowercase();
+    new_settings.web_search_provider = if provider.is_empty() {
+        "auto".to_string()
+    } else {
+        provider
+    };
+    if !matches!(
+        new_settings.web_search_provider.as_str(),
+        "none" | "auto" | "deepseek" | "anthropic"
+    ) {
+        return Err("联网搜索 Provider 必须是 none / auto / deepseek / anthropic".into());
+    }
+    if !(1..=50).contains(&new_settings.web_search_count) {
+        return Err("联网搜索返回条数需在 1-50 之间".into());
+    }
     new_settings.save().map_err(|e| e.to_string())?;
     Ok(new_settings)
+}
+
+/// 联网搜索测试结果（设置页「测试搜索」使用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSearchPreviewSource {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub site_name: Option<String>,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSearchPreview {
+    pub provider: String,
+    pub elapsed_ms: u64,
+    pub sources: Vec<WebSearchPreviewSource>,
+}
+
+/// 设置页「测试搜索」：用当前已保存的配置发起一次真实搜索，验证 Key / 网络 / 额度。
+#[tauri::command]
+pub async fn test_web_search(query: String) -> Result<WebSearchPreview, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("请输入测试搜索词".into());
+    }
+    if query.chars().count() > 128 {
+        return Err("搜索词最多 128 个字符".into());
+    }
+    let settings = Settings::load().map_err(|e| e.to_string())?;
+    let config = settings.web_search_config().ok_or_else(|| {
+        "联网搜索未配置：请添加并启用 DeepSeek 或 Anthropic Provider，并在「联网搜索」中选择 Provider"
+            .to_string()
+    })?;
+    let http = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let result = crate::agent::web::search(&http, &config, query, config.count).await?;
+    let elapsed_ms = started
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let sources = result
+        .sources
+        .into_iter()
+        .map(|source| WebSearchPreviewSource {
+            title: source.title.unwrap_or_else(|| source.url.clone()),
+            url: source.url,
+            snippet: source
+                .snippet
+                .or_else(|| {
+                    source
+                        .summary
+                        .map(|summary| crate::qa::truncate(&summary, 240))
+                })
+                .unwrap_or_default(),
+            site_name: source.site_name,
+            published_at: source.published_at,
+        })
+        .collect();
+    Ok(WebSearchPreview {
+        provider: result.provider,
+        elapsed_ms,
+        sources,
+    })
 }
 
 /// JSON 高级主题（nuclear 式）：用户放在 `<app_data>/themes/*.json` 的自定义配色文件。
@@ -4933,11 +5012,11 @@ mod tests {
         // 开 → 原样
         let on = effective_settings(&s, true);
         assert_eq!(on.web_search_provider, "auto");
-        assert!(on.web_search_available().is_some());
+        assert!(on.web_search_config().is_some());
         // 关 → provider 置 none，工具不可注册
         let off = effective_settings(&s, false);
         assert_eq!(off.web_search_provider, "none");
-        assert!(off.web_search_available().is_none());
+        assert!(off.web_search_config().is_none());
         // 不改动原设置
         assert_eq!(s.web_search_provider, "auto");
     }
