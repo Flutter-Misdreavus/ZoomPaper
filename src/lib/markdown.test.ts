@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linkifyCitations, normalizeLatex } from "@/lib/markdown";
+import { linkifyCitations, normalizeLatex, wrapBareQuizMath } from "@/lib/markdown";
 
 // MinerU 编号公式的典型裸 LaTeX 形态（LLM 回答时剥掉了 $$ 定界符）
 const BARE_EQ = String.raw`\Xi(\tau)=\frac{1}{T}\sum_{t=0}^{T-1}\mathcal{H}\left[q_\varphi(\mathbf{z}_{t+1}\mid s_t)\right] \tag{28}`;
@@ -74,5 +74,38 @@ describe("linkifyCitations", () => {
   it("公式外的 [n] 仍转链接，公式保持原样", () => {
     const out = linkifyCitations("见 [2]，其中 $a[0]=1$");
     expect(out).toBe("见 [2](citation:2)，其中 $a[0]=1$");
+  });
+});
+
+describe("wrapBareQuizMath", () => {
+  it("给整段裸公式选项补 $...$ 定界符", () => {
+    expect(wrapBareQuizMath(String.raw`h_i^(l)=f^(l)(h_{i-1}^(l))`)).toBe(
+      String.raw`$h_i^(l)=f^(l)(h_{i-1}^(l))$`,
+    );
+    expect(wrapBareQuizMath(String.raw`h_i^(l)=h_i^(l-1)+e_i`)).toBe(
+      String.raw`$h_i^(l)=h_i^(l-1)+e_i$`,
+    );
+    expect(wrapBareQuizMath(String.raw`x = y + z`)).toBe(String.raw`$x = y + z$`);
+  });
+
+  it("只在中文混排中包裹公式片段", () => {
+    expect(wrapBareQuizMath("隐藏状态 h_i^(l) 如何计算？")).toBe(
+      "隐藏状态 $h_i^(l)$ 如何计算？",
+    );
+    expect(wrapBareQuizMath("其中 h_i 表示第 i 个 token")).toBe(
+      "其中 $h_i$ 表示第 i 个 token",
+    );
+    expect(wrapBareQuizMath("**加粗** h_i^(l)")).toBe("**加粗** $h_i^(l)$");
+  });
+
+  it("中文正文、英文句子、已有公式与代码保持原样", () => {
+    const samples = [
+      "vanilla_loop 是什么？",
+      "What is h_i^(l)?",
+      "Consider h_i^(l) as the state",
+      String.raw`已有公式 $h_i^(l)$ 不再包裹`,
+      String.raw`行内代码 \`h_i^(l)\` 不处理`,
+    ];
+    for (const sample of samples) expect(wrapBareQuizMath(sample)).toBe(sample);
   });
 });

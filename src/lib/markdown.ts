@@ -59,6 +59,90 @@ function isTableRow(line: string): boolean {
   return line.trim().startsWith("|");
 }
 
+/** 测验文本中已带定界符的公式/代码，先占位避免被再次包裹。 */
+const QUIZ_MATH_GUARD_RE =
+  /```[\s\S]*?```|`[^`\n]+`|\$\$[\s\S]*?\$\$|\$[^\n$]+?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g;
+
+/** 混排文本中的裸公式候选（如 `h_i^(l)`）。 */
+const QUIZ_INLINE_MATH_RE = /[A-Za-z\\][A-Za-z0-9\\{}_^()\[\]=+\-*/.,]*/g;
+
+/**
+ * 判断一段文本是否是「被剥掉 `$` 定界符的裸公式」。
+ *
+ * 只用于测验字段（题干/选项/解析），且策略保守：含中文、英文问句、Markdown
+ * 结构或已有定界符的文本一律跳过，避免把普通说明文字渲染成公式。
+ */
+function isBareQuizFormula(text: string, inline = false): boolean {
+  const s = text.trim();
+  if (s.length < 2 || s.length > 300) return false;
+  if (/[\u4e00-\u9fff]/.test(s)) return false;
+  if (s.includes("$") || s.includes("\\[") || s.includes("\\(")) return false;
+  if (/[?!]/.test(s)) return false;
+  if (/\*\*|`|^#{1,6}\s|^[-*+]\s|^\d+[.)]\s|^>|^\||\]\(|https?:\/\//.test(s)) return false;
+  if (!/^[A-Za-z0-9\s\\{}_^()\[\]=+\-*/<>.,:;|'"]+$/.test(s)) return false;
+
+  const hasCommand = /\\[A-Za-z]+/.test(s);
+  const hasCaret = s.includes("^");
+  const hasEquation = s.includes("=");
+  const hasSubscript = s.includes("_");
+  const hasOperator = /[+\-*/]/.test(s);
+  if (inline) {
+    if (!hasCommand && !hasCaret && !hasEquation && !hasSubscript) return false;
+  } else if (
+    !hasCommand &&
+    !hasCaret &&
+    !hasEquation &&
+    !(hasSubscript && hasOperator)
+  ) {
+    return false;
+  }
+
+  // 英文句子通常包含多个长单词；单个长单词只允许出现在无空格的函数式写法里
+  // （如 `softmax(QK^T)`），避免把 `Consider h_i^(l)` 误判为公式。
+  const longWords = s.replace(/\\[A-Za-z]+/g, "").match(/[A-Za-z]{3,}/g) ?? [];
+  if (longWords.length > 1) return false;
+  if (longWords.length === 1 && /\s/.test(s)) return false;
+  return true;
+}
+
+/**
+ * 给测验文本中的裸公式补 `$...$` 定界符。
+ *
+ * AI 出题偶尔把公式写成 `h_i^(l)=f^(l)(h_{i-1}^(l))` 这类普通文本，
+ * remark-math 不会渲染。这里兼容旧题库：
+ * - 整段是公式（常见于选择题选项）→ 整段包裹；
+ * - 中文混排中的公式片段（如 `隐藏状态 h_i^(l)`）→ 只包裹片段；
+ * - 已有 `$...$` / `\(...\)` / 代码块、英文句子和 Markdown 结构保持原样。
+ */
+export function wrapBareQuizMath(markdown: string): string {
+  if (!markdown) return "";
+  const guarded: string[] = [];
+  const protectedText = markdown.replace(QUIZ_MATH_GUARD_RE, (match) => {
+    guarded.push(match);
+    return `\u0000${guarded.length - 1}\u0000`;
+  });
+  const wrapped = protectedText
+    .split("\n")
+    .map((line) => {
+      if (!line.trim() || line.includes("\u0000")) return line;
+      if (isBareQuizFormula(line)) {
+        const leading = line.match(/^\s*/)?.[0] ?? "";
+        const trailing = line.match(/\s*$/)?.[0] ?? "";
+        return `${leading}$${line.trim()}$${trailing}`;
+      }
+      // 只在中文混排行里做片段包裹，避免英文正文被误判
+      if (!/[\u4e00-\u9fff]/.test(line) || /https?:\/\//.test(line)) return line;
+      return line.replace(QUIZ_INLINE_MATH_RE, (token) => {
+        const suffixMatch = token.match(/[.,;:]+$/);
+        const suffix = suffixMatch?.[0] ?? "";
+        const core = suffix ? token.slice(0, -suffix.length) : token;
+        return isBareQuizFormula(core, true) ? `$${core}$${suffix}` : token;
+      });
+    })
+    .join("\n");
+  return wrapped.replace(/\u0000(\d+)\u0000/g, (_, index) => guarded[Number(index)]);
+}
+
 /** CommonMark 认定的 HTML 块级标签名（type 6 起始条件）。 */
 const HTML_BLOCK_TAGS =
   "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";

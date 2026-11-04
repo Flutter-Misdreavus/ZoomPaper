@@ -1,15 +1,16 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QuizPanel } from "@/components/QuizPanel";
-import { quizGet, quizList, quizSubmitAnswer, type Quiz } from "@/lib/api";
+import { quizGet, quizList, quizSections, quizSubmitAnswer, type Quiz } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   quizList: vi.fn(),
   quizGet: vi.fn(),
+  quizSections: vi.fn(),
   quizSubmitAnswer: vi.fn(),
 }));
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 function makeQuiz(overrides: Partial<Quiz> = {}): Quiz {
   return {
@@ -61,6 +62,24 @@ it.each(["practice", "exam"])("%s 模式渲染题干和选项中的 Markdown、�
   expect(container.querySelectorAll(".katex-error").length).toBe(0);
 });
 
+it("将 AI 输出的裸公式选项补上定界符并渲染", async () => {
+  const quiz = makeQuiz();
+  quiz.questions[0].options = [
+    String.raw`h_i^(l)=f^(l)(h_{i-1}^(l))`,
+    String.raw`h_i^(l)=h_i^(l-1)+e_i`,
+    String.raw`h_i^(l)=f^(l)(h_i^(l-1))`,
+    String.raw`h_i^(l)=f^(l)(h_i^(L))`,
+  ];
+  const { container } = await openQuiz(quiz);
+  // 题干 1 个 + 4 个裸公式选项
+  expect(container.querySelectorAll(".katex").length).toBe(5);
+  for (const letter of ["A.", "B.", "C.", "D."]) {
+    const option = screen.getByText(letter).closest("button")!;
+    expect(option.querySelector("annotation")?.textContent).toContain("h_i");
+  }
+  expect(container.querySelectorAll(".katex-error").length).toBe(0);
+});
+
 it("结果页渲染选项和答案解析", async () => {
   const { container } = await openQuiz(makeQuiz({
     status: "done", answers: [{ question_id: 1, answer: "B" }],
@@ -80,4 +99,39 @@ it("主观题参考答案展开后渲染公式", async () => {
   fireEvent.click(screen.getByRole("button", { name: "参考答案" }));
   expect(screen.getByText("推导").tagName).toBe("STRONG");
   expect(container.querySelectorAll(".katex").length).toBe(2);
+});
+
+it("长按题量 +/- 连续调整，松开后停止", async () => {
+  vi.mocked(quizList).mockResolvedValue([]);
+  vi.mocked(quizSections).mockResolvedValue([]);
+  render(<QuizPanel paperId="paper" />);
+  fireEvent.click(await screen.findByRole("button", { name: "新建测验" }));
+
+  const group = await screen.findByRole("group", { name: "选择题题量" });
+  const count = within(group).getByText("5");
+  const plus = within(group).getByRole("button", { name: "增加选择题数量" });
+  const minus = within(group).getByRole("button", { name: "减少选择题数量" });
+
+  // 单击仍按原行为增减一题
+  fireEvent.click(plus);
+  expect(Number(count.textContent)).toBe(6);
+  fireEvent.click(minus);
+  expect(Number(count.textContent)).toBe(5);
+
+  vi.useFakeTimers();
+  fireEvent.pointerDown(plus, { button: 0, pointerId: 1 });
+  act(() => { vi.advanceTimersByTime(700); });
+  const held = Number(count.textContent);
+  expect(held).toBeGreaterThan(5);
+  fireEvent.pointerUp(plus, { pointerId: 1 });
+  act(() => { vi.advanceTimersByTime(500); });
+  expect(Number(count.textContent)).toBe(held);
+
+  fireEvent.pointerDown(minus, { button: 0, pointerId: 2 });
+  act(() => { vi.advanceTimersByTime(700); });
+  const lowered = Number(count.textContent);
+  expect(lowered).toBeLessThan(held);
+  fireEvent.pointerUp(minus, { pointerId: 2 });
+  act(() => { vi.advanceTimersByTime(500); });
+  expect(Number(count.textContent)).toBe(lowered);
 });

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownView } from "@/components/MarkdownView";
+import { wrapBareQuizMath } from "@/lib/markdown";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,6 +58,10 @@ const FOCUSES = ["全面", "方法", "实验", "结论"];
 const LETTERS = "ABCDEFGHIJ";
 const MAX_CHOICE = 30;
 const MAX_SUBJECTIVE = 5;
+/** 长按题量步进器开始连续调整的延迟（ms） */
+const STEP_HOLD_DELAY_MS = 400;
+/** 长按题量步进器连续调整的间隔（ms） */
+const STEP_REPEAT_MS = 90;
 /** 章节列表超过该数量时折叠为可滚动区域 */
 const SECTION_SCROLL_THRESHOLD = 6;
 
@@ -498,36 +503,139 @@ function SegRow({
   );
 }
 
-/** 题数步进器（- 数值 +） */
+/** 题数步进器（- 数值 +）：单击减一/加一，长按连续调整。 */
 function Stepper({
   value,
   max,
+  label,
   onChange,
   disabled,
 }: {
   value: number;
   max: number;
-  onChange: (v: number) => void;
+  label: string;
+  onChange: (updater: (prev: number) => number) => void;
   disabled?: boolean;
 }) {
+  const holdTimeout = useRef<number | null>(null);
+  const repeatInterval = useRef<number | null>(null);
+  /** 长按结束后延迟复位，避免紧接着的 click 又加一次 */
+  const resetHoldFlag = useRef<number | null>(null);
+  const longPressed = useRef(false);
+
   const btn =
-    "pressable flex h-6 w-6 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40";
+    "pressable flex h-6 w-6 select-none items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40";
+
+  function clearTimers() {
+    if (holdTimeout.current !== null) {
+      window.clearTimeout(holdTimeout.current);
+      holdTimeout.current = null;
+    }
+    if (repeatInterval.current !== null) {
+      window.clearInterval(repeatInterval.current);
+      repeatInterval.current = null;
+    }
+  }
+
+  function clearResetFlag() {
+    if (resetHoldFlag.current !== null) {
+      window.clearTimeout(resetHoldFlag.current);
+      resetHoldFlag.current = null;
+    }
+  }
+
+  useEffect(() => () => {
+    clearTimers();
+    clearResetFlag();
+  }, []);
+
+  useEffect(() => {
+    if (disabled) {
+      clearTimers();
+      clearResetFlag();
+      longPressed.current = false;
+    }
+  }, [disabled]);
+
+  function step(delta: number) {
+    onChange((prev) => Math.max(0, Math.min(max, prev + delta)));
+  }
+
+  function handlePointerDown(
+    delta: number,
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
+    if (disabled || event.button !== 0) return;
+    clearTimers();
+    clearResetFlag();
+    longPressed.current = false;
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // 部分 WebView / 测试环境不支持 pointer capture，忽略即可
+    }
+    holdTimeout.current = window.setTimeout(() => {
+      holdTimeout.current = null;
+      longPressed.current = true;
+      // 达到长按阈值先走一步，之后按固定节奏连续调整
+      step(delta);
+      repeatInterval.current = window.setInterval(() => step(delta), STEP_REPEAT_MS);
+    }, STEP_HOLD_DELAY_MS);
+  }
+
+  function handlePointerEnd() {
+    clearTimers();
+    if (!longPressed.current) return;
+    clearResetFlag();
+    // click 在 pointerup 之后触发：保留标记到 click 消费；
+    // 若指针在按钮外松开（没有 click），300ms 后自动复位。
+    resetHoldFlag.current = window.setTimeout(() => {
+      longPressed.current = false;
+      resetHoldFlag.current = null;
+    }, 300);
+  }
+
+  function handleClick(delta: number) {
+    if (longPressed.current) {
+      longPressed.current = false;
+      clearResetFlag();
+      return;
+    }
+    step(delta);
+  }
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" role="group" aria-label={`${label}题量`}>
       <button
+        type="button"
         className={btn}
         disabled={disabled || value <= 0}
-        onClick={() => onChange(value - 1)}
-        title="减少"
+        onPointerDown={(event) => handlePointerDown(-1, event)}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onPointerLeave={handlePointerEnd}
+        onLostPointerCapture={handlePointerEnd}
+        onClick={() => handleClick(-1)}
+        title="减少（长按连续减少）"
+        aria-label={`减少${label}数量`}
       >
         <Minus className="h-3.5 w-3.5" />
       </button>
-      <span className="w-5 text-center text-[13px] font-medium tabular-nums">{value}</span>
+      <span className="w-5 text-center text-[13px] font-medium tabular-nums">
+        {value}
+      </span>
       <button
+        type="button"
         className={btn}
         disabled={disabled || value >= max}
-        onClick={() => onChange(value + 1)}
-        title="增加"
+        onPointerDown={(event) => handlePointerDown(1, event)}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onPointerLeave={handlePointerEnd}
+        onLostPointerCapture={handlePointerEnd}
+        onClick={() => handleClick(1)}
+        title="增加（长按连续增加）"
+        aria-label={`增加${label}数量`}
       >
         <Plus className="h-3.5 w-3.5" />
       </button>
@@ -639,9 +747,9 @@ function ConfigView({
   mode: QuizMode;
   setMode: (m: QuizMode) => void;
   choiceCount: number;
-  setChoiceCount: (n: number) => void;
+  setChoiceCount: Dispatch<SetStateAction<number>>;
   subjectiveCount: number;
-  setSubjectiveCount: (n: number) => void;
+  setSubjectiveCount: Dispatch<SetStateAction<number>>;
   difficulty: string;
   setDifficulty: (s: string) => void;
   focus: string;
@@ -701,6 +809,7 @@ function ConfigView({
             <Stepper
               value={choiceCount}
               max={MAX_CHOICE}
+              label="选择题"
               onChange={setChoiceCount}
               disabled={generating}
             />
@@ -710,6 +819,7 @@ function ConfigView({
             <Stepper
               value={subjectiveCount}
               max={MAX_SUBJECTIVE}
+              label="主观题"
               onChange={setSubjectiveCount}
               disabled={generating}
             />
@@ -818,7 +928,7 @@ function ConfigView({
 function QuizMarkdown({ markdown, className = "" }: { markdown: string; className?: string }) {
   return (
     <div className={`min-w-0 [&>article]:text-[13px] [&>article]:leading-relaxed [&>article]:text-inherit [&>article>:first-child]:mt-0 [&>article>:last-child]:mb-0 ${className}`}>
-      <MarkdownView markdown={markdown} />
+      <MarkdownView markdown={wrapBareQuizMath(markdown)} />
     </div>
   );
 }
