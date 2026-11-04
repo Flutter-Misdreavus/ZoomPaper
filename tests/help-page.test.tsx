@@ -35,7 +35,7 @@ describe("HelpPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "从 Zotero 导入" }));
     expect(screen.getByRole("heading", { name: "从 Zotero 导入" })).toBeTruthy();
-    expect(screen.getByText("在论文库点击“从 Zotero 导入题录”，选择题录文件。")).toBeTruthy();
+    expect(screen.getByText("在“设置 → 导入与解析 → Zotero 题录导入”中点击“导入题录”，选择题录文件。")).toBeTruthy();
     expect(screen.getByText("确认导入。合并到已有论文时会保留原 PDF、标注、文件夹、会话和测验，只补充缺失元数据。")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "补挂 PDF" }));

@@ -15,9 +15,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Check, Loader2, Plus, Edit2, Trash2 } from "lucide-react";
-import { getSettings, getThemesDir, listCustomThemes, listPapers, listJobs, emptyTrash, enqueueMetadataTranslations, DEFAULT_WORKFLOW, normalizeSettings, type Paper, type WorkflowSettings, reindexAllPapers, updateSettings, addProvider, updateProvider, deleteProvider, setActiveProvider, webSearchStatus, testWebSearch, type Settings, type ProviderConfig, type WebSearchPreview, } from "@/lib/api";
+import { getSettings, getThemesDir, listCustomThemes, listPapers, listJobs, listFolders, emptyTrash, enqueueMetadataTranslations, DEFAULT_WORKFLOW, normalizeSettings, type Paper, type WorkflowSettings, reindexAllPapers, updateSettings, addProvider, updateProvider, deleteProvider, setActiveProvider, webSearchStatus, testWebSearch, type Settings, type ProviderConfig, type WebSearchPreview, type Folder, type ReferenceImportResult, } from "@/lib/api";
 import { PROVIDER_TEMPLATES, createProviderFromTemplate, type ProviderTemplate } from "@/lib/providerTemplates";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, } from "@/components/ui/dialog";
+import { ReferenceImportDialog } from "@/components/library/ReferenceImportDialog";
 type SettingsSection = 'general' | 'reader' | 'companion' | 'ai' | 'import' | 'data';
 const SECTIONS = [{ id: 'general', name: '常规', icon: SettingsIcon }, { id: 'reader', name: '论文阅读', icon: BookOpen }, { id: 'companion', name: '阅读伙伴', icon: Bot }, { id: 'ai', name: 'AI 模型与 API', icon: MessageSquare }, { id: 'import', name: '导入与解析', icon: Upload }, { id: 'data', name: '数据与存储', icon: Database }] as const;
 export function SettingsPage() {
@@ -47,6 +48,8 @@ export function SettingsPage() {
     }
     useEffect(() => { void invoke<string>('library_storage_path').then(setStoragePath).catch(() => {}); }, []);
     const [concurrency, setConcurrency] = useState('2');
+    const [folders, setFolders] = useState<Folder[]>([]);
+    const [referenceImportOpen, setReferenceImportOpen] = useState(false);
     const [webCount, setWebCount] = useState('8');
     const [webTestOpen, setWebTestOpen] = useState(false);
     const [webTestQuery, setWebTestQuery] = useState('DeepSeek 最新模型');
@@ -70,6 +73,7 @@ export function SettingsPage() {
     useEffect(() => {
         loadSettings();
         void refreshThemes();
+        void listFolders().then(setFolders).catch(() => {});
     }, []);
     async function loadSettings() {
         try {
@@ -110,6 +114,10 @@ export function SettingsPage() {
         finally {
             setSaving(false);
         }
+    }
+    function handleReferenceImported(result: ReferenceImportResult) {
+        setActionStatus(`题录导入完成：新建 ${result.created}，合并 ${result.merged}，跳过 ${result.skipped}，失败 ${result.failed}`);
+        window.dispatchEvent(new Event('zoompaper-library-changed'));
     }
     async function changeLanguage(key: keyof Preferences, value: string) {
         setPreferences({ [key]: value });
@@ -339,7 +347,7 @@ export function SettingsPage() {
             row('webModel', '原生搜索模型', <Input aria-label="原生搜索模型" placeholder="仅 Anthropic 使用" value={current.web_search_model ?? ''} onChange={e => setSettings({ ...current, web_search_model: e.target.value || null })} onBlur={() => saveSettingsPatch({ web_search_model: (settingsRef.current?.web_search_model ?? '').trim() || null })} className="w-56"/>),
             row('webTest', '连接测试', <><Button size="sm" variant="outline" onClick={() => { setWebTestError(null); setWebTestResult(null); setWebTestOpen(true); }}>测试搜索</Button><Button size="sm" variant="ghost" onClick={() => void openUrl('https://api-docs.deepseek.com/zh-cn/guides/search/').catch(e => setError(String(e)))}>DeepSeek 文档</Button></>),
         ] }] },
-        { id: 'import', groups: [{ title: 'PDF 解析', rows: [row('mineru', 'MinerU API Key', <Input aria-label="MinerU API Key" type="password" autoComplete="off" value={current.mineru_api_key} onBlur={() => saveWorkflow({})} onChange={e => setSettings({ ...current, mineru_api_key: e.target.value })} className="w-56"/>), workflowToggle('autoParse', '导入后自动解析'), row('parseConcurrency', '同时解析论文数', <Input aria-label="同时解析论文数" type="number" min={1} step={1} value={concurrency} onChange={e => setConcurrency(e.target.value)} onBlur={() => { const n = Number(concurrency); if (!Number.isSafeInteger(n) || n < 1 || n > 4294967295) {
+        { id: 'import', groups: [{ title: 'Zotero 题录导入', rows: [row('zoteroImport', '从 Zotero 导入', <Button size="sm" variant="outline" onClick={() => setReferenceImportOpen(true)}>导入题录</Button>), row('zoteroFormat', '支持格式', <span className="text-sm text-zp-tertiary">BibTeX / RIS · 支持 PDF 匹配与重复预览</span>)] }, { title: 'PDF 解析', rows: [row('mineru', 'MinerU API Key', <Input aria-label="MinerU API Key" type="password" autoComplete="off" value={current.mineru_api_key} onBlur={() => saveWorkflow({})} onChange={e => setSettings({ ...current, mineru_api_key: e.target.value })} className="w-56"/>), workflowToggle('autoParse', '导入后自动解析'), row('parseConcurrency', '同时解析论文数', <Input aria-label="同时解析论文数" type="number" min={1} step={1} value={concurrency} onChange={e => setConcurrency(e.target.value)} onBlur={() => { const n = Number(concurrency); if (!Number.isSafeInteger(n) || n < 1 || n > 4294967295) {
                             setError('同时解析论文数必须为正整数');
                             setConcurrency(String(workflow.parseConcurrency));
                         }
@@ -376,6 +384,7 @@ export function SettingsPage() {
         setOperation(null); }}><DialogContent><DialogHeader><DialogTitle>{operation === 'trash' ? '清空回收站？' : operation === 'restore' ? '从备份恢复？' : operation === 'path' ? '迁移论文库？' : operation === 'cache' ? '清理缓存？' : '重建索引？'}</DialogTitle></DialogHeader><p className="py-3 text-sm">{operation === 'trash' ? '永久删除回收站中的论文与文件。' : operation === 'restore' ? '校验备份，重启时恢复；恢复前自动备份当前论文库。' : operation === 'path' ? '复制到所选文件夹中新建的论文库，保留旧目录。' : operation === 'cache' ? '清理 DOI 查询缓存，保留论文、笔记与译文。' : '重新生成索引，保留论文与笔记。'}</p><DialogFooter><Button variant="outline" disabled={working} onClick={() => setOperation(null)}>取消</Button><Button disabled={working} onClick={() => void perform(operation!)}>{working ? '处理中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={webTestOpen} onOpenChange={setWebTestOpen}><DialogContent><DialogHeader><DialogTitle>测试联网搜索</DialogTitle><DialogDescription>使用已保存的 Provider 配置调用搜索接口，确认 Key、余额与网络是否正常。</DialogDescription></DialogHeader><div className="space-y-3 py-3"><div className="flex items-center gap-2"><Input aria-label="测试搜索词" value={webTestQuery} onChange={e => setWebTestQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter')
         void runWebSearchTest(); }} disabled={webTestRunning} placeholder="输入测试搜索词"/><Button onClick={() => void runWebSearchTest()} disabled={webTestRunning}>{webTestRunning ? '搜索中…' : '搜索'}</Button></div>{webTestError && <p role="alert" className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600">{webTestError}</p>}{webTestResult && <div className="space-y-2"><p className="text-xs text-zp-tertiary">{webTestResult.provider === 'deepseek' ? 'DeepSeek 搜索 API' : 'Anthropic 原生搜索'} · {webTestResult.sources.length} 条 · {webTestResult.elapsed_ms}ms</p>{webTestResult.sources.length === 0 ? <p className="text-sm text-zp-secondary">没有搜索结果，可换一个关键词。</p> : <ul className="max-h-72 space-y-3 overflow-y-auto pr-1">{webTestResult.sources.map(source => <li key={source.url} className="rounded-lg border border-zp-border p-3"><button type="button" className="text-left text-sm font-medium text-primary hover:underline" onClick={() => void openUrl(source.url).catch(e => setWebTestError(String(e)))}>{source.title || source.url}</button><p className="mt-1 break-all text-[11px] text-zp-tertiary">{source.url}</p>{source.snippet && <p className="mt-1 text-xs leading-relaxed text-zp-secondary">{source.snippet}</p>}{[source.site_name, source.published_at].filter(Boolean).length > 0 && <p className="mt-1 text-[11px] text-zp-tertiary">{[source.site_name, source.published_at].filter(Boolean).join(' · ')}</p>}</li>)}</ul>}</div>}</div><DialogFooter><Button variant="outline" onClick={() => setWebTestOpen(false)} disabled={webTestRunning}>关闭</Button></DialogFooter></DialogContent></Dialog>
+    <ReferenceImportDialog open={referenceImportOpen} folders={folders} onClose={() => setReferenceImportOpen(false)} onImported={handleReferenceImported}/>
     <AddProviderDialog open={showAddDialog} onClose={() => { setShowAddDialog(false); setSelectedTemplate(null); }} onAdd={handleAddProvider} selectedTemplate={selectedTemplate} onSelectTemplate={setSelectedTemplate}/>
     {editingProvider && <EditProviderDialog open={showEditDialog} provider={editingProvider} onClose={() => { setShowEditDialog(false); setEditingProvider(null); }} onSave={handleUpdateProvider}/>}
   </div>;

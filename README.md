@@ -92,7 +92,7 @@ AI 工作全程**实时可见**：思考内容逐字流出、每个工具「调�
 
 ### Zotero 导入
 
-支持导入 Zotero 导出的 BibTeX / RIS，自动匹配 PDF 附件、补全 DOI，并在写入前预览重复项；
+支持从“设置 → 导入与解析 → Zotero 题录导入”导入 Zotero 导出的 BibTeX / RIS，自动匹配 PDF 附件、补全 DOI，并在写入前预览重复项；
 合并时保留已有标注、文件夹、会话和测验，无 PDF 条目可稍后补挂。详见 [Zotero 导入说明](docs/REFERENCE_IMPORT.md)。
 
 ### 本地优先

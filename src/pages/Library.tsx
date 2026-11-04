@@ -43,7 +43,6 @@ import {
   type ParseProgress,
   type ReadingPlan,
   type ReadingStatus,
-  type ReferenceImportResult,
   attachPaperPdf,
 } from "@/lib/api";
 import type { LibraryView } from "@/lib/folders";
@@ -60,7 +59,6 @@ import { PaperFolderPicker } from "@/components/library/PaperFolderPicker";
 import { PaperTable } from "@/components/library/PaperTable";
 import { PaperInspector } from "@/components/library/PaperInspector";
 import { TrashList } from "@/components/library/TrashList";
-import { ReferenceImportDialog } from "@/components/library/ReferenceImportDialog";
 
 type Renaming = { kind: "folder"; id: string } | { kind: "paper"; id: string };
 
@@ -118,7 +116,6 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
   const [deleteTargets, setDeleteTargets] = useState<Paper[] | null>(null);
 
   const [importing, setImporting] = useState(false);
-  const [referenceImportOpen, setReferenceImportOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [parsingId, setParsingId] = useState<string | null>(null);
   const parseJobs = jobs.filter((job) => job.kind === "parse" && ["queued", "running"].includes(job.status));
@@ -415,13 +412,8 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
     onOpenPaper(paperId);
   }
 
-  function handleReferenceImported(result: ReferenceImportResult) {
-    setError(result.failures.length ? result.failures.map((failure) => `${failure.title}：${failure.error}`).join("\n") : null);
-    setNotice(`题录导入完成：新建 ${result.created}，合并 ${result.merged}，跳过 ${result.skipped}，失败 ${result.failed}`);
-    void refresh();
-  }
-
-  async function handleExportNotes() {    const paper = selectedPapers[0];
+  async function handleExportNotes() {
+    const paper = selectedPapers[0];
     if (selectedPapers.length !== 1 || !paper) return;
     const safeTitle = paper.title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
     const destination = await save({
@@ -695,7 +687,6 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
           query={query}
           onQueryChange={setQuery}
           onImport={() => void handleImport()}
-          onImportReferences={() => setReferenceImportOpen(true)}
           importing={importing}
           filter={filter}
           onFilterChange={handleFilterChange}
@@ -995,15 +986,6 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <ReferenceImportDialog
-        key={currentFolderId ?? "none"}
-        open={referenceImportOpen}
-        folders={folders}
-        defaultFolderId={currentFolderId}
-        onClose={() => setReferenceImportOpen(false)}
-        onImported={handleReferenceImported}
-      />
     </div>
   );
 }
