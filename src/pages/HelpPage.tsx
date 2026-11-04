@@ -32,6 +32,9 @@ const guideSections: GuideSection[] = [
     id: "library", title: "论文库", icon: Library,
     items: [
       { id: "import", title: "导入论文", icon: Upload, summary: "从本机加入一个或多个 PDF。", steps: ["点击论文库右上角的上传图标。", "选择一个或多个 PDF。", "导入后等待解析完成。"] },
+      { id: "zotero-import", title: "从 Zotero 导入", icon: FileText, summary: "导入 BibTeX 或 RIS 题录，并匹配本地 PDF。", steps: ["在 Zotero 中选中条目，右键导出为 BibTeX 或 RIS 文件。", "在论文库点击“从 Zotero 导入题录”，选择题录文件。", "如果导出文件不含附件路径，再选择 Zotero 的 storage 文件夹或导出目录。", "点击“解析并预览”，检查重复项和 PDF 匹配；可按行选择合并、新建、跳过，或手动指定 PDF。", "缺失 DOI 时可点击“联网补全 DOI”；没有 PDF 的条目可勾选“允许仅导入题录”。", "确认导入。合并到已有论文时会保留原 PDF、标注、文件夹、会话和测验，只补充缺失元数据。"] },
+      { id: "missing-pdf", title: "补挂 PDF", icon: Upload, summary: "为仅导入题录的论文补充或替换 PDF。", steps: ["缺少 PDF 的论文会在列表中显示“缺少 PDF”，点击后打开右侧详情。", "在详情中点击“补挂 PDF”，选择本地 PDF 文件。", "如果论文已有 PDF，替换前会提示标注位置可能偏移。", "补挂成功后点击解析，生成正文索引。"] },
+      { id: "import-troubleshoot", title: "导入问题排查", icon: HelpCircle, summary: "处理附件未匹配、DOI 补全失败和重复项。", steps: ["没有匹配到 PDF：确认选择了正确的 Zotero storage 或附件目录，也可以在预览中逐条点击“选择 PDF”。", "DOI 补全失败：检查网络后重试；也可以先导入，再打开论文触发自动补全。", "重复项：高置信度默认合并；标题相似但证据不足的会标记为疑似重复并默认跳过，可手动改为合并。", "只有题录：勾选“允许仅导入题录”，之后在论文详情中补挂 PDF。"] },
       { id: "open", title: "打开论文", icon: BookOpen, summary: "进入论文阅读工作区。", steps: ["双击论文行或卡片。", "也可以右键论文，选择打开。", "顶部标签切换论文，固定论文库标签返回列表。", "切换其他板块后，原来的论文保持打开。"] },
       { id: "star", title: "收藏", icon: Star, summary: "把常用论文集中到左侧收藏。", steps: ["选中一篇论文。", "点击右侧信息栏中的星标图标。", "再次点击可取消收藏。"] },
       { id: "folder", title: "添加到文件夹", icon: FolderPlus, summary: "一篇论文可以属于多个文件夹。", steps: ["右键论文，或长按论文进入多选。", "点击文件夹图标。", "勾选目标文件夹。", "点击“完成”应用更改。"] },
