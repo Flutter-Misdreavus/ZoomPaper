@@ -118,6 +118,7 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
     }
   }, [prefs.markReadAtEnd, active, paper?.id, paper?.reading_status, updatePaper]);
   const ready = paper?.parse_status === "ready";
+  const hasPdf = Boolean(paper?.pdf_path?.trim());
 
   return (
     <ImageAnnotationProvider paperId={paperId} active={active} baseDir={paper?.md_path?.replace(/[^/\\]+$/, "").replace(/[\\/]+$/, "") ?? ""}>
@@ -198,18 +199,27 @@ export function Reader({ paperId, initialPageIdx, onBack, refreshSignal, onTitle
               </TabsTrigger>
             </TabsList>
             <TabsContent value="pdf" keepMounted className="flex min-h-0 flex-col">
-              {(visitedModes.has("pdf") || readerMode === "pdf") && <PdfViewer
-                ref={pdfRef}
-                active={active && readerMode === "pdf"}
-                retainResources={retainPdf}
-                onReady={displayed}
-                navigationTarget={navigationTarget}
-                onReachEnd={reachEnd}
-                pdfPath={paper.pdf_path}
-                paperId={paperId}
-                initialPageIdx={initialPageIdx}
-                onAskSelection={acceptPdfSelection}
-              />}
+              {!hasPdf ? (
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+                  <p className="text-sm font-medium text-foreground">这篇论文缺少 PDF</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    这是一条仅导入的题录。回到论文库，在右侧详情中点击“补挂 PDF”后即可阅读和解析。
+                  </p>
+                </div>
+              ) : (
+                (visitedModes.has("pdf") || readerMode === "pdf") && <PdfViewer
+                  ref={pdfRef}
+                  active={active && readerMode === "pdf"}
+                  retainResources={retainPdf}
+                  onReady={displayed}
+                  navigationTarget={navigationTarget}
+                  onReachEnd={reachEnd}
+                  pdfPath={paper.pdf_path}
+                  paperId={paperId}
+                  initialPageIdx={initialPageIdx}
+                  onAskSelection={acceptPdfSelection}
+                />
+              )}
             </TabsContent>
             <TabsContent value="blog" keepMounted className="min-h-0 overflow-y-auto pt-4 pr-4">
               {ready && (visitedModes.has("blog") || readerMode === "blog") && (

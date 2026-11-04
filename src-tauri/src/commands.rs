@@ -371,14 +371,14 @@ const PAPER_SELECT: &str = "
            p.finished_at,
            (SELECT COALESCE(SUM(rs.seconds), 0) FROM reading_sessions rs WHERE rs.paper_id = p.id),
            p.source_url, p.github_url, p.venue, p.deleted_at, p.source_icon_url,
-           p.title_zh, p.abstract_zh,
+           p.title_zh, p.abstract_zh, p.doi, p.year,
            GROUP_CONCAT(pf.folder_id)
     FROM papers p
     LEFT JOIN paper_folders pf ON pf.paper_id = p.id
 ";
 
 fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
-    let folder_ids: Option<String> = row.get(21)?;
+    let folder_ids: Option<String> = row.get(23)?;
     let folder_ids = folder_ids
         .map(|s| {
             s.split(',')
@@ -407,6 +407,8 @@ fn row_to_paper(row: &rusqlite::Row) -> rusqlite::Result<Paper> {
         source_url: row.get(14)?,
         github_url: row.get(15)?,
         venue: row.get(16)?,
+        doi: row.get(21)?,
+        year: row.get(22)?,
         deleted_at: row.get(17)?,
         source_icon_url: row.get(18)?,
         folder_ids,
@@ -720,6 +722,8 @@ fn import_pdf_inner_with_metadata(
         venue: venue
             .and_then(normalize_venue)
             .or_else(|| source_url.and_then(infer_venue_from_source)),
+        doi: None,
+        year: None,
         deleted_at: None,
         source_icon_url: source_icon_url.and_then(|raw| {
             reqwest::Url::parse(raw.trim())
@@ -734,8 +738,8 @@ fn import_pdf_inner_with_metadata(
     let conn = db.conn();
     conn.execute(
         "INSERT INTO papers (id, title, authors, abstract, pdf_path, md_path, \
-         blog_md_path, created_at, last_read_at, reading_status, parse_status, starred, source_url, github_url, venue, source_icon_url) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         blog_md_path, created_at, last_read_at, reading_status, parse_status, starred, source_url, github_url, venue, source_icon_url, doi, year) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             &paper.id,
             &paper.title,
@@ -753,6 +757,8 @@ fn import_pdf_inner_with_metadata(
             paper.github_url,
             paper.venue,
             paper.source_icon_url,
+            paper.doi,
+            paper.year,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -940,7 +946,7 @@ fn venue_from_text(text: &str) -> Option<String> {
     })
 }
 
-fn normalize_venue(raw: &str) -> Option<String> {
+pub(crate) fn normalize_venue(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -1516,7 +1522,7 @@ async fn refresh_publication_with_cache(
         record.venue = record.venue.as_deref().and_then(normalize_venue);
         let conn = db.conn();
         // Keep specific page metadata. DOI may replace only missing or repository labels.
-        conn.execute("UPDATE papers SET venue = CASE WHEN venue IS NULL OR trim(venue) = '' OR lower(venue) IN ('arxiv', 'openreview') THEN COALESCE(?2, venue) ELSE venue END, authors = CASE WHEN authors IS NULL OR authors = '[]' OR trim(authors) = '' THEN COALESCE(?3, authors) ELSE authors END WHERE id = ?1", params![paper_id, &record.venue, &record.authors]).map_err(|e| e.to_string())?;
+        conn.execute("UPDATE papers SET venue = CASE WHEN venue IS NULL OR trim(venue) = '' OR lower(venue) IN ('arxiv', 'openreview') THEN COALESCE(?2, venue) ELSE venue END, authors = CASE WHEN authors IS NULL OR authors = '[]' OR trim(authors) = '' THEN COALESCE(?3, authors) ELSE authors END, doi = COALESCE(NULLIF(trim(doi), ''), ?4), year = COALESCE(year, ?5) WHERE id = ?1", params![paper_id, &record.venue, &record.authors, &record.doi, record.year]).map_err(|e| e.to_string())?;
         // Remember the actual saved venue, including more specific browser metadata.
         record.venue = conn
             .query_row("SELECT venue FROM papers WHERE id = ?1", [paper_id], |r| {
@@ -1557,6 +1563,19 @@ pub async fn parse_pdf(
     paper_id: String,
     on_progress: tauri::ipc::Channel<crate::ai::mineru::ParseProgress>,
 ) -> Result<Paper, String> {
+    let pdf_path: String = db
+        .conn()
+        .query_row(
+            "SELECT pdf_path FROM papers WHERE id=?1 AND deleted_at IS NULL",
+            [&paper_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "论文不存在或已在回收站".to_string())?;
+    if pdf_path.trim().is_empty() {
+        return Err("论文缺少 PDF，请先在详情中补挂 PDF".to_string());
+    }
     crate::jobs::enqueue(&db, &paper_id, "parse")?;
     let _ = on_progress.send(crate::ai::mineru::ParseProgress {
         stage: "queued".into(),

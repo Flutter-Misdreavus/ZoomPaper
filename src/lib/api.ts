@@ -66,6 +66,10 @@ export interface Paper {
   github_url: string | null;
   /** 发表期刊或会议 */
   venue: string | null;
+  /** 规范化 DOI（Zotero 导入/DOI 补全） */
+  doi?: string | null;
+  /** 出版年份 */
+  year?: number | null;
   /** 删除时间；非空表示位于回收站 */
   deleted_at: number | null;
   /** 来源网站图标 */
@@ -295,6 +299,136 @@ export const importBrowserDownload = (
   doi: doi ?? null,
   requestId: requestId ?? null,
 });
+
+/** Zotero 导入：一条归一化题录 */
+export interface ReferenceRecord {
+  key: string;
+  item_type: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  url: string | null;
+  abstract_text: string | null;
+  attachment_paths: string[];
+}
+
+export interface ReferenceAttachmentPreview {
+  path: string;
+  file_name: string;
+  size: number;
+  matched_by: string;
+}
+
+export interface ReferenceExistingMatch {
+  paper_id: string;
+  title: string;
+  doi: string | null;
+  year: number | null;
+  has_pdf: boolean;
+  reason: string;
+  confidence: number;
+}
+
+export type ReferenceImportAction = "merge" | "new" | "skip";
+
+export interface ReferencePreviewItem {
+  id: string;
+  record: ReferenceRecord;
+  attachment: ReferenceAttachmentPreview | null;
+  attachment_candidates: string[];
+  existing: ReferenceExistingMatch | null;
+  batch_duplicates: string[];
+  default_action: ReferenceImportAction;
+  issue: string | null;
+  enrichment_error: string | null;
+}
+
+export interface ReferenceParseError {
+  index: number;
+  key: string | null;
+  message: string;
+}
+
+export interface ReferenceImportPreview {
+  import_id: string;
+  format: "bibtex" | "ris";
+  total: number;
+  items: ReferencePreviewItem[];
+  errors: ReferenceParseError[];
+}
+
+export interface ReferenceImportDecision {
+  item_id: string;
+  action: ReferenceImportAction;
+  paper_id?: string | null;
+  attachment_path?: string | null;
+}
+
+export interface ReferenceImportFailure {
+  item_id: string;
+  title: string;
+  error: string;
+}
+
+export interface ReferenceImportResult {
+  created: number;
+  merged: number;
+  skipped: number;
+  failed: number;
+  warnings: string[];
+  failures: ReferenceImportFailure[];
+  paper_ids: string[];
+}
+
+/** 导入/补全进度（Tauri Channel） */
+export interface ReferenceImportProgress {
+  phase: string;
+  completed: number;
+  total: number;
+  message: string;
+}
+
+export const prepareReferenceImport = (
+  sourcePath: string,
+  attachmentsRoot?: string | null,
+  onEvent?: Channel<ReferenceImportProgress>,
+) =>
+  invoke<ReferenceImportPreview>("prepare_reference_import", {
+    sourcePath,
+    attachmentsRoot: attachmentsRoot ?? null,
+    onEvent: onEvent ?? new Channel<ReferenceImportProgress>(),
+  });
+
+export const enrichReferenceImport = (
+  importId: string,
+  itemIds: string[],
+  onEvent?: Channel<ReferenceImportProgress>,
+) =>
+  invoke<ReferenceImportPreview>("enrich_reference_import", {
+    importId,
+    itemIds,
+    onEvent: onEvent ?? new Channel<ReferenceImportProgress>(),
+  });
+
+export const commitReferenceImport = (
+  importId: string,
+  decisions: ReferenceImportDecision[],
+  targetFolderId?: string | null,
+  allowMetadataOnly = false,
+  autoParse = true,
+) =>
+  invoke<ReferenceImportResult>("commit_reference_import", {
+    importId,
+    decisions,
+    targetFolderId: targetFolderId ?? null,
+    allowMetadataOnly,
+    autoParse,
+  });
+
+export const attachPaperPdf = (paperId: string, sourcePath: string, replace = false) =>
+  invoke<Paper>("attach_paper_pdf", { paperId, sourcePath, replace });
 export interface ParseProgress {
   /** uploading / pending / converting / running / downloading / indexing */
   stage: string;

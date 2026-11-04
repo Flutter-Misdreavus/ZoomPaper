@@ -43,6 +43,8 @@ import {
   type ParseProgress,
   type ReadingPlan,
   type ReadingStatus,
+  type ReferenceImportResult,
+  attachPaperPdf,
 } from "@/lib/api";
 import type { LibraryView } from "@/lib/folders";
 
@@ -58,6 +60,7 @@ import { PaperFolderPicker } from "@/components/library/PaperFolderPicker";
 import { PaperTable } from "@/components/library/PaperTable";
 import { PaperInspector } from "@/components/library/PaperInspector";
 import { TrashList } from "@/components/library/TrashList";
+import { ReferenceImportDialog } from "@/components/library/ReferenceImportDialog";
 
 type Renaming = { kind: "folder"; id: string } | { kind: "paper"; id: string };
 
@@ -115,6 +118,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
   const [deleteTargets, setDeleteTargets] = useState<Paper[] | null>(null);
 
   const [importing, setImporting] = useState(false);
+  const [referenceImportOpen, setReferenceImportOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [parsingId, setParsingId] = useState<string | null>(null);
   const parseJobs = jobs.filter((job) => job.kind === "parse" && ["queued", "running"].includes(job.status));
@@ -180,7 +184,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
     const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
     if (words.length) {
       list = list.filter((p) => {
-        const haystack = `${p.title} ${p.venue ?? ""} ${p.authors ?? ""} ${p.abstract ?? ""} ${p.title_zh ?? ""} ${p.abstract_zh ?? ""}`.toLocaleLowerCase();
+        const haystack = `${p.title} ${p.venue ?? ""} ${p.authors ?? ""} ${p.abstract ?? ""} ${p.title_zh ?? ""} ${p.abstract_zh ?? ""} ${p.doi ?? ""} ${p.year ?? ""}`.toLocaleLowerCase();
         return words.every((word) => haystack.includes(word));
       });
     }
@@ -401,8 +405,23 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
     }
   }
 
-  async function handleExportNotes() {
-    const paper = selectedPapers[0];
+  function openPaperGuarded(paperId: string) {
+    const paper = papers.find((item) => item.id === paperId);
+    if (paper && !paper.pdf_path?.trim()) {
+      setFocusedPaperId(paperId);
+      setNotice("这篇论文缺少 PDF，请在详情中补挂 PDF 后再阅读");
+      return;
+    }
+    onOpenPaper(paperId);
+  }
+
+  function handleReferenceImported(result: ReferenceImportResult) {
+    setError(result.failures.length ? result.failures.map((failure) => `${failure.title}：${failure.error}`).join("\n") : null);
+    setNotice(`题录导入完成：新建 ${result.created}，合并 ${result.merged}，跳过 ${result.skipped}，失败 ${result.failed}`);
+    void refresh();
+  }
+
+  async function handleExportNotes() {    const paper = selectedPapers[0];
     if (selectedPapers.length !== 1 || !paper) return;
     const safeTitle = paper.title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
     const destination = await save({
@@ -430,6 +449,24 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
     } finally {
       setParsingId(null);
       clearParseProgress(paperId);
+    }
+  }
+
+  async function handleAttachPdf(paper: Paper) {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (typeof selected !== "string") return;
+    const replace = Boolean(paper.pdf_path?.trim());
+    if (replace && !window.confirm("替换 PDF 可能导致已有标注位置偏移。确定继续吗？")) return;
+    setError(null);
+    try {
+      const updated = await attachPaperPdf(paper.id, selected, replace);
+      setPapers((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setNotice(replace ? "PDF 已替换，可重新解析" : "PDF 已补挂，可开始解析");
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -658,6 +695,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
           query={query}
           onQueryChange={setQuery}
           onImport={() => void handleImport()}
+          onImportReferences={() => setReferenceImportOpen(true)}
           importing={importing}
           filter={filter}
           onFilterChange={handleFilterChange}
@@ -674,7 +712,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
         {continuePaper && selectedSize === 0 && layout === "grid" && (
           <button
             type="button"
-            onClick={() => onOpenPaper(continuePaper.id)}
+            onClick={() => openPaperGuarded(continuePaper.id)}
             className="pressable mx-4 mt-3 flex items-center justify-between rounded-xl border border-zp-border bg-zp-surface px-4 py-2.5 text-left transition-colors hover:bg-zp-surface-hover dark:bg-zp-surface"
           >
             <span className="min-w-0 truncate text-sm font-medium text-zp-primary">{continuePaper.title}</span>
@@ -750,7 +788,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
               onToggle={toggle}
               onSelectionDragStart={selectionDrag.start}
               onSelectionDragEnter={selectionDrag.enter}
-              onOpen={onOpenPaper}
+              onOpen={openPaperGuarded}
               onRename={(paper) => setRenaming({ kind: "paper", id: paper.id })}
               renamingId={renaming?.kind === "paper" ? renaming.id : null}
               onCommitRename={handleCommitPaperRename}
@@ -785,7 +823,7 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
                   onToggle={toggle}
                   onSelectionDragStart={selectionDrag.start}
                   onSelectionDragEnter={selectionDrag.enter}
-                  onOpen={onOpenPaper}
+                  onOpen={openPaperGuarded}
                   onStartRename={(p) => setRenaming({ kind: "paper", id: p.id })}
                   onCommitRename={handleCommitPaperRename}
                   onCancelRename={() => setRenaming(null)}
@@ -816,10 +854,11 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
               paper={focusedPaper}
               folders={folders}
               onClose={() => setFocusedPaperId(null)}
-              onOpen={() => onOpenPaper(focusedPaper.id)}
+              onOpen={() => openPaperGuarded(focusedPaper.id)}
               onToggleStar={() => void handleToggleStar(focusedPaper)}
               onPickFolder={() => handlePickFolder(focusedPaper)}
               onParse={() => handleParse(focusedPaper.id)}
+              onAttachPdf={() => void handleAttachPdf(focusedPaper)}
               onTranslated={handleMetadataTranslated}
             />
           )}
@@ -956,6 +995,15 @@ export function Library({ onOpenPaper, onOpenPapers, refreshSignal = 0, jobs = [
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ReferenceImportDialog
+        key={currentFolderId ?? "none"}
+        open={referenceImportOpen}
+        folders={folders}
+        defaultFolderId={currentFolderId}
+        onClose={() => setReferenceImportOpen(false)}
+        onImported={handleReferenceImported}
+      />
     </div>
   );
 }

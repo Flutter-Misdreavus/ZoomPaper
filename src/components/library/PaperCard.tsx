@@ -112,6 +112,7 @@ export function PaperCard(props: PaperCardProps) {
   } = props;
 
   const st = PARSE_STYLE[paper.parse_status] ?? PARSE_STYLE.unparsed;
+  const hasPdf = Boolean(paper.pdf_path?.trim());
   const percentRef = useRef(0);
   if (!progress) percentRef.current = 0;
   else percentRef.current = Math.max(percentRef.current, parseProgressPercent(progress));
@@ -359,7 +360,12 @@ export function PaperCard(props: PaperCardProps) {
                     {duePill.text}
                   </span>
                 )}
-                {paper.parse_status !== "ready" && (
+                {!hasPdf && (
+                  <span className="inline-flex h-5 items-center rounded-md bg-amber-500/10 px-1.5 text-[11px] leading-none text-amber-600">
+                    缺少 PDF
+                  </span>
+                )}
+                {hasPdf && paper.parse_status !== "ready" && (
                   <button
                     type="button"
                     disabled={parsing}

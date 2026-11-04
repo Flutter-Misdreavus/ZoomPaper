@@ -4,7 +4,7 @@
  * 搜索为标题/作者/摘要即时过滤（纯客户端）；按 `/` 或 ⌘/Ctrl F 可聚焦搜索框。
  */
 import { useEffect, useRef } from "react";
-import { LayoutGrid, List, ListChecks, Loader2, Search as SearchIcon, Trash2, Upload, X } from "lucide-react";
+import { LayoutGrid, List, ListChecks, Loader2, Search as SearchIcon, Trash2, Upload, X, FileText } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { IconTooltip } from "@/components/ui/icon-tooltip";
 import {
@@ -32,6 +32,8 @@ interface Props {
   query: string;
   onQueryChange: (v: string) => void;
   onImport: () => void;
+  /** 打开 Zotero BibTeX/RIS 导入向导 */
+  onImportReferences: () => void;
   importing: boolean;
   filter: PaperFilter;
   onFilterChange: (filter: PaperFilter) => void;
@@ -59,6 +61,7 @@ export function TopBar({
   query,
   onQueryChange,
   onImport,
+  onImportReferences,
   importing,
   filter,
   onFilterChange,
@@ -154,6 +157,11 @@ export function TopBar({
         </div>
         {!trashMode && <IconTooltip label={selectionMode ? "退出多选（Esc）" : "多选论文（也可长按论文）"}>
           <button type="button" aria-label={selectionMode ? "退出多选" : "多选论文"} aria-pressed={selectionMode} onClick={onToggleSelectionMode} className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors ${selectionMode ? "bg-zp-primary text-white" : "text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"}`}><ListChecks className="h-4 w-4" /></button>
+        </IconTooltip>}
+        {!trashMode && <IconTooltip label="从 Zotero 导入题录">
+          <button type="button" onClick={onImportReferences} disabled={importing} aria-label="从 Zotero 导入题录" className="flex h-8 w-8 items-center justify-center rounded-md border border-zp-border text-zp-secondary transition-colors hover:bg-zp-surface-hover hover:text-zp-primary disabled:opacity-50">
+            <FileText className="h-4 w-4" />
+          </button>
         </IconTooltip>}
         {!trashMode && <IconTooltip label={importing ? "正在导入论文" : "导入论文"}><button type="button" onClick={onImport} disabled={importing} aria-label="导入论文" className="flex h-8 w-8 items-center justify-center rounded-md bg-zp-primary text-white transition-opacity hover:opacity-90 disabled:opacity-50">
           {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}

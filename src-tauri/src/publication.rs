@@ -1,6 +1,7 @@
 //! DOI metadata enrichment. Public APIs, bounded requests and persistent cache.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -10,6 +11,10 @@ pub struct Publication {
     pub title: String,
     pub venue: Option<String>,
     pub authors: Option<String>,
+    #[serde(default)]
+    pub year: Option<i64>,
+    #[serde(default)]
+    pub abstract_text: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Cached {
@@ -139,6 +144,18 @@ pub fn title_matches(a: &str, b: &str) -> bool {
     let b: std::collections::HashSet<_> = b.into_iter().collect();
     2.0 * a.intersection(&b).count() as f64 / (a.len() + b.len()) as f64 >= 0.90
 }
+
+/// 0.0-1.0 标题 token Jaccard 相似度（用于 DOI 标题检索排序）。
+pub fn title_similarity(a: &str, b: &str) -> f64 {
+    let a = title_tokens(a);
+    let b = title_tokens(b);
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let a: std::collections::HashSet<_> = a.into_iter().collect();
+    let b: std::collections::HashSet<_> = b.into_iter().collect();
+    2.0 * a.intersection(&b).count() as f64 / (a.len() + b.len()) as f64
+}
 fn text(value: &Value) -> Option<String> {
     value.as_str().map(clean).filter(|s| !s.is_empty())
 }
@@ -177,6 +194,8 @@ pub fn crossref_record(value: &Value, doi: &str) -> Option<Publication> {
         title,
         venue,
         authors: (!authors.is_empty()).then(|| authors.join(", ")),
+        year,
+        abstract_text: text(&m["abstract"]),
     })
 }
 pub fn datacite_record(value: &Value, doi: &str) -> Option<Publication> {
@@ -210,17 +229,23 @@ pub fn datacite_record(value: &Value, doi: &str) -> Option<Publication> {
         title,
         venue,
         authors: (!authors.is_empty()).then(|| authors.join(", ")),
+        year: m["publicationYear"].as_i64(),
+        abstract_text: m["descriptions"][0]["description"]
+            .as_str()
+            .map(clean)
+            .filter(|value| !value.is_empty()),
     })
+}
+
+fn request_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub async fn lookup(doi: &str, cache_dir: &Path) -> Result<Option<Publication>, String> {
     let doi = normalize_doi(doi).ok_or("DOI 无效")?;
     // Crossref public pool permits one concurrent request. Also deduplicates cache misses.
-    static GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    let _guard = GATE
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _guard = request_gate().lock().await;
     let hex = doi.bytes().map(|b| format!("{b:02x}")).collect::<String>();
     let mut cache_parent = cache_dir.to_path_buf();
     let mut rest = hex.as_str();
@@ -308,6 +333,138 @@ pub async fn lookup(doi: &str, cache_dir: &Path) -> Result<Option<Publication>, 
     Ok(publication)
 }
 
+/// 按标题在 Crossref 中搜索 DOI（用于 Zotero 导入时补全缺失 DOI）。
+///
+/// 只返回高置信度结果；调用方应再次检查标题/年份。请求受 6 秒超时、2 MB
+/// 响应上限和全局 Crossref 限流约束。
+pub async fn search_by_title(
+    title: &str,
+    authors: Option<&str>,
+    year: Option<i64>,
+    cache_dir: &Path,
+) -> Result<Option<Publication>, String> {
+    let title = title.trim();
+    if title.chars().count() < 6 {
+        return Ok(None);
+    }
+    let _guard = request_gate().lock().await;
+    let key = format!(
+        "{}\u{1f}{}",
+        title.to_lowercase(),
+        year.map(|year| year.to_string()).unwrap_or_default()
+    );
+    let cache_hex = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let cache_file = cache_dir.join("search").join(format!("{cache_hex}.json"));
+    if let Ok(raw) = std::fs::read(&cache_file) {
+        if let Ok(cached) = serde_json::from_slice::<Cached>(&raw) {
+            let ttl = if cached.publication.is_some() {
+                30 * 86400
+            } else {
+                86400
+            };
+            if chrono::Utc::now().timestamp() - cached.fetched_at < ttl {
+                return Ok(cached.publication);
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent("ZoomPaper/0.6.0 (https://github.com/Flutter-Misdreavus/ZoomPaper)")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut url = reqwest::Url::parse("https://api.crossref.org/works").unwrap();
+    url.query_pairs_mut()
+        .append_pair("query.bibliographic", title)
+        .append_pair("rows", "5")
+        .append_pair(
+            "select",
+            "DOI,title,author,container-title,issued,abstract,type",
+        );
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("DOI 搜索服务限流，稍后重试".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(format!("DOI 搜索状态 {}", response.status()));
+    }
+    let mut response = response;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + chunk.len() > 2 * 1024 * 1024 {
+            return Err("DOI 搜索结果过大".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let value: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let items = value["message"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let author_tokens: Vec<String> = authors
+        .unwrap_or_default()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| token.len() >= 3)
+        .map(str::to_lowercase)
+        .collect();
+    let mut best: Option<(f64, Publication)> = None;
+    for item in items {
+        let Some(doi) = item["DOI"].as_str().and_then(normalize_doi) else {
+            continue;
+        };
+        let wrapped = serde_json::json!({ "message": item });
+        let Some(record) = crossref_record(&wrapped, &doi) else {
+            continue;
+        };
+        let similarity = title_similarity(title, &record.title);
+        if similarity < 0.90 {
+            continue;
+        }
+        if let (Some(wanted), Some(found)) = (year, record.year) {
+            if (wanted - found).abs() > 1 {
+                continue;
+            }
+        }
+        let mut score = similarity;
+        if record.year == year && year.is_some() {
+            score += 0.03;
+        }
+        if !author_tokens.is_empty() {
+            if let Some(record_authors) = record.authors.as_deref() {
+                let record_tokens: Vec<String> = record_authors
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .filter(|token| token.len() >= 3)
+                    .map(str::to_lowercase)
+                    .collect();
+                if author_tokens
+                    .iter()
+                    .any(|token| record_tokens.iter().any(|other| other == token))
+                {
+                    score += 0.03;
+                }
+            }
+        }
+        if best
+            .as_ref()
+            .is_none_or(|(current, _)| score > *current)
+        {
+            best = Some((score, record));
+        }
+    }
+    let publication = best.map(|(_, publication)| publication);
+    let cached = Cached {
+        fetched_at: chrono::Utc::now().timestamp(),
+        publication: publication.clone(),
+    };
+    if let Some(parent) = cache_file.parent() {
+        if std::fs::create_dir_all(parent).is_ok() {
+            let _ = std::fs::write(cache_file, serde_json::to_vec(&cached).unwrap());
+        }
+    }
+    Ok(publication)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +538,8 @@ mod tests {
                 title: "Cached paper".into(),
                 venue: Some("NewConf 2026".into()),
                 authors: None,
+                year: Some(2020),
+                abstract_text: None,
             }),
         };
         std::fs::write(path, serde_json::to_vec(&cached).unwrap()).unwrap();

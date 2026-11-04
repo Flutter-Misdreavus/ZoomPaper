@@ -33,6 +33,10 @@ pub struct Paper {
     pub github_url: Option<String>,
     /// 发表期刊或会议（如 ACL 2026、Nature、arXiv）。
     pub venue: Option<String>,
+    /// 规范化小写 DOI（Zotero 导入/DOI 补全）。
+    pub doi: Option<String>,
+    /// 出版年份（Zotero 导入/DOI 补全）。
+    pub year: Option<i64>,
     /// Moved to trash at this epoch second; None means visible in the library.
     pub deleted_at: Option<i64>,
     /// Source website favicon captured by the browser connector.

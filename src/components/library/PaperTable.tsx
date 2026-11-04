@@ -155,6 +155,11 @@ export function PaperTable(props: PaperTableProps) {
                 ) : (
                   <span className={cn("truncate", paper.reading_status === "unread" ? "font-semibold text-zp-primary" : paper.reading_status === "read" ? "font-normal text-zp-tertiary" : "font-medium text-zp-primary")}>{paperTitle(paper,"library",prefs)}</span>
                 )}
+                {!paper.pdf_path?.trim() && (
+                  <span className="shrink-0 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
+                    缺少 PDF
+                  </span>
+                )}
                 <IconTooltip label={paper.starred ? "取消收藏" : "收藏论文"}>
                   <button
                     type="button"

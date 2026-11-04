@@ -284,6 +284,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_conversations_paper_updated ON conversations(paper_id, type, updated_at DESC);")?;
         conn.pragma_update(None, "user_version", 19)?;
     }
+    // v20：Zotero 题录导入所需的 DOI / 年份；按列存在性判断以兼容中断升级。
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 20 {
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(papers)")?
+            .query_map([], |row| row.get(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !columns.iter().any(|column| column == "doi") {
+            conn.execute_batch("ALTER TABLE papers ADD COLUMN doi TEXT;")?;
+        }
+        if !columns.iter().any(|column| column == "year") {
+            conn.execute_batch("ALTER TABLE papers ADD COLUMN year INTEGER;")?;
+        }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_papers_doi ON papers(doi);")?;
+        conn.pragma_update(None, "user_version", 20)?;
+    }
     Ok(())
 }
 
@@ -331,7 +347,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
 
         // 论文数据无损
@@ -374,6 +390,8 @@ mod tests {
         assert!(cols.contains(&"source_icon_url".to_string()));
         assert!(cols.contains(&"title_zh".to_string()));
         assert!(cols.contains(&"abstract_zh".to_string()));
+        assert!(cols.contains(&"doi".to_string()));
+        assert!(cols.contains(&"year".to_string()));
         conn.execute(
             "INSERT INTO reading_sessions (paper_id, started_at, seconds) VALUES ('paper-1', 1700000003, 120)",
             [],
@@ -496,7 +514,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
 
         let items: Vec<(String, Option<i64>)> = conn
@@ -539,7 +557,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     /// 迁移幂等：重复执行不报错。
@@ -551,7 +569,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 19);
+        assert_eq!(v, 20);
     }
 
     #[test]
@@ -569,7 +587,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        for column in ["source_url", "github_url", "venue", "deleted_at", "source_icon_url", "title_zh", "abstract_zh"] {
+        for column in ["source_url", "github_url", "venue", "deleted_at", "source_icon_url", "title_zh", "abstract_zh", "doi", "year"] {
             let cols: Vec<String> = conn
                 .prepare("PRAGMA table_info(papers)")
                 .unwrap()
@@ -582,7 +600,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            19
+            20
         );
     }
 

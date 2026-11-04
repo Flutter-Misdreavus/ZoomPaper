@@ -1,6 +1,6 @@
 import { usePreferences, paperTitle } from "@/lib/preferences";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, FolderInput, GripVertical, Sparkles, Star, X } from "lucide-react";
+import { BookOpen, FileUp, FolderInput, GripVertical, Sparkles, Star, X } from "lucide-react";
 import { enqueueMetadataTranslations, type Folder, type Paper } from "@/lib/api";
 import { cn, displayPaperTitle, formatDuration, formatTime } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ interface Props {
   onToggleStar: () => void;
   onPickFolder: () => void;
   onParse: () => void;
+  onAttachPdf: () => void;
   onTranslated: (paper: Paper) => void;
 }
 
@@ -26,7 +27,7 @@ function clampWidth(value: number) {
   return Math.min(maximum, Math.max(260, value));
 }
 
-export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, onPickFolder, onParse }: Props) {
+export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, onPickFolder, onParse, onAttachPdf }: Props) {
   const [width, setWidth] = useState(() => clampWidth(Number(localStorage.getItem(WIDTH_KEY)) || 320));
   const resizeRef = useRef<{ x: number; width: number } | null>(null);
   const prefs=usePreferences();
@@ -69,6 +70,7 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
 
 
   const names = previewPaper.folder_ids.map((id) => folders.find((folder) => folder.id === id)?.name).filter(Boolean);
+  const hasPdf = Boolean(previewPaper.pdf_path?.trim());
   const shownTitle = language === "original" ? previewPaper.title : paperTitle(previewPaper,"detail",prefs);
   const shownAbstract = language === "original" || prefs.abstractLanguage === "original" ? previewPaper.abstract : prefs.abstractLanguage === "both" && previewPaper.abstract_zh ? `${previewPaper.abstract_zh}\n\n${previewPaper.abstract ?? ""}` : previewPaper.abstract_zh || previewPaper.abstract;
 
@@ -106,10 +108,11 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
         {previewPaper.venue && <p className="mt-2 text-xs leading-5 text-zp-secondary">{previewPaper.venue}</p>}
 
         <div className="mt-4 flex items-center gap-1">
-          <IconTooltip label="打开论文"><button type="button" onClick={onOpen} aria-label="打开论文" className="flex h-8 w-8 items-center justify-center rounded-md bg-zp-primary text-white"><BookOpen className="h-4 w-4" /></button></IconTooltip>
+          <IconTooltip label={hasPdf ? "打开论文" : "缺少 PDF，请先补挂"}><button type="button" onClick={onOpen} disabled={!hasPdf} aria-label="打开论文" className="flex h-8 w-8 items-center justify-center rounded-md bg-zp-primary text-white disabled:cursor-not-allowed disabled:opacity-40"><BookOpen className="h-4 w-4" /></button></IconTooltip>
           <IconTooltip label={previewPaper.starred ? "取消星标" : "添加星标"}><button type="button" onClick={onToggleStar} aria-label={previewPaper.starred ? "取消星标" : "添加星标"} className={cn("flex h-8 w-8 items-center justify-center rounded-md hover:bg-zp-surface-hover", previewPaper.starred ? "text-amber-500" : "text-zp-quaternary")}><Star className={cn("h-4 w-4", previewPaper.starred && "fill-current")} /></button></IconTooltip>
           <IconTooltip label="加入文件夹"><button type="button" onClick={onPickFolder} aria-label="加入文件夹" className="flex h-8 w-8 items-center justify-center rounded-md text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"><FolderInput className="h-4 w-4" /></button></IconTooltip>
-          <IconTooltip label="解析论文"><button type="button" onClick={onParse} aria-label="解析论文" className="flex h-8 w-8 items-center justify-center rounded-md text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"><Sparkles className="h-4 w-4" /></button></IconTooltip>
+          <IconTooltip label={hasPdf ? "补挂/替换 PDF" : "补挂 PDF"}><button type="button" onClick={onAttachPdf} aria-label="补挂 PDF" className="flex h-8 w-8 items-center justify-center rounded-md text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary"><FileUp className="h-4 w-4" /></button></IconTooltip>
+          <IconTooltip label="解析论文"><button type="button" onClick={onParse} disabled={!hasPdf} aria-label="解析论文" className="flex h-8 w-8 items-center justify-center rounded-md text-zp-quaternary hover:bg-zp-surface-hover hover:text-zp-primary disabled:cursor-not-allowed disabled:opacity-40"><Sparkles className="h-4 w-4" /></button></IconTooltip>
         </div>
 
         <dl className="mt-5 grid grid-cols-[72px_1fr] gap-x-3 gap-y-2 text-xs">
@@ -118,6 +121,8 @@ export function PaperInspector({ paper, folders, onClose, onOpen, onToggleStar, 
           <dt className="text-zp-quaternary">阅读时长</dt><dd className="text-zp-secondary">{formatDuration(previewPaper.total_read_seconds)}</dd>
           <dt className="text-zp-quaternary">最后阅读</dt><dd className="text-zp-secondary">{previewPaper.last_read_at ? formatTime(previewPaper.last_read_at) : "—"}</dd>
           <dt className="text-zp-quaternary">文件夹</dt><dd className="text-zp-secondary">{names.join("、") || "未分类"}</dd>
+          {previewPaper.doi && <><dt className="text-zp-quaternary">DOI</dt><dd className="break-all text-zp-secondary">{previewPaper.doi}</dd></>}
+          {previewPaper.year && <><dt className="text-zp-quaternary">年份</dt><dd className="text-zp-secondary">{previewPaper.year}</dd></>}
         </dl>
 
         {shownAbstract && <div className="mt-6"><h3 className="mb-2 text-xs font-medium text-zp-primary">摘要</h3><p className="text-xs leading-5 text-zp-secondary">{shownAbstract}</p></div>}

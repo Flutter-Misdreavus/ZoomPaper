@@ -181,9 +181,14 @@ fn validate(dir: &Path) -> Result<Manifest, String> {
                 r.get(0)
             })
             .map_err(|e| e.to_string())?;
-        let rel = Path::new(&pdf)
-            .strip_prefix(&manifest.library)
-            .map_err(|_| "备份路径无效".to_string())?;
+        let rel = if pdf.trim().is_empty() {
+            // 仅题录论文（尚未补挂 PDF）：数据库记录有效，但没有需要校验的 PDF 文件。
+            continue;
+        } else {
+            Path::new(&pdf)
+                .strip_prefix(&manifest.library)
+                .map_err(|_| "备份路径无效".to_string())?
+        };
         if rel
             .components()
             .any(|p| !matches!(p, std::path::Component::Normal(_)))
@@ -517,6 +522,32 @@ mod tests {
         drop(backup);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn metadata_only_paper_is_valid_in_backup() {
+        let root = temp();
+        let library = root.join("library");
+        let paper_dir = library.join("metadata-only");
+        fs::create_dir_all(&paper_dir).unwrap();
+        fs::write(
+            paper_dir.join("annotations.json"),
+            r#"{"version":1,"highlights":[]}"#,
+        )
+        .unwrap();
+        crate::db::register_sqlite_vec();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO papers(id,title,pdf_path,md_path,doi,year) VALUES('p','Only Metadata','',?1,'10.1/abc',2020)",
+            [paper_dir.join("paper.md").to_str().unwrap()],
+        )
+        .unwrap();
+        let target = root.join("backup");
+        snapshot(&conn, &library, &target, serde_json::Value::Null).unwrap();
+        assert!(validate(&target).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn refuses_missing_pdf_and_paths_outside_library() {
         let root = temp();

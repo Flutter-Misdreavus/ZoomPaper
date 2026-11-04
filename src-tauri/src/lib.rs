@@ -13,6 +13,7 @@ mod publication;
 mod qa;
 mod quiz;
 mod rag;
+mod reference;
 mod settings;
 mod storage;
 mod translate;
@@ -100,6 +101,10 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::test_web_search,
+            reference::prepare_reference_import,
+            reference::enrich_reference_import,
+            reference::commit_reference_import,
+            reference::attach_paper_pdf,
             commands::get_themes_dir,
             commands::list_custom_themes,
             commands::enqueue_metadata_translations,
