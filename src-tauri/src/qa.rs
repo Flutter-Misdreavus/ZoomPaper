@@ -403,12 +403,11 @@ mod tests {
         .unwrap();
 
         // 无 chunk（检索为空）+ 两条选中段落 → 不应判 empty，选中段作为 [1][2] 上下文
-        let prepared = prepare(
+        let prepared = prepare_with_hits(
             &conn,
             "这段话是什么意思？",
             Some("p1"),
             &[],
-            5,
             &[
                 SelectionInput {
                     text: "记忆系统通过显式存储层保存信息。".into(),
@@ -421,6 +420,7 @@ mod tests {
                     location: Some("译文·第 5 段".to_string()),
                 },
             ],
+            &[],
         )
         .unwrap();
         assert!(!prepared.empty);

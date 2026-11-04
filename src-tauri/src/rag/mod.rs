@@ -162,12 +162,26 @@ fn find_content_list(paper_dir: &Path) -> Result<std::path::PathBuf> {
     for entry in fs::read_dir(paper_dir).context("读取论文目录失败")? {
         let path = entry?.path();
         if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-            if name.ends_with("_content_list.json") {
+            if name == "content_list.json" || name.ends_with("_content_list.json") {
                 return Ok(path);
             }
         }
     }
     anyhow::bail!("论文目录缺少 content_list.json")
+}
+
+#[cfg(test)]
+#[test]
+fn content_list_supports_plain_and_prefixed_mineru_names() {
+    let dir = std::env::temp_dir().join(format!("zoompaper-content-list-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).unwrap();
+    for name in ["content_list.json", "paper_content_list.json"] {
+        let file = dir.join(name);
+        fs::write(&file, "[]").unwrap();
+        assert_eq!(find_content_list(&dir).unwrap(), file);
+        fs::remove_file(file).unwrap();
+    }
+    fs::remove_dir(dir).unwrap();
 }
 
 /// 索引一篇论文：分块 → embedding → 入库。返回 chunk 数量。

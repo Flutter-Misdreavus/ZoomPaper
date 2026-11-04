@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "package:extension": "python3 scripts/package_browser_extension.py",
+    "package:extension": "node scripts/package_browser_extension.mjs",
     "tauri": "tauri",
     "test": "vitest run"
   },

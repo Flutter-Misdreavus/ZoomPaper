@@ -29,7 +29,7 @@ fn normalize_entry_name(enclosed: &Path, prefix: &str) -> Result<String> {
         "MinerU 结果包含非法路径：{}",
         enclosed.display()
     );
-    let name = relative.to_string_lossy().into_owned();
+    let name = relative.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
     anyhow::ensure!(!name.is_empty(), "MinerU 结果包含空文件名");
     Ok(name)
 }
@@ -334,37 +334,15 @@ mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
-    /// 用 Python 的 zipfile 构造压缩包：Rust 的 `ZipWriter` 会规范化条目名，
-    /// 只有它才能产出 `../../` 这类真实的恶意条目。
+    /// start_file 保留原始条目名（start_file_from_path 才会规范化路径），
+    /// 因此可以直接生成恶意路径样本，不依赖系统 Python 或二进制标准输出。
     fn build_zip(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        use std::process::{Command, Stdio};
-        let list: Vec<(String, Vec<u8>)> = entries
-            .iter()
-            .map(|(name, bytes)| (name.to_string(), bytes.clone()))
-            .collect();
-        let script = "import sys,zipfile,json\n\
-                      d=json.loads(sys.stdin.read())\n\
-                      z=zipfile.ZipFile(sys.stdout.buffer,'w',zipfile.ZIP_DEFLATED)\n\
-                      for n,b in d:\n\
-                      \x20   z.writestr(n,bytes(b))\n\
-                      z.close()\n";
-        let mut child = Command::new("python3")
-            .arg("-c")
-            .arg(script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("需要 python3 构造测试用 zip");
-        let payload = serde_json::to_vec(&list).unwrap();
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(&payload)
-            .unwrap(); // 句柄在此 drop，子进程读到 EOF 才会开始写 zip
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "python3 构造 zip 失败");
-        output.stdout
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            archive.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
     }
     /// 恶意 zip：绝对路径与 `..` 逃逸条目都必须被拒绝，正常条目不受影响。
     #[tokio::test]

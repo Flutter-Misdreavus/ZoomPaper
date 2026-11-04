@@ -510,7 +510,9 @@ pub fn get_paper_md(db: State<'_, Db>, paper_id: String) -> Result<String, Strin
     let mut md = crate::fs::read_md(Path::new(&md_path)).map_err(|e| e.to_string())?;
     // 把 MinerU 的相对图片路径（`](images/...`) 重写为绝对路径，供前端 convertFileSrc 加载
     if let Some(parent) = Path::new(&md_path).parent() {
-        let dir = parent.to_string_lossy();
+        // Markdown treats backslashes as escapes. Use forward slashes for
+        // image destinations on Windows as well as macOS/Linux.
+        let dir = parent.to_string_lossy().replace('\\', "/");
         md = md.replace("](images/", &format!("]({}/images/", dir));
     }
     Ok(md)

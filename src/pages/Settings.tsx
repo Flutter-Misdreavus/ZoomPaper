@@ -60,6 +60,8 @@ export function SettingsPage() {
     const [showAddDialog, setShowAddDialog] = useState(false);
     const [showEditDialog, setShowEditDialog] = useState(false);
     const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
+    const [deletingProvider, setDeletingProvider] = useState<ProviderConfig | null>(null);
+    const [deleting, setDeleting] = useState(false);
     const [selectedTemplate, setSelectedTemplate] = useState<ProviderTemplate | null>(null);
     useEffect(() => {
         loadSettings();
@@ -212,6 +214,7 @@ export function SettingsPage() {
         }
     }
     async function handleAddProvider(template: ProviderTemplate, apiKey: string, customBaseUrl?: string, customModel?: string) {
+        setError(null);
         try {
             let id = template.id;
             if (template.id === "custom" || current.providers.some(p => p.id === template.id)) {
@@ -222,18 +225,25 @@ export function SettingsPage() {
                 config.base_url = customBaseUrl;
             if (customModel)
                 config.default_model = customModel;
+            const invalid = providerConfigError(config);
+            if (invalid) throw new Error(invalid);
             const updated = await addProvider(config);
             setSettings(updated);
             setShowAddDialog(false);
             setSelectedTemplate(null);
             setError(null);
+            return true;
         }
         catch (e) {
             setError(String(e));
+            return false;
         }
     }
     async function handleUpdateProvider(id: string, config: ProviderConfig) {
+        setError(null);
         try {
+            const invalid = providerConfigError(config);
+            if (invalid) throw new Error(invalid);
             const updated = await updateProvider(id, config);
             setSettings(updated);
             setShowEditDialog(false);
@@ -244,18 +254,24 @@ export function SettingsPage() {
             setError(String(e));
         }
     }
-    async function handleDeleteProvider(id: string) {
-        if (!confirm(`确定要删除 provider "${current.providers.find(p => p.id === id)?.name}"？`)) {
-            return;
-        }
+    function handleDeleteProvider(id: string) {
+        setError(null);
+        setDeletingProvider(current.providers.find(p => p.id === id) ?? null);
+    }
+    async function confirmDeleteProvider() {
+        if (!deletingProvider || deleting) return;
+        setDeleting(true);
+        setError(null);
         try {
-            const updated = await deleteProvider(id);
+            const updated = await deleteProvider(deletingProvider.id);
             setSettings(updated);
+            setDeletingProvider(null);
             setError(null);
         }
         catch (e) {
             setError(String(e));
         }
+        finally { setDeleting(false); }
     }
     async function handleSetActive(id: string) {
         try {
@@ -314,9 +330,22 @@ export function SettingsPage() {
     } }}>全部翻译</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={operation !== null} onOpenChange={value => { if (!value && !working)
         setOperation(null); }}><DialogContent><DialogHeader><DialogTitle>{operation === 'trash' ? '清空回收站？' : operation === 'restore' ? '从备份恢复？' : operation === 'path' ? '迁移论文库？' : operation === 'cache' ? '清理缓存？' : '重建索引？'}</DialogTitle></DialogHeader><p className="py-3 text-sm">{operation === 'trash' ? '永久删除回收站中的论文与文件。' : operation === 'restore' ? '校验备份，重启时恢复；恢复前自动备份当前论文库。' : operation === 'path' ? '复制到所选文件夹中新建的论文库，保留旧目录。' : operation === 'cache' ? '清理 DOI 查询缓存，保留论文、笔记与译文。' : '重新生成索引，保留论文与笔记。'}</p><DialogFooter><Button variant="outline" disabled={working} onClick={() => setOperation(null)}>取消</Button><Button disabled={working} onClick={() => void perform(operation!)}>{working ? '处理中…' : '确认'}</Button></DialogFooter></DialogContent></Dialog>
-    <AddProviderDialog open={showAddDialog} onClose={() => { setShowAddDialog(false); setSelectedTemplate(null); }} onAdd={handleAddProvider} selectedTemplate={selectedTemplate} onSelectTemplate={setSelectedTemplate}/>
-    {editingProvider && <EditProviderDialog open={showEditDialog} provider={editingProvider} onClose={() => { setShowEditDialog(false); setEditingProvider(null); }} onSave={handleUpdateProvider}/>}
+    <Dialog open={deletingProvider !== null} onOpenChange={value => { if (!value && !deleting) { setDeletingProvider(null); setError(null); } }}><DialogContent><DialogHeader><DialogTitle>删除 API 配置？</DialogTitle><DialogDescription>将删除「{deletingProvider?.name}」的服务配置。</DialogDescription></DialogHeader>{error && <p role="alert" className="text-sm text-destructive">{error}</p>}<DialogFooter><Button variant="outline" disabled={deleting} onClick={() => { setDeletingProvider(null); setError(null); }}>取消</Button><Button variant="destructive" disabled={deleting} onClick={() => void confirmDeleteProvider()}>{deleting ? '删除中…' : '删除'}</Button></DialogFooter></DialogContent></Dialog>
+    {showAddDialog && <AddProviderDialog open={showAddDialog} error={error} onClose={() => { setShowAddDialog(false); setSelectedTemplate(null); setError(null); }} onAdd={handleAddProvider} selectedTemplate={selectedTemplate} onSelectTemplate={setSelectedTemplate}/>}
+    {editingProvider && <EditProviderDialog open={showEditDialog} error={error} provider={editingProvider} onClose={() => { setShowEditDialog(false); setEditingProvider(null); setError(null); }} onSave={handleUpdateProvider}/>}
   </div>;
+}
+function providerConfigError(config: ProviderConfig): string | null {
+    if (!config.name.trim()) return '请填写服务名称';
+    if (!config.api_key.trim()) return '请填写 API Key';
+    if (!config.default_model.trim()) return '请填写默认模型';
+    if (config.provider_type === 'openai-compat') {
+        try {
+            const url = new URL(config.base_url ?? '');
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'Base URL 必须是有效的 HTTP 或 HTTPS 地址';
+        } catch { return 'Base URL 必须是有效的 HTTP 或 HTTPS 地址'; }
+    }
+    return null;
 }
 function ProviderCard({ provider, isActive, onSetActive, onEdit, onDelete, }: {
     provider: ProviderConfig;
@@ -348,20 +377,20 @@ function ProviderCard({ provider, isActive, onSetActive, onEdit, onDelete, }: {
           {!isActive && (<Button size="sm" variant="outline" onClick={onSetActive}>
               切换使用
             </Button>)}
-          <Button size="sm" variant="ghost" onClick={onEdit}>
+          <Button size="sm" variant="ghost" aria-label={`修改 ${provider.name}`} onClick={onEdit}>
             <Edit2 className="h-4 w-4"/>
           </Button>
-          <Button size="sm" variant="ghost" onClick={onDelete} disabled={isActive} title={isActive ? '无法删除当前使用的 provider' : '删除'}>
+          <Button size="sm" variant="ghost" aria-label={`删除 ${provider.name}`} onClick={onDelete} disabled={isActive} title={isActive ? '无法删除当前使用的 provider' : '删除'}>
             <Trash2 className="h-4 w-4"/>
           </Button>
         </div>
       </div>
     </div>);
 }
-function ModelInput({ id, value, suggestions, onChange, required = false, }: {
+function ModelInput({ id, value, suggestions = [], onChange, required = false, }: {
     id: string;
     value: string;
-    suggestions: string[];
+    suggestions?: string[];
     onChange: (value: string) => void;
     required?: boolean;
 }) {
@@ -374,25 +403,26 @@ function ModelInput({ id, value, suggestions, onChange, required = false, }: {
         </datalist>)}
     </div>);
 }
-function AddProviderDialog({ open, onClose, onAdd, selectedTemplate, onSelectTemplate, }: {
+function AddProviderDialog({ open, onClose, onAdd, selectedTemplate, onSelectTemplate, error, }: {
     open: boolean;
     onClose: () => void;
-    onAdd: (template: ProviderTemplate, apiKey: string, customBaseUrl?: string, customModel?: string) => void;
+    onAdd: (template: ProviderTemplate, apiKey: string, customBaseUrl?: string, customModel?: string) => Promise<boolean>;
+    error: string | null;
     selectedTemplate: ProviderTemplate | null;
     onSelectTemplate: (template: ProviderTemplate | null) => void;
 }) {
     const [apiKey, setApiKey] = useState("");
     const [customBaseUrl, setCustomBaseUrl] = useState("");
     const [customModel, setCustomModel] = useState<string>("");
-    const handleAdd = () => {
+    const [submitting, setSubmitting] = useState(false);
+    const handleAdd = async () => {
         if (!selectedTemplate || !apiKey)
             return;
-        onAdd(selectedTemplate, apiKey, customBaseUrl || undefined, customModel || undefined);
-        setApiKey("");
-        setCustomBaseUrl("");
-        setCustomModel("");
+        setSubmitting(true);
+        try { await onAdd(selectedTemplate, apiKey, customBaseUrl || undefined, customModel || undefined); }
+        finally { setSubmitting(false); }
     };
-    return (<Dialog open={open} onOpenChange={(open) => !open && onClose()}>
+    return (<Dialog open={open} onOpenChange={(open) => !open && !submitting && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>添加 AI Provider</DialogTitle>
@@ -400,21 +430,21 @@ function AddProviderDialog({ open, onClose, onAdd, selectedTemplate, onSelectTem
             从模板选择或自定义配置
           </DialogDescription>
         </DialogHeader>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
         {!selectedTemplate ? (<div className="grid grid-cols-2 gap-3">
             {PROVIDER_TEMPLATES.map((template) => (<button key={template.id} onClick={() => {
                     onSelectTemplate(template);
-                    if (template.base_url)
-                        setCustomBaseUrl(template.base_url);
-                    if (template.default_model)
-                        setCustomModel(template.default_model);
+                    setApiKey("");
+                    setCustomBaseUrl(template.base_url ?? "");
+                    setCustomModel(template.default_model ?? "");
                 }} className="flex flex-col items-start gap-2 rounded-lg border p-4 text-left hover:bg-accent transition-colors">
                 <div className="font-medium">{template.name}</div>
                 <div className="text-sm text-muted-foreground">{template.description}</div>
               </button>))}
           </div>) : (<div className="space-y-4">
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={() => onSelectTemplate(null)}>
+              <Button size="sm" variant="ghost" disabled={submitting} onClick={() => onSelectTemplate(null)}>
                 ← 返回
               </Button>
               <span className="font-medium">{selectedTemplate.name}</span>
@@ -435,36 +465,41 @@ function AddProviderDialog({ open, onClose, onAdd, selectedTemplate, onSelectTem
             </div>
 
             <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
+              <Button variant="outline" disabled={submitting} onClick={onClose}>
                 取消
               </Button>
-              <Button onClick={handleAdd} disabled={!apiKey || (selectedTemplate.provider_type === "openai-compat" && !customBaseUrl) || !customModel}>
-                添加
+              <Button onClick={handleAdd} disabled={submitting || !apiKey.trim() || (selectedTemplate.provider_type === "openai-compat" && !customBaseUrl.trim()) || !customModel.trim()}>
+                {submitting ? '添加中…' : '添加'}
               </Button>
             </DialogFooter>
           </div>)}
       </DialogContent>
     </Dialog>);
 }
-function EditProviderDialog({ open, provider, onClose, onSave, }: {
+function EditProviderDialog({ open, provider, onClose, onSave, error, }: {
     open: boolean;
     provider: ProviderConfig;
     onClose: () => void;
-    onSave: (id: string, config: ProviderConfig) => void;
+    onSave: (id: string, config: ProviderConfig) => Promise<void>;
+    error: string | null;
 }) {
     const [config, setConfig] = useState<ProviderConfig>(provider);
     useEffect(() => {
         setConfig(provider);
     }, [provider]);
-    const handleSave = () => {
-        onSave(provider.id, config);
+    const [submitting, setSubmitting] = useState(false);
+    const handleSave = async () => {
+        setSubmitting(true);
+        try { await onSave(provider.id, config); }
+        finally { setSubmitting(false); }
     };
-    return (<Dialog open={open} onOpenChange={(open) => !open && onClose()}>
+    return (<Dialog open={open} onOpenChange={(open) => !open && !submitting && onClose()}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>编辑 Provider</DialogTitle>
           <DialogDescription>{provider.name}</DialogDescription>
         </DialogHeader>
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
         <div className="space-y-3">
           <div className="grid gap-1.5">
@@ -486,11 +521,11 @@ function EditProviderDialog({ open, provider, onClose, onSave, }: {
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={submitting} onClick={onClose}>
             取消
           </Button>
-          <Button onClick={handleSave}>
-            保存
+          <Button disabled={submitting} onClick={handleSave}>
+            {submitting ? '保存中…' : '保存'}
           </Button>
         </DialogFooter>
       </DialogContent>

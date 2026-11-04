@@ -180,6 +180,8 @@ com.paper-reader/
 
 桌面端基于 **Tauri v2 + Rust + React 19 + TypeScript**，使用 Tailwind CSS v4、Base UI 与 Motion 构建界面。
 
+Windows 环境准备、构建和已验证范围见 [Windows 构建说明](docs/WINDOWS.md)。
+
 在 macOS 上开发需准备 **Node.js 20.19+ 或 22.12+**、Rust stable 和 Xcode Command Line Tools（`xcode-select --install`）。其他平台需安装对应的 Tauri 系统依赖；当前发布工作流验证的打包目标为 Apple Silicon macOS。
 
 ```bash

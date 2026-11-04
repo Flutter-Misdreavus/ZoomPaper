@@ -319,7 +319,7 @@ export function linkifyCitations(md: string): string {
     },
   );
   return guarded
-    .replace(/\[(\d+)\]/g, "[$1](citation:$1)")
+    .replace(/(?<!!)\[(\d+)\](?![\[(])/g, "[$1](citation:$1)")
     .replace(/\u0000(\d+)\u0000/g, (_, i) => spans[Number(i)]);
 }
 
@@ -354,7 +354,10 @@ export function normalizeImageUrls(markdown: string): string {
  * `asset:`（convertFileSrc 生成的本地文件 URL）与 `citation:`（问答引用标记），
  * 其余仍走默认消毒。
  */
-export const markdownUrlTransform: UrlTransform = (url) => {
+export const markdownUrlTransform: UrlTransform = (url, key) => {
+  // A drive letter looks like a URL scheme to react-markdown. Only image
+  // sources may use it; resolveImgSrc converts the path to Tauri's asset URL.
+  if (key === "src" && /^[A-Za-z]:[\\/]/.test(url)) return url;
   if (/^(asset|citation):/i.test(url)) return url;
   return defaultUrlTransform(url);
 };

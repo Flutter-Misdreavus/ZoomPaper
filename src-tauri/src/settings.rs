@@ -67,7 +67,7 @@ pub struct ProviderConfig {
     /// 默认模型名
     pub default_model: String,
     /// 可选：支持的模型列表（用于前端下拉提示）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub models: Vec<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -104,10 +104,10 @@ impl Default for WorkflowSettings {
 pub struct Settings {
     pub workflow: WorkflowSettings,
     /// Provider 配置列表（新版）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     /// 当前激活的 provider ID（新版）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub active_provider_id: String,
 
     /// 兼容字段：保留旧版 api_keys 用于平滑迁移
@@ -513,5 +513,25 @@ mod tests {
         s.active_provider_id = "test".to_string();
 
         assert!(s.active_provider().is_err());
+    }
+
+    #[test]
+    fn default_settings_emit_required_frontend_provider_fields() {
+        // The settings page calls providers.map even on the first launch.
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["providers"], serde_json::json!([]));
+        assert_eq!(value["active_provider_id"], "");
+        let loaded: Settings = serde_json::from_str("{}").unwrap();
+        assert!(loaded.providers.is_empty());
+    }
+
+    #[test]
+    fn provider_without_model_suggestions_emits_an_empty_array() {
+        let provider: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "id": "custom", "name": "Custom", "provider_type": "openai-compat",
+            "api_key": "test-only", "base_url": "https://example.invalid/v1",
+            "default_model": "test-model"
+        })).unwrap();
+        assert_eq!(serde_json::to_value(provider).unwrap()["models"], serde_json::json!([]));
     }
 }
