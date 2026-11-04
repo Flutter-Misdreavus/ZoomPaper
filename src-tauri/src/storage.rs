@@ -513,7 +513,7 @@ mod tests {
         let path: String = backup
             .query_row("SELECT pdf_path FROM papers", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(path, root.join("new/p/paper.pdf").to_str().unwrap());
+        assert_eq!(Path::new(&path), root.join("new").join("p").join("paper.pdf"));
         drop(backup);
         fs::remove_dir_all(root).unwrap();
     }
